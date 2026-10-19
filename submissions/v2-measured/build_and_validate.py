@@ -78,9 +78,18 @@ check("prompt warns against oversized edits (truncation guard)", "Never paste a 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 if OUT.exists():
     OUT.unlink()
+# Determinism law (fleet-wide since the v3/PR#4 review): writestr() with a bare
+# filename stamps the build wall-clock into every member, so identical content
+# pinned a different sha on every node (JAE 1a7f05b0, AMARA 23177fbb, Zymatica
+# a3cffd1f — three nodes, one content). Pinned ZipInfo fixes it: same content,
+# same sha, on every node, forever.
+FIXED_DT = (2026, 1, 1, 0, 0, 0)
 with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
     for f in FILES:
-        z.writestr(f, texts[f])
+        zi = zipfile.ZipInfo(f, date_time=FIXED_DT)
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        zi.external_attr = 0o644 << 16
+        z.writestr(zi, texts[f])
 check("zip integrity", zipfile.ZipFile(OUT).testzip() is None)
 size = OUT.stat().st_size
 check("zip size sane (< 3 GiB contract limit)", size < 3 * 1024**3, f"{size} bytes")
