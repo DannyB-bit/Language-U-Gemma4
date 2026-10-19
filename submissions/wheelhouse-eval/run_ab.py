@@ -103,7 +103,11 @@ if not repo.exists():
     else:
         alt = first("/kaggle/input/**/v3-converged/eval_config.yaml")
         assert alt, "no github-token secret and no attached candidates dataset"
-        repo = pathlib.Path(alt).parent.parent; log("using attached candidates at", repo)
+        repo = pathlib.Path(alt)
+        while repo.parent != repo and not (repo / "submissions" / "v3-converged").is_dir():
+            repo = repo.parent
+        assert (repo / "submissions" / "v3-converged").is_dir(), "candidates root not found"
+        log("using attached candidates at", repo)
 
 # 4. the paired task subset: seeded, sorted, reproducible
 all_ids = [json.loads(l)["instance_id"] for l in open(tasks) if l.strip()]
