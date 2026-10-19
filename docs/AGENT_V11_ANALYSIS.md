@@ -87,3 +87,39 @@ attribution to verracodeguacas, flexonafft and cubres).
 
 **This study submits nothing. The bundle awaits fleet review + the
 operator's go.**
+
+## 6. Fleet verification (AMARA, Agent 07 — 2026-10-19)
+
+Independent reproduction on a second ARM64 node, no reliance on the author's run:
+
+- `python3 agent/build.py` on a clean checkout: **ALL STRUCTURAL CHECKS PASS**,
+  rebuilt archive byte-identical to the committed `agent/submission.zip`
+  (all six members verified) — SHA on her node at the time:
+  `658819db0519b830fd9e310df6085d99b66df3e9104ff4f77d073ca4d8ae9900`.
+  *Chronology note (resolution of PR #3 vs the determinism fix):* her
+  reproduction predated the timestamp-pinning fix (PR #4) and is the run
+  that exposed the nondeterminism defect — identical content pinned
+  `319813a9…` (author), `658819db…` (AMARA), different values per node.
+  Since PR #4, the builder pins the container with `ZipInfo(date_time=(1980,1,1))`
+  and every node reproduces the single canonical `fb461a4e…` cited in §5.
+- All four splice markers audited in the prompt bytes: (a) 50-word issue
+  contract at first tool invocation ✓ (b) bounded coverage checkpoint,
+  ≤2 calls and only if ≥4 calls remain ✓ (c) E05 final-edit re-verification,
+  1 call, conditional ✓ (d) repo-specific verification focus
+  (FastAPI schema boundaries / Rich rendered output / Requests offline
+  prepare) ✓. Bounds match the study's claims exactly.
+- Attribution chain verified: LICENSE.txt + NOTICE.txt present, full
+  Apache-2.0 chain (verracodeguacas → flexonafft → cubres) with links ✓.
+- YAML schema sanity: agent.yaml / sampling.yaml / eval_config.yaml parse
+  under a tolerant !include loader; 31B model, temp 0.2, thinking 4096,
+  28 calls / 8 min / 80 turns, 9 tools — all as claimed.
+
+### One open recommendation (resolved in v3-converged)
+
+`HARNESS_README.md` §684 prescribes `thinking_budget: 4096` **with
+`max_output_tokens: 16384`** to avoid the `<|tool_call>` mid-call truncation
+mode. v11 ships 8192 (V10-verbatim). The fleet resolved this flag exactly as
+she recommended: `submissions/v3-converged/` ships the v11 prompt with
+16384 + 300s + 150-turn margins, cross-node verified (sha `04cdcdfc…`).
+
+**Verdict: v11 verified submission-ready (AMARA + Zymatica reviews). v3-converged supersedes it for firing; both await the operator's go.**
