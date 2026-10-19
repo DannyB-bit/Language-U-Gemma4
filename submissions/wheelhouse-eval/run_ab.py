@@ -101,7 +101,15 @@ if not repo.exists():
         sh(f"cd {work} && git clone -q https://x-access-token:{tok}@{REPO_URL.split('https://')[1]} "
            f"&& cd Language-U-Gemma4 && git log --oneline | head -1", check=True)
     else:
-        alt = first("/kaggle/input/**/v3-converged/eval_config.yaml")
+        # dir-mode zip datasets arrive as .zip files — extract them first
+        import zipfile as _zf
+        _cands = pathlib.Path("/kaggle/working/cands"); _cands.mkdir(parents=True, exist_ok=True)
+        for _zp in glob.glob("/kaggle/input/language-u-gemma4-candidates/*.zip"):
+            with _zf.ZipFile(_zp) as _z:
+                _z.extractall(_cands)
+            log("extracted", _zp, "→", _cands)
+        alt = first("/kaggle/input/**/v3-converged/eval_config.yaml") or \
+              first("/kaggle/working/cands/**/v3-converged/eval_config.yaml")
         assert alt, "no github-token secret and no attached candidates dataset"
         repo = pathlib.Path(alt)
         while repo.parent != repo and not (repo / "submissions" / "v3-converged").is_dir():

@@ -1,5 +1,5 @@
 {
-  "id": "dannyb-bit/gemma4-wheelhouse-ab",
+  "id": "devs01/gemma4-wheelhouse-ab",
   "title": "gemma4-wheelhouse-ab",
   "code_file": "run_ab.py",
   "language": "python",
@@ -8,11 +8,11 @@
   "enable_gpu": "true",
   "enable_tpu": "false",
   "enable_internet": "true",
-  "dataset_sources": ["metric/gemma-4-developer-agent-wheelhouse"],
+  "dataset_sources": ["metric/gemma-4-developer-agent-wheelhouse", "devs01/language-u-gemma4-candidates"],
   "competition_sources": ["gemma-4-developer-agent"],
   "kernel_sources": [],
   "model_sources": ["google/gemma-4/Other/gemma-4-31b-it-qat-w4a16-ct/2"],
   "kernel_metadata": {
-    "note": "Pair with a Kaggle User Secret named 'github-token' (read-only fine-grained PAT for DannyB-bit/Language-U-Gemma4) so the kernel can clone the private candidate repo. Without it, attach the submissions/ dir as a private dataset instead."
+    "note": "Candidates ship via the private dataset devs01/language-u-gemma4-candidates (no secrets needed). A Kaggle User Secret named 'github-token' (read-only PAT for DannyB-bit/Language-U-Gemma4) is an alternative path. IMPORTANT: run on the L4x4 accelerator (the scorer's shape) — the kernel aborts cleanly on any other GPU shape because the A/B verdict would not transfer."
   }
 }
