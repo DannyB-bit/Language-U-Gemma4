@@ -74,7 +74,9 @@ recovery discipline, decision rules.
 
 ```bash
 cd agent && python3 build.py
-# → SHA-256 319813a9e0c4ddc30d92d35484ad1ed9a163b708897d056c49790ff2dae8fc26
+# → SHA-256 fb461a4e14a70fbefd2eb6522e2b3c1d0b2dabeebe23c4fa5af994df90125a3a
+#   (timestamp-pinned container since the Zymatica review PR; the six member
+#    files are byte-identical to the reviewed v11 content)
 # → ALL STRUCTURAL CHECKS PASS
 ```
 

@@ -71,12 +71,23 @@ def build() -> bytes:
         assert must.lower() in prompt.lower(), f"prompt missing: {must}"
 
     # ── deterministic archive ───────────────────────────────────────────────
+    # ZipInfo.date_time is pinned so the container bytes (and therefore the
+    # SHA-256) are reproducible: writestr() with a bare name stamps the
+    # current wall clock, which made two builds of identical content hash
+    # differently (caught in Zymatica's review 2026-10-19).
+    FIXED_DT = (1980, 1, 1, 0, 0, 0)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        def write_member(rel: str, content: str) -> None:
+            zi = zipfile.ZipInfo(rel, date_time=FIXED_DT)
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o644 << 16
+            z.writestr(zi, content)
+
         for rel in RUNTIME_FILES:
-            z.writestr(rel, files[rel])
-        z.writestr("LICENSE.txt", open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8").read())
-        z.writestr("NOTICE.txt", open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8").read())
+            write_member(rel, files[rel])
+        write_member("LICENSE.txt", open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8").read())
+        write_member("NOTICE.txt", open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8").read())
     data = buf.getvalue()
     with open(OUT, "wb") as f:
         f.write(data)

@@ -46,7 +46,7 @@ Language-U breaks the storage, context, and execution bottlenecks of offline dev
   * `gemma4_e4b_sample_layer0_q_proj.glyph.bin`: Physical sample of converted Gemma 4 E4B Layer 0 Q-projection weights packed into 48-byte Outlier Option 5 macro-glyphs on $S^7$.
 * **`agent/`**:
   * `submission.zip`: The fleet's **v11 competition bundle** (KOFI, 2026-10-19) — the measured-max Gemma 4 Developer Agent submission: flexonafft Budget-Aware V10 base (public 0.22 badge) + four bounded evidence-backed prompt splices (issue contract, coverage checkpoint, final-edit verification, repo-specific verification focus). Declares `model: gemma-4-31b-it-qat-w4a16-ct`, temp 0.2, 4096 thinking, 28 calls/8 min/80 turns. The earlier E4B custom-machinery bundle (three 0.00 scores) remains in git history as the documented anti-pattern; see `docs/AGENT_V11_ANALYSIS.md` for the full score study.
-  * `build.py`: deterministic offline builder + structural validator (SHA-256 319813a9…fc26).
+  * `build.py`: deterministic offline builder + structural validator (SHA-256 fb461a4e…25a3a, timestamp-pinned since the Zymatica review PR).
 * **`docs/`**:
   * `Language-U_Architecture_Infographic.jpg`: Verified high-resolution system architecture and mathematical geometry diagram.
   * `paper_arxiv.tex`: Full NeurIPS/IEEE LaTeX preprint manuscript.
