@@ -1,0 +1,43 @@
+Language-U-Gemma4 — Agent Submission Bundle (KOFI v11)
+Copyright 2026 DannyB-bit fleet
+
+This product includes software developed as part of the Google Gemma 4
+Developer Agent Competition by the following authors, all under Apache-2.0:
+
+1. Wilmer E. Henao (verracodeguacas) — "Gemma 4 Agent: Budget-Fit Single
+   Agent, Version 5": base single-agent configuration, sampling and budget
+   profile (temperature 0.2, thinking budget 4096, 28 calls / 8 minutes /
+   80 turns), and the core prompt skeleton.
+   https://www.kaggle.com/code/verracodeguacas/gemma-4-agent-budget-fit-single-agent
+
+2. Igor Zharov (flexonafft) — "Gemma 4 | Budget-Aware Coding Agent V10"
+   (public leaderboard badge 0.22): bounded batched searches, focused
+   caller/test reads, path reuse, and recovery from failed edits; the
+   prompt base of this bundle, used verbatim except for four bounded
+   additions marked below.
+   https://www.kaggle.com/code/flexonafft/gemma-4-budget-aware-coding-agent-v2
+
+3. cubres (prvsiyan) — "Gemma and the Shape of Doubt" public experiments
+   E03 (issue contract), E05 (final-edit verification) and the bounded
+   BFV5 coverage checkpoint; plus the public-corpus audit that motivated
+   the repo-specific verification guidance (FastAPI schema boundaries,
+   Rich rendered-output assertions, Requests offline preparation).
+   https://www.kaggle.com/code/prvsiyan/gemma-and-the-shape-of-doubt
+
+The four bounded additions to the V10 prompt made in this bundle (KOFI v11):
+   a. 50-word issue contract stated with the first tool invocation (E03)
+   b. bounded coverage checkpoint after the first successful edit (BFV5 appendix)
+   c. final-edit re-verification before submit_patch (E05)
+   d. repo-specific verification focus hints (corpus audit)
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may
+not use the files in this archive except in compliance with the License.
+You may obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
