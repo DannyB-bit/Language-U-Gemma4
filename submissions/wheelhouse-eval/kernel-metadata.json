@@ -1,0 +1,18 @@
+{
+  "id": "dannyb-bit/gemma4-wheelhouse-ab",
+  "title": "gemma4-wheelhouse-ab",
+  "code_file": "run_ab.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": ["metric/gemma-4-developer-agent-wheelhouse"],
+  "competition_sources": ["gemma-4-developer-agent"],
+  "kernel_sources": [],
+  "model_sources": ["google/gemma-4/Other/gemma-4-31b-it-qat-w4a16-ct/2"],
+  "kernel_metadata": {
+    "note": "Pair with a Kaggle User Secret named 'github-token' (read-only fine-grained PAT for DannyB-bit/Language-U-Gemma4) so the kernel can clone the private candidate repo. Without it, attach the submissions/ dir as a private dataset instead."
+  }
+}
