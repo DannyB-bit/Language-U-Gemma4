@@ -27,7 +27,7 @@ ALLOWED_MODELS = {"gemma-4-31b-it-qat-w4a16-ct", "gemma-4-12b-it-qat-w4a16-ct",
                   "gemma-4-9b-it-qat-w4a16-ct", "gemma-4-e4b-it-qat-w4a16-ct"}
 ALLOWED_TOOLS = {"run_command", "read_file", "edit_file", "write_file", "get_status",
                  "submit_patch", "get_code_neighbors", "search_similar_code", "get_code_subgraph"}
-LINEAGE_SHA = "ff7609068a7a301a4294e0e78fedf35a0163778cace266f33ac6815c4914d25d"  # the 0.17 prompt
+LINEAGE_SHA = "234969efed3a86a519d74be15beea0381f1b63e0d92c18a47cad82a15956bb74"  # the TRUE 0.17-drawing prompt (fleet-consensus-v1, 64 lines, 7876 B, ref 57366201)
 
 results = []
 def check(name, ok, detail=""):
