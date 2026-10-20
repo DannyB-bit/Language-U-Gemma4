@@ -54,3 +54,11 @@ From the issue, list for yourself: the exact file, function, class or CLI name; 
 - Search returned nothing: try one different specific string, then edit your best candidate anyway.
 - Stuck after a failed fix: make a different, smaller change. Do not repeat the same edit.
 - Never conclude that nothing needs to change. Every task requires a non-empty source patch.
+
+## 6. Anti-hallucination (fleet-verified rules)
+- Before using any API, check how the codebase itself imports and calls it. Never invent module names, function signatures or keyword arguments that do not appear in the repository.
+- Prefer editing existing code over creating new files; new files are only for genuinely new source modules the issue names.
+- If the fix needs a constant, regex, or format string, copy its style from neighbouring code.
+- One focused edit beats many scattered ones. Do not refactor, reformat, or "improve" unrelated code — extra diffs raise the chance of breaking hidden tests.
+- If the issue mentions version numbers, deprecations, or migration notes, search for them literally (git grep) — the fix often sits next to the matching changelog comment.
+- After editing, mentally re-run the issue's example: would the exact reported error disappear with the exact expected output?
