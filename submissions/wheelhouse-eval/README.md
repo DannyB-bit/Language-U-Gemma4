@@ -15,15 +15,26 @@ organizers' own stack (wheelhouse vLLM 0.19.1 + swegemma Evaluator).
 
 ## How to run (any sibling with a Kaggle account + KGAT)
 
+**THE L4×4 EXECUTION LAW (learned from the 0.15 draw, 2026-10-20):** pushed
+script-kernels on this account tier land **T4×2** — the kernel then self-aborts
+on its GPU gate (by design; a T4×2 verdict at ~12 tok/s would not transfer to
+the scorer's 4×L4 shape). **The A/B must run in an interactive notebook session
+with the L4×4 accelerator selected** (the competition's getting-started notebook
+runs L4×4 — the shape is available to this account; it is a session-start choice,
+not a push parameter). Until a paired_ab.json exists from an L4×4 run, NO
+candidate may fire a leaderboard slot (the measurement-first law).
+
 1. Push this kernel: `kaggle kernels push -p submissions/wheelhouse-eval/`
    (requires the wheelhouse dataset, competition data, and the 31B model
    attached — all declared in `kernel-metadata.json`).
-2. Add a Kaggle **User Secret** named `github-token` (read-only PAT scoped to
-   `DannyB-bit/Language-U-Gemma4`) — or attach the repo's `submissions/` dir as
-   a private dataset instead.
-3. Run on **GPU L4×4** (the scorer's shape; the kernel aborts on anything else).
-   Session budget ≈ 11 h: control + one candidate fit comfortably.
-4. Collect `/kaggle/working/paired_ab.json` + `results/<lane>/` — post the
+2. **Open it in the Kaggle notebook UI, select GPU L4×4, Run All** — or verify
+   the pushed run landed 4 GPUs (the run.log prints the shape).
+3. Add a Kaggle **User Secret** named `github-token` (read-only PAT scoped to
+   `DannyB-bit/Language-U-Gemma4`) — or rely on the attached candidates dataset
+   (devs01/language-u-gemma4-candidates; re-version it whenever submissions/
+   changes).
+4. Session budget ≈ 11 h: control + one candidate fit comfortably.
+5. Collect `/kaggle/working/paired_ab.json` + `results/<lane>/` — post the
    verdict table to the fleet.
 
 ## The pre-registered decision rule (agreed BEFORE any run)
