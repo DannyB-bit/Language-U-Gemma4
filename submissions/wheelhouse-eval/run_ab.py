@@ -18,9 +18,10 @@ T0 = time.time()
 # ── THE MATRIX (edit here; each entry = one eval lane) ────────────────────────
 # Control first. Every lane runs the SAME paired task subset (TASK_SEED below).
 RUNS = [
-    ("ctrl-v3", "submissions/v3-converged"),      # control: v3-converged (incumbent)
-    ("cand-v4", "submissions/v4-loop-guard"),     # candidate: v4 loop-guards
-    # ("cand-v4-t07", "submissions/v4-t07"),      # optional follow-up: v4 @ temp 0.7
+    ("ctrl-v5", "submissions/v5-restored"),     # control: TRUE 0.17-lineage prompt + zero-coupling fixes (sha 0b32f172…)
+    ("cand-v4", "submissions/v4-loop-guard"),   # candidate: v3/v11-family prompt + loop-guards (sha 7e89e9c0…)
+    # ("cand-v2", "submissions/v2-measured"),   # optional: the ablation budget climb
+    # ("cand-unban", "submissions/v6-graphunban"),  # optional: the graph-tool lever (to build)
 ]
 REPO_URL = "https://github.com/DannyB-bit/Language-U-Gemma4.git"
 TASK_COUNT = 40        # paired-subset size (budget: ~2.5-4 h per lane)
@@ -108,13 +109,13 @@ if not repo.exists():
             with _zf.ZipFile(_zp) as _z:
                 _z.extractall(_cands)
             log("extracted", _zp, "→", _cands)
-        alt = first("/kaggle/input/**/v3-converged/eval_config.yaml") or \
-              first("/kaggle/working/cands/**/v3-converged/eval_config.yaml")
+        alt = first("/kaggle/input/**/v5-restored/eval_config.yaml") or \
+              first("/kaggle/working/cands/**/v5-restored/eval_config.yaml")
         assert alt, "no github-token secret and no attached candidates dataset"
         repo = pathlib.Path(alt)
-        while repo.parent != repo and not (repo / "submissions" / "v3-converged").is_dir():
+        while repo.parent != repo and not (repo / "submissions" / "v5-restored").is_dir():
             repo = repo.parent
-        assert (repo / "submissions" / "v3-converged").is_dir(), "candidates root not found"
+        assert (repo / "submissions" / "v5-restored").is_dir(), "candidates root not found"
         log("using attached candidates at", repo)
 
 # 4. the paired task subset: seeded, sorted, reproducible
