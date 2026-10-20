@@ -18,9 +18,10 @@ T0 = time.time()
 # ── THE MATRIX (edit here; each entry = one eval lane) ────────────────────────
 # Control first. Every lane runs the SAME paired task subset (TASK_SEED below).
 RUNS = [
-    ("ctrl-v3", "submissions/v3-converged"),      # control: v3-converged (incumbent)
-    ("cand-v4", "submissions/v4-loop-guard"),     # candidate: v4 loop-guards
-    # ("cand-v4-t07", "submissions/v4-t07"),      # optional follow-up: v4 @ temp 0.7
+    ("ctrl-v3", "submissions/v3-converged"),           # control: v3-converged (the 0.15 draw)
+    ("cand-v5-arch", "submissions/v5-analyzer-coder"), # candidate: Roman's analyzer+coder two-agent 0.24 lineage
+    # ("cand-v4", "submissions/v4-loop-guard"),       # optional follow-up: v4 loop-guards
+    # ( "cand-v4-t07", "submissions/v4-t07"),         # optional follow-up: v4 @ temp 0.7
 ]
 REPO_URL = "https://github.com/DannyB-bit/Language-U-Gemma4.git"
 TASK_COUNT = 40        # paired-subset size (budget: ~2.5-4 h per lane)
@@ -42,12 +43,28 @@ def sh(cmd, timeout=None, check=False):
 def first(pattern):
     hits = sorted(glob.glob(pattern, recursive=True)); return hits[0] if hits else None
 
-# 0. hardware: this kernel only makes sense on the 4x L4 shape (the scorer's)
+# 0. hardware: ADAPT to what Kaggle actually provisioned (2x T4 works; 4x L4 is the scorer shape).
+#    The 2026-10-19 run died here ("FATAL: fewer than 4 GPUs") on a 2x T4 session and the fleet
+#    fired v3-converged without an A/B verdict — the exact failure this fix removes.
 sh("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; nproc; free -g | head -2")
 ngpu = int(subprocess.run("nvidia-smi -L | wc -l", shell=True, capture_output=True, text=True).stdout.strip() or 0)
-log("GPUs:", ngpu)
-if ngpu < 4:
-    log("FATAL: fewer than 4 GPUs; not the scorer shape. Stopping."); sys.exit(0)
+gpu_names = subprocess.run("nvidia-smi --query-gpu=name --format=csv,noheader", shell=True,
+                            capture_output=True, text=True).stdout
+log("GPUs:", ngpu, "|", gpu_names.strip().replace("\n", "; "))
+if ngpu < 1:
+    log("FATAL: no GPUs at all. Stopping."); sys.exit(0)
+TP = ngpu                                  # tensor parallel = what we actually have (was: hardcoded 4)
+IS_T4 = "T4" in gpu_names
+IS_SCORER_SHAPE = (ngpu >= 4 and not IS_T4)
+if not IS_SCORER_SHAPE:
+    # 2x T4 ≈ 2-3x slower than 4x L4 → shrink the paired subset and widen the per-lane estimate
+    TASK_COUNT = min(TASK_COUNT, 20)
+    EST_RUN_H = max(EST_RUN_H, 5.0)
+    log(f"note: non-scorer shape ({ngpu}x {'T4' if IS_T4 else 'GPU'}); "
+        f"tp={TP}, paired subset scaled to {TASK_COUNT} tasks, per-lane estimate {EST_RUN_H} h. "
+        f"Verdicts from this shape are PAIRED (same hardware both lanes) so the A/B delta stays valid; "
+        f"absolute pass-rates will read lower than the scorer's. For scorer-faithful numbers request "
+        f"'GPU L4 x4' in the Kaggle notebook Settings > Accelerator before pushing this kernel.")
 
 # 1. inputs
 tasks = first("/kaggle/input/**/tasks.jsonl"); assert tasks, "competition data not found"
@@ -126,9 +143,9 @@ server = VllmServer(VllmConfig(
     default_chat_template_kwargs={"enable_thinking": True}, max_model_len=32768,
     dtype="bfloat16" if torch.cuda.is_bf16_supported() else "auto", gpu_memory_utilization=0.90,
     enable_auto_tool_choice=True, enable_lora=True, max_loras=8, max_lora_rank=128,
-    tensor_parallel_size=4, startup_timeout=60 * 20),
+    tensor_parallel_size=TP, startup_timeout=60 * 20),
     adapter_manifest=discover_adapters(str(first_sub), adapter_extensions=ALLOWED_ADAPTER_EXTENSIONS))
-ts = time.time(); server.start(); log(f"vLLM up on {server.base_url} (tp=4) after {time.time()-ts:.0f}s")
+ts = time.time(); server.start(); log(f"vLLM up on {server.base_url} (tp={TP}) after {time.time()-ts:.0f}s")
 
 # 6. evaluate each lane on the SAME subset, sequentially, own eval_config.yaml
 def evaluate(name, rel):
