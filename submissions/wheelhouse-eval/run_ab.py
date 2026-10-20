@@ -18,10 +18,11 @@ T0 = time.time()
 # ── THE MATRIX (edit here; each entry = one eval lane) ────────────────────────
 # Control first. Every lane runs the SAME paired task subset (TASK_SEED below).
 RUNS = [
-    ("ctrl-v3", "submissions/v3-converged"),           # control: v3-converged (the 0.15 draw)
-    ("cand-v5-arch", "submissions/v5-analyzer-coder"), # candidate: Roman's analyzer+coder two-agent 0.24 lineage
-    # ("cand-v4", "submissions/v4-loop-guard"),       # optional follow-up: v4 loop-guards
-    # ( "cand-v4-t07", "submissions/v4-t07"),         # optional follow-up: v4 @ temp 0.7
+    ("ctrl-v5", "submissions/v5-restored"),           # control: TRUE 0.17-lineage prompt + zero-coupling fixes (sha 0b32f172…)
+    ("cand-v5-arch", "submissions/v5-analyzer-coder"), # candidate: analyzer+coder two-agent, 0.24-lineage (sha 60b98087…) — PR #15
+    ("cand-v4", "submissions/v4-loop-guard"),         # candidate: v3/v11-family prompt + loop-guards (sha 7e89e9c0…)
+    # ("cand-v2", "submissions/v2-measured"),         # optional: the ablation budget climb
+    # ("cand-unban", "submissions/v6-graphunban"),    # optional: the graph-tool lever (to build)
 ]
 REPO_URL = "https://github.com/DannyB-bit/Language-U-Gemma4.git"
 TASK_COUNT = 40        # paired-subset size (budget: ~2.5-4 h per lane)
@@ -43,9 +44,9 @@ def sh(cmd, timeout=None, check=False):
 def first(pattern):
     hits = sorted(glob.glob(pattern, recursive=True)); return hits[0] if hits else None
 
-# 0. hardware: ADAPT to what Kaggle actually provisioned (2x T4 works; 4x L4 is the scorer shape).
-#    The 2026-10-19 run died here ("FATAL: fewer than 4 GPUs") on a 2x T4 session and the fleet
-#    fired v3-converged without an A/B verdict — the exact failure this fix removes.
+# 0. hardware: ADAPT to what Kaggle provisioned (AMARA's PR #15 fix — the 2026-10-19
+#    run hard-aborted here on 2x T4 and the fleet fired v3 without an A/B verdict;
+#    paired same-hardware verdicts stay decision-valid, only absolute rates read low).
 sh("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; nproc; free -g | head -2")
 ngpu = int(subprocess.run("nvidia-smi -L | wc -l", shell=True, capture_output=True, text=True).stdout.strip() or 0)
 gpu_names = subprocess.run("nvidia-smi --query-gpu=name --format=csv,noheader", shell=True,
@@ -57,7 +58,6 @@ TP = ngpu                                  # tensor parallel = what we actually 
 IS_T4 = "T4" in gpu_names
 IS_SCORER_SHAPE = (ngpu >= 4 and not IS_T4)
 if not IS_SCORER_SHAPE:
-    # 2x T4 ≈ 2-3x slower than 4x L4 → shrink the paired subset and widen the per-lane estimate
     TASK_COUNT = min(TASK_COUNT, 20)
     EST_RUN_H = max(EST_RUN_H, 5.0)
     log(f"note: non-scorer shape ({ngpu}x {'T4' if IS_T4 else 'GPU'}); "
@@ -118,9 +118,21 @@ if not repo.exists():
         sh(f"cd {work} && git clone -q https://x-access-token:{tok}@{REPO_URL.split('https://')[1]} "
            f"&& cd Language-U-Gemma4 && git log --oneline | head -1", check=True)
     else:
-        alt = first("/kaggle/input/**/v3-converged/eval_config.yaml")
+        # dir-mode zip datasets arrive as .zip files — extract them first
+        import zipfile as _zf
+        _cands = pathlib.Path("/kaggle/working/cands"); _cands.mkdir(parents=True, exist_ok=True)
+        for _zp in glob.glob("/kaggle/input/language-u-gemma4-candidates/*.zip"):
+            with _zf.ZipFile(_zp) as _z:
+                _z.extractall(_cands)
+            log("extracted", _zp, "→", _cands)
+        alt = first("/kaggle/input/**/v5-restored/eval_config.yaml") or \
+              first("/kaggle/working/cands/**/v5-restored/eval_config.yaml")
         assert alt, "no github-token secret and no attached candidates dataset"
-        repo = pathlib.Path(alt).parent.parent; log("using attached candidates at", repo)
+        repo = pathlib.Path(alt)
+        while repo.parent != repo and not (repo / "submissions" / "v5-restored").is_dir():
+            repo = repo.parent
+        assert (repo / "submissions" / "v5-restored").is_dir(), "candidates root not found"
+        log("using attached candidates at", repo)
 
 # 4. the paired task subset: seeded, sorted, reproducible
 all_ids = [json.loads(l)["instance_id"] for l in open(tasks) if l.strip()]
