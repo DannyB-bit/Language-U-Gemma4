@@ -1,0 +1,8 @@
+name: code_analyzer
+instruction: !include ../prompts/analyzer.md
+tools:
+  - run_command
+  - read_file
+  - search_similar_code
+  - get_code_neighbors
+  - get_code_subgraph
