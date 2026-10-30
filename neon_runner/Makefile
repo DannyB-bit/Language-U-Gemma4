@@ -1,4 +1,4 @@
-# Makefile for Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.0.0)
+# Makefile for Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.1.0 — GlyphAttentionV2)
 # Automatically detects ARMv8-A NEON vs x86-64 on POSIX/Linux/macOS hosts.
 
 CC ?= gcc
@@ -34,3 +34,4 @@ clean:
 	rm -f $(TARGET_BIN) $(TARGET_LIB) $(COMPAT_LIB) *.o *.obj *.exp *.lib *.dll *.exe
 
 .PHONY: all clean
+

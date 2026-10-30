@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_native.py — Cross-Platform Native Compiler for NeonRunnerBridgeV2 (v2.0.0)
+build_native.py — Cross-Platform Native Compiler for NeonRunnerBridgeV2 (v2.1.0)
 ================================================================================
 Compiles `neon_stream_accelerator_v2.c` into:
   - Linux / ARMv8-A / macOS: `libneon_stream_accelerator.so` (+ `libtrinity_gemv.so`)

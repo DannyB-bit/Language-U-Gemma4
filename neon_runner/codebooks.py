@@ -210,3 +210,4 @@ class CodebookRegistryV2:
             f"Physical '{family}' codebook binary ('s7_codebook_2048x8.bin', {CODEBOOK_BYTES:,} B) not found "
             f"in explicit path, $NEON_RUNNER_DIR, or neon_runner/codebooks/."
         )
+

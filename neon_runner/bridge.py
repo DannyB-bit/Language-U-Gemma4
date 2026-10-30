@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bridge.py — Language-U-Gemma4 <-> Neon-Runner Unified Bridge (V2, v2.0.0)
+bridge.py — Language-U-Gemma4 <-> Neon-Runner Unified Bridge (V2, v2.1.0 — GlyphAttentionV2)
 ================================================================================
 Connects `DannyB-bit/Language-U-Gemma4` (Gemma 4 E4B & 31B Dual-Road Option 4 +
 Option 5 streams) directly to `DannyB-bit/Neon-Runner` (`libneon_stream_accelerator`).
@@ -45,7 +45,7 @@ except ImportError:
     from neon_runner.build_native import build_shared_library
 
 
-BRIDGE_VERSION = "2.0.0"
+BRIDGE_VERSION = "2.1.0"
 BRIDGE_COMPONENT_ID = "Language-U-Gemma4-NeonRunner-Bridge-V2"
 LANU_MAGIC = b"LANU"
 LANU_HEADER_BYTES = 16
@@ -367,6 +367,48 @@ class NeonStreamAccelerator:
             ]
             self.lib.decode_glyphs_opt4_mode_c.restype = None
 
+        # V2.1 GlyphAttentionV2 extensions (O(1) online KV encode + Flash-Glyph GQA)
+        self.has_v2_glyph_attn = (
+            hasattr(self.lib, "encode_kv_glyph_fast_c")
+            and hasattr(self.lib, "flash_glyph_attention_gqa_c")
+            and hasattr(self.lib, "build_ternary_lut_c")
+        )
+        self.has_v2_opt5_mode = hasattr(self.lib, "decode_glyphs_opt5_mode_c")
+
+        if self.has_v2_opt5_mode:
+            self.lib.decode_glyphs_opt5_mode_c.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int
+            ]
+            self.lib.decode_glyphs_opt5_mode_c.restype = None
+
+        if self.has_v2_glyph_attn:
+            self.lib.build_ternary_lut_c.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            self.lib.build_ternary_lut_c.restype = ctypes.c_int
+
+            self.lib.encode_kv_glyph_fast_c.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.encode_kv_glyph_fast_c.restype = None
+
+            self.lib.flash_glyph_attention_gqa_c.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.flash_glyph_attention_gqa_c.restype = ctypes.c_int
+
+        self.has_v2_paged_bf16 = hasattr(self.lib, "paged_bf16_attention_gqa_c")
+        if self.has_v2_paged_bf16:
+            self.lib.paged_bf16_attention_gqa_c.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_float, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.paged_bf16_attention_gqa_c.restype = ctypes.c_int
+
     def self_test(self) -> bool:
         return bool(self.lib.neon_accelerator_self_test() == 1)
 
@@ -424,12 +466,25 @@ class NeonStreamAccelerator:
         glyph_stream_bytes: Any,
         bytes_per_glyph: int = 48,
         num_threads: int = 4,
+        apply_fwht8: bool = False,
     ) -> np.ndarray:
         bpg = 48 if bytes_per_glyph == 48 else 36
         raw_arr = np.frombuffer(glyph_stream_bytes, dtype=np.uint8)
         if (raw_arr.size % bpg) != 0:
             raise ValueError(f"Option 5 buffer length {raw_arr.size} is not a multiple of {bpg}")
         n_glyphs = raw_arr.size // bpg
+
+        if apply_fwht8 and self.has_v2_opt5_mode:
+            out = np.empty(n_glyphs * WEIGHTS_PER_GLYPH, dtype=np.float32)
+            self.lib.decode_glyphs_opt5_mode_c(
+                raw_arr.ctypes.data_as(ctypes.c_void_p),
+                out.ctypes.data_as(ctypes.c_void_p),
+                n_glyphs,
+                bpg,
+                1,
+                num_threads,
+            )
+            return out
 
         if self.has_v2_opt5:
             out = np.empty(n_glyphs * WEIGHTS_PER_GLYPH, dtype=np.float32)
@@ -440,7 +495,7 @@ class NeonStreamAccelerator:
                 bpg,
                 num_threads,
             )
-            return out
+            return fwht8_vec_numpy(out) if apply_fwht8 else out
 
         # Vectorized fallback when paired with an unmodified Neon-Runner v1 .so
         rows = raw_arr.reshape(n_glyphs, bpg)
@@ -453,7 +508,21 @@ class NeonStreamAccelerator:
             ores = rows[:, 40:48].copy().view("<f2").astype(np.float32)
             for col in range(4):
                 np.add.at(out_2d, (np.arange(n_glyphs), oi[:, col]), ores[:, col])
-        return out_2d.reshape(-1).astype(np.float32)
+        flat = out_2d.reshape(-1).astype(np.float32)
+        return fwht8_vec_numpy(flat) if apply_fwht8 else flat
+
+    def build_ternary_lut(self, codebook_fp32: np.ndarray) -> Optional[np.ndarray]:
+        """Returns a 6,561-entry uint16 LUT for O(1) ternary lattice RVQ encoding, or None if non-ternary."""
+        if not self.has_v2_glyph_attn:
+            return None
+        cb = np.ascontiguousarray(codebook_fp32, dtype=np.float32)
+        assert cb.shape == (2048, 8)
+        lut = np.empty(6561, dtype=np.uint16)
+        ok = self.lib.build_ternary_lut_c(
+            cb.ctypes.data_as(ctypes.c_void_p),
+            lut.ctypes.data_as(ctypes.c_void_p),
+        )
+        return lut if ok == 1 else None
 
 
 class NeonRunnerBridgeV2:
@@ -490,10 +559,10 @@ class NeonRunnerBridgeV2:
             with open(lp, "r", encoding="utf-8") as f:
                 self.layout = json.load(f)
             if codebook_family == "auto":
-                codebook_family = self.layout.get("codebook_family", "compass_s7")
+                codebook_family = self.layout.get("codebook_family", "auto" if codebook_path else "compass_s7")
 
         self.codebook: LoadedCodebookV2 = CodebookRegistryV2.resolve(
-            family=codebook_family if codebook_family != "auto" else "compass_s7",
+            family=codebook_family if (codebook_family != "auto" or codebook_path) else "compass_s7",
             explicit_path=codebook_path,
         )
 
@@ -782,7 +851,7 @@ def _self_test() -> int:
             }
             l_path.write_text(json.dumps(layout_doc, indent=2), encoding="utf-8")
 
-            x_query = w_rows[0].copy()
+            x_query = (w_rows[0] / (np.linalg.norm(w_rows[0]) + 1e-12)).astype(np.float32)
             with NeonRunnerBridgeV2(str(s_path), str(l_path), codebook_family="compass_s7") as bridge:
                 y_fwht = bridge.gemv(bridge.projections_by_key["layer0.q_proj_opt4_fwht"], x_query)
                 y_dir = bridge.gemv(bridge.projections_by_key["layer0.q_proj_opt4_direct"], x_query)
@@ -804,9 +873,10 @@ def _self_test() -> int:
             w_dec_dir = acc.decode(opt4_dir_bytes, cb_compass.array, apply_fwht8=False).reshape(8, 512)
             w_dec_opt5 = acc.decode_opt5(opt5_48_bytes, bytes_per_glyph=48).reshape(8, 512)
 
-            err_fwht = float(np.max(np.abs(y_fwht - (w_dec_fwht @ x_query))))
-            err_dir = float(np.max(np.abs(y_dir - (w_dec_dir @ x_query))))
-            err_opt5 = float(np.max(np.abs(y_opt5 - (w_dec_opt5 @ x_query))))
+            xq64 = x_query.astype(np.float64)
+            err_fwht = float(np.max(np.abs(y_fwht.astype(np.float64) - (w_dec_fwht.astype(np.float64) @ xq64))))
+            err_dir = float(np.max(np.abs(y_dir.astype(np.float64) - (w_dec_dir.astype(np.float64) @ xq64))))
+            err_opt5 = float(np.max(np.abs(y_opt5.astype(np.float64) - (w_dec_opt5.astype(np.float64) @ xq64))))
             err_v1_compat = max(
                 float(np.max(np.abs(y_fwht_v1 - y_fwht))),
                 float(np.max(np.abs(y_opt5_v1 - y_opt5))),

@@ -1,8 +1,8 @@
 /*
  * neon_stream_accelerator_v2.h
  * ============================================================================
- * Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.0.0)
- * Unified ARMv8 NEON / x86-64 OpenMP Macro-Glyph Stream Accelerator Header
+ * Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.1.0 — GlyphAttentionV2)
+ * Unified ARMv8 NEON / x86-64 OpenMP Macro-Glyph Stream & Attention Header
  *
  * Bridges DannyB-bit/Language-U-Gemma4 (Gemma 4 E4B & 31B Dual-Road Option 4 +
  * Option 5 streams) with DannyB-bit/Neon-Runner (in-register RVQ + FWHT-8 ABI)
@@ -22,6 +22,10 @@
  *      - decode_glyphs_opt5_c
  *      - gemv_opt5_mmap
  *      - trinity_gemv_self_test
+ *   3. GlyphAttentionV2 Single-Pass Flash-Glyph GQA & O(1) KV Cache Engine:
+ *      - encode_kv_glyph_fast_c
+ *      - flash_glyph_attention_gqa_c
+ *      - paged_bf16_attention_gqa_c
  * ============================================================================
  */
 
@@ -194,6 +198,110 @@ NEON_API void gemv_opt5_mmap(
  * Returns 1 if all self-tests pass, 0 otherwise.
  */
 NEON_API int trinity_gemv_self_test(void);
+
+/* ============================================================================
+ * 3. GlyphAttentionV2 Extensions (O(1) Online KV Encode + Single-Pass Flash GQA)
+ * ============================================================================ */
+
+/**
+ * Inspects a 2048x8 S^7 codebook and populates a 6,561-entry (13 KB) base-3
+ * ternary lattice lookup table (`lut_6561[state] = centroid_idx` or `0xFFFF`).
+ * Returns 1 if `cb` is a pure unit-normalized ternary lattice codebook
+ * (`compass_s7` or `trit_rvq`), or 0 otherwise (e.g. `golden_s7`).
+ */
+NEON_API int build_ternary_lut_c(
+    const float* NEON_RESTRICT cb,
+    uint16_t* NEON_RESTRICT lut_6561
+);
+
+/**
+ * Decodes Option 5 macro-glyphs (36B standard or 48B Top-4 outlier) with
+ * optional inverse FWHT-8 (`apply_fwht8 = 1` or `0`).
+ */
+NEON_API void decode_glyphs_opt5_mode_c(
+    const uint8_t* NEON_RESTRICT glyphs,
+    float* NEON_RESTRICT out_weights,
+    int n_glyphs,
+    int bytes_per_glyph,
+    int apply_fwht8,
+    int num_threads
+);
+
+/**
+ * Online sub-microsecond KV macro-glyph encoder for Option 4 (132B RVQ) and
+ * Option 5 (36B standard / 48B Top-4 outlier) with optional in-register FWHT-8
+ * outlier smoothing (`apply_fwht8 = 1`).
+ *
+ * When `codec_id == 4` and `lut_6561 != NULL`, uses O(1) 8-element sorting-network
+ * ternary lattice projection (~300x faster than 2,048-centroid brute-force scan);
+ * if `lut_6561 == NULL`, uses SIMD 2,048-centroid exact search.
+ */
+NEON_API void encode_kv_glyph_fast_c(
+    const float* NEON_RESTRICT kv_in,
+    const float* NEON_RESTRICT cb,
+    const uint16_t* NEON_RESTRICT lut_6561,
+    uint8_t* NEON_RESTRICT glyphs_out,
+    int n_glyphs,
+    int codec_id,
+    int bytes_per_glyph,
+    int apply_fwht8,
+    int num_threads
+);
+
+/**
+ * Single-pass Flash-Glyph Grouped-Query Attention (GQA) kernel:
+ *   - Rotates and scales queries `Q` once in O(n_q_heads * head_dim).
+ *   - Streams compressed `K` (and `V`, or reuses `K` in registers when `k_eq_v == 1`)
+ *     across Split-K OpenMP sequence tiles with zero page-table indirection.
+ *   - Evaluates all `G = n_q_heads / n_kv_heads` GQA dot products simultaneously
+ *     per unpacked glyph, skipping value unpack/FMA when `s - m < -17.5f` (< 1 ULP FP32).
+ *   - Optionally writes per-query log-sum-exp state (`out_max_score`, `out_sum_exp`)
+ *     for exact associative merging with pinned sink / rolling hot-tail tokens.
+ *   - Returns 0 on success, non-zero on invalid geometry arguments.
+ */
+NEON_API int flash_glyph_attention_gqa_c(
+    const float* NEON_RESTRICT q,
+    const uint8_t* NEON_RESTRICT k_glyphs,
+    const uint8_t* NEON_RESTRICT v_glyphs,
+    const float* NEON_RESTRICT codebook_s7,
+    float* NEON_RESTRICT out_context,
+    float* NEON_RESTRICT out_max_score,
+    float* NEON_RESTRICT out_sum_exp,
+    int n_q_heads,
+    int n_kv_heads,
+    int head_dim,
+    int seq_len,
+    size_t kv_seq_stride_bytes,
+    size_t kv_head_stride_bytes,
+    float attn_scale,
+    int codec_id,
+    int bytes_per_glyph,
+    int apply_fwht8,
+    int k_eq_v,
+    int num_threads
+);
+
+/**
+ * Native C/SIMD vLLM-style PagedAttention BF16 GQA kernel (for apples-to-apples
+ * silicon benchmarking against `flash_glyph_attention_gqa_c`):
+ *   - `k_pages`, `v_pages`: physical BF16 page pools `[num_pages, page_size, n_kv_heads, head_dim]`
+ *   - `block_table`: logical-to-physical page index array `[num_logical_blocks]`
+ */
+NEON_API int paged_bf16_attention_gqa_c(
+    const float* NEON_RESTRICT q,
+    const uint16_t* NEON_RESTRICT k_pages,
+    const uint16_t* NEON_RESTRICT v_pages,
+    const int32_t* NEON_RESTRICT block_table,
+    float* NEON_RESTRICT out_context,
+    int n_q_heads,
+    int n_kv_heads,
+    int head_dim,
+    int seq_len,
+    int page_size,
+    float attn_scale,
+    int k_eq_v,
+    int num_threads
+);
 
 #ifdef __cplusplus
 }
