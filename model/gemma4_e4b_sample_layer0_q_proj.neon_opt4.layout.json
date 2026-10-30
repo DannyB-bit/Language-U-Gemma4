@@ -1,0 +1,36 @@
+{
+  "component": "Language-U-Gemma4-NeonRunner-Bridge-V2",
+  "version": "2.0.0",
+  "model": "google/gemma-4-E4B-it",
+  "mode": "neon-opt4",
+  "codebook_family": "compass_s7",
+  "codebook_file": "s7_codebook_2048x8.bin",
+  "rotation_mode": "fwht8",
+  "stream_file": "gemma4_e4b_sample_layer0_q_proj.neon_opt4.lanu",
+  "stream_size_bytes": 21136,
+  "total_projections": 1,
+  "total_macro_glyphs": 160,
+  "projections": [
+    {
+      "layer": 0,
+      "name": "self_attn.q_proj.weight",
+      "tensor_name": "self_attn.q_proj.weight",
+      "full_key": "model.language_model.layers.0.self_attn.q_proj.weight",
+      "codec": "OPT4",
+      "codec_id": 4,
+      "rotation_mode": "fwht8",
+      "bytes_per_glyph": 132,
+      "d_in": 2560,
+      "d_out": 16,
+      "glyphs": 160,
+      "tensor_bytes": 21120,
+      "stream_byte_offset": 16,
+      "shape": [
+        16,
+        2560
+      ],
+      "measured_cosine": 0.974273,
+      "measured_snr_db": 12.883
+    }
+  ]
+}

@@ -1,1 +1,11 @@
 __pycache__/
+*.py[cod]
+*.so
+*.dll
+*.dylib
+*.o
+*.obj
+*.exp
+*.lib
+*.exe
+neon_runner/neon_stream_accelerator_v2
