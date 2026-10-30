@@ -194,6 +194,21 @@ NEON_API void gemv_opt5_mmap(
 );
 
 /**
+ * Multi-K batched prefill / speculative verify Option 5 GEMV across K input vectors
+ * in a single pass over the memory-mapped glyph stream (36B standard or 48B Top-4 outlier).
+ */
+NEON_API void gemv_opt5_mmap_multi(
+    const uint8_t* NEON_RESTRICT mmap_base,
+    size_t tensor_byte_offset,
+    const float* const* NEON_RESTRICT x_ptrs,
+    float* const* NEON_RESTRICT y_ptrs,
+    int K,
+    int d_out,
+    int d_in,
+    int bytes_per_glyph
+);
+
+/**
  * Compatibility alias for UniversalLayerOrderedCortex (cortex.py).
  * Returns 1 if all self-tests pass, 0 otherwise.
  */

@@ -337,11 +337,21 @@ class NeonStreamAccelerator:
         ]
         self.lib.gemv_opt4_mmap.restype = None
 
+        self.has_opt4_multi = hasattr(self.lib, "gemv_opt4_mmap_multi")
+        if self.has_opt4_multi:
+            self.lib.gemv_opt4_mmap_multi.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.gemv_opt4_mmap_multi.restype = None
+
         self.lib.neon_accelerator_self_test.argtypes = []
         self.lib.neon_accelerator_self_test.restype = ctypes.c_int
 
         # V2 Dual-Road & Hadamard-Fused extensions (probed dynamically for v1 .so compatibility)
         self.has_v2_opt5 = hasattr(self.lib, "gemv_opt5_mmap") and hasattr(self.lib, "decode_glyphs_opt5_c")
+        self.has_v2_opt5_multi = hasattr(self.lib, "gemv_opt5_mmap_multi")
         self.has_v2_fwht_gemv = hasattr(self.lib, "gemv_opt4_fwht_mmap")
         self.has_v2_opt4_mode = hasattr(self.lib, "decode_glyphs_opt4_mode_c")
 
@@ -354,6 +364,14 @@ class NeonStreamAccelerator:
                 ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int
             ]
             self.lib.gemv_opt5_mmap.restype = None
+
+        if self.has_v2_opt5_multi:
+            self.lib.gemv_opt5_mmap_multi.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t,
+                ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.gemv_opt5_mmap_multi.restype = None
 
         if self.has_v2_fwht_gemv:
             self.lib.gemv_opt4_fwht_mmap.argtypes = [

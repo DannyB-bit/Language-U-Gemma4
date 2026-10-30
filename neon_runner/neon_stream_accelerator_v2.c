@@ -578,9 +578,14 @@ NEON_API void gemv_opt4_mmap_multi(
     int d_out,
     int d_in
 ) {
+    if (K <= 0 || d_out <= 0 || d_in <= 0) return;
+    if (K == 1) {
+        gemv_opt4_mmap(mmap_base, tensor_byte_offset, codebook_s7, x_ptrs[0], y_ptrs[0], d_out, d_in);
+        return;
+    }
+
     const int glyphs_per_row = d_in / 256;
     const uint8_t* tensor_ptr = mmap_base + tensor_byte_offset;
-    const int k_clamped = (K > 64) ? 64 : K;
     int row;
 
 #if HAS_OMP
@@ -588,66 +593,225 @@ NEON_API void gemv_opt4_mmap_multi(
 #endif
     for (row = 0; row < d_out; row++) {
         const uint8_t* row_ptr = tensor_ptr + (size_t)row * (size_t)glyphs_per_row * 132;
-        float acc[64];
-        for (int k = 0; k < k_clamped; k++) acc[k] = 0.0f;
-
-        for (int g = 0; g < glyphs_per_row; g++) {
-            const uint8_t* glyph = row_ptr + (size_t)g * 132;
-            const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
-            const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
 
 #if HAS_NEON
-            const float32x4_t s2v = vdupq_n_f32(scale2);
-            for (int oct = 0; oct < 32; oct++) {
-                uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
-                uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
-                const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
-                const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
-                const float32x4_t w0 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1), scale1),
-                                                  vld1q_f32(cb2), s2v);
-                const float32x4_t w4 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1 + 4), scale1),
-                                                  vld1q_f32(cb2 + 4), s2v);
-                for (int k = 0; k < k_clamped; k++) {
-                    const float* xg = x_ptrs[k] + (size_t)g * 256 + (oct << 3);
-                    const float32x4_t p0 = vfmaq_f32(vmulq_f32(w0, vld1q_f32(xg)),
-                                                     w4, vld1q_f32(xg + 4));
-                    acc[k] += vaddvq_f32(p0);
+        int kb = 0;
+        /* 8-token SSA register-blocked tile: row_ptr stays hot in 32KB L1D across tiles */
+        for (; kb + 8 <= K; kb += 8) {
+            const float* x0p = x_ptrs[kb + 0];
+            const float* x1p = x_ptrs[kb + 1];
+            const float* x2p = x_ptrs[kb + 2];
+            const float* x3p = x_ptrs[kb + 3];
+            const float* x4p = x_ptrs[kb + 4];
+            const float* x5p = x_ptrs[kb + 5];
+            const float* x6p = x_ptrs[kb + 6];
+            const float* x7p = x_ptrs[kb + 7];
+            float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+            float32x4_t a2 = vdupq_n_f32(0.0f), a3 = vdupq_n_f32(0.0f);
+            float32x4_t a4 = vdupq_n_f32(0.0f), a5 = vdupq_n_f32(0.0f);
+            float32x4_t a6 = vdupq_n_f32(0.0f), a7 = vdupq_n_f32(0.0f);
+
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
+                const float32x4_t s2v = vdupq_n_f32(scale2);
+                const size_t g_off = (size_t)g * 256;
+
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
+                    const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
+                    const float32x4_t w0 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1), scale1),
+                                                      vld1q_f32(cb2), s2v);
+                    const float32x4_t w4 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1 + 4), scale1),
+                                                      vld1q_f32(cb2 + 4), s2v);
+                    const size_t col = g_off + ((size_t)oct << 3);
+                    a0 = vfmaq_f32(vfmaq_f32(a0, w0, vld1q_f32(x0p + col)), w4, vld1q_f32(x0p + col + 4));
+                    a1 = vfmaq_f32(vfmaq_f32(a1, w0, vld1q_f32(x1p + col)), w4, vld1q_f32(x1p + col + 4));
+                    a2 = vfmaq_f32(vfmaq_f32(a2, w0, vld1q_f32(x2p + col)), w4, vld1q_f32(x2p + col + 4));
+                    a3 = vfmaq_f32(vfmaq_f32(a3, w0, vld1q_f32(x3p + col)), w4, vld1q_f32(x3p + col + 4));
+                    a4 = vfmaq_f32(vfmaq_f32(a4, w0, vld1q_f32(x4p + col)), w4, vld1q_f32(x4p + col + 4));
+                    a5 = vfmaq_f32(vfmaq_f32(a5, w0, vld1q_f32(x5p + col)), w4, vld1q_f32(x5p + col + 4));
+                    a6 = vfmaq_f32(vfmaq_f32(a6, w0, vld1q_f32(x6p + col)), w4, vld1q_f32(x6p + col + 4));
+                    a7 = vfmaq_f32(vfmaq_f32(a7, w0, vld1q_f32(x7p + col)), w4, vld1q_f32(x7p + col + 4));
                 }
             }
-#elif HAS_AVX2
-            const __m256 s1v = _mm256_set1_ps(scale1);
-            const __m256 s2v = _mm256_set1_ps(scale2);
-            for (int oct = 0; oct < 32; oct++) {
-                uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
-                uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
-                __m256 w = _mm256_fmadd_ps(
-                    _mm256_loadu_ps(codebook_s7 + ((size_t)i2 << 3)),
-                    s2v,
-                    _mm256_mul_ps(_mm256_loadu_ps(codebook_s7 + ((size_t)i1 << 3)), s1v)
-                );
-                for (int k = 0; k < k_clamped; k++) {
-                    const float* xg = x_ptrs[k] + (size_t)g * 256 + (oct << 3);
-                    acc[k] += hsum256_ps(_mm256_mul_ps(w, _mm256_loadu_ps(xg)));
-                }
-            }
-#else
-            for (int oct = 0; oct < 32; oct++) {
-                uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
-                uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
-                const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
-                const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
-                float w[8];
-                for (int t = 0; t < 8; t++) w[t] = scale1 * cb1[t] + scale2 * cb2[t];
-                for (int k = 0; k < k_clamped; k++) {
-                    const float* xg = x_ptrs[k] + (size_t)g * 256 + (oct << 3);
-                    float dot = 0.0f;
-                    for (int t = 0; t < 8; t++) dot += w[t] * xg[t];
-                    acc[k] += dot;
-                }
-            }
-#endif
+            y_ptrs[kb + 0][row] = vaddvq_f32(a0);
+            y_ptrs[kb + 1][row] = vaddvq_f32(a1);
+            y_ptrs[kb + 2][row] = vaddvq_f32(a2);
+            y_ptrs[kb + 3][row] = vaddvq_f32(a3);
+            y_ptrs[kb + 4][row] = vaddvq_f32(a4);
+            y_ptrs[kb + 5][row] = vaddvq_f32(a5);
+            y_ptrs[kb + 6][row] = vaddvq_f32(a6);
+            y_ptrs[kb + 7][row] = vaddvq_f32(a7);
         }
-        for (int k = 0; k < k_clamped; k++) y_ptrs[k][row] = acc[k];
+
+        /* 4-token SSA register-blocked tile */
+        if (kb + 4 <= K) {
+            const float* x0p = x_ptrs[kb + 0];
+            const float* x1p = x_ptrs[kb + 1];
+            const float* x2p = x_ptrs[kb + 2];
+            const float* x3p = x_ptrs[kb + 3];
+            float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+            float32x4_t a2 = vdupq_n_f32(0.0f), a3 = vdupq_n_f32(0.0f);
+
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
+                const float32x4_t s2v = vdupq_n_f32(scale2);
+                const size_t g_off = (size_t)g * 256;
+
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
+                    const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
+                    const float32x4_t w0 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1), scale1),
+                                                      vld1q_f32(cb2), s2v);
+                    const float32x4_t w4 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1 + 4), scale1),
+                                                      vld1q_f32(cb2 + 4), s2v);
+                    const size_t col = g_off + ((size_t)oct << 3);
+                    a0 = vfmaq_f32(vfmaq_f32(a0, w0, vld1q_f32(x0p + col)), w4, vld1q_f32(x0p + col + 4));
+                    a1 = vfmaq_f32(vfmaq_f32(a1, w0, vld1q_f32(x1p + col)), w4, vld1q_f32(x1p + col + 4));
+                    a2 = vfmaq_f32(vfmaq_f32(a2, w0, vld1q_f32(x2p + col)), w4, vld1q_f32(x2p + col + 4));
+                    a3 = vfmaq_f32(vfmaq_f32(a3, w0, vld1q_f32(x3p + col)), w4, vld1q_f32(x3p + col + 4));
+                }
+            }
+            y_ptrs[kb + 0][row] = vaddvq_f32(a0);
+            y_ptrs[kb + 1][row] = vaddvq_f32(a1);
+            y_ptrs[kb + 2][row] = vaddvq_f32(a2);
+            y_ptrs[kb + 3][row] = vaddvq_f32(a3);
+            kb += 4;
+        }
+
+        /* 1-token dual-accumulator tail */
+        for (; kb < K; kb++) {
+            const float* xp = x_ptrs[kb];
+            float32x4_t a0 = vdupq_n_f32(0.0f), b0 = vdupq_n_f32(0.0f);
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
+                const float32x4_t s2v = vdupq_n_f32(scale2);
+                const size_t g_off = (size_t)g * 256;
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
+                    const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
+                    const float32x4_t w0 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1), scale1),
+                                                      vld1q_f32(cb2), s2v);
+                    const float32x4_t w4 = vfmaq_f32(vmulq_n_f32(vld1q_f32(cb1 + 4), scale1),
+                                                      vld1q_f32(cb2 + 4), s2v);
+                    const size_t col = g_off + ((size_t)oct << 3);
+                    a0 = vfmaq_f32(a0, w0, vld1q_f32(xp + col));
+                    b0 = vfmaq_f32(b0, w4, vld1q_f32(xp + col + 4));
+                }
+            }
+            y_ptrs[kb][row] = vaddvq_f32(vaddq_f32(a0, b0));
+        }
+#elif HAS_AVX2
+        int kb = 0;
+        for (; kb + 8 <= K; kb += 8) {
+            const float* x0p = x_ptrs[kb + 0];
+            const float* x1p = x_ptrs[kb + 1];
+            const float* x2p = x_ptrs[kb + 2];
+            const float* x3p = x_ptrs[kb + 3];
+            const float* x4p = x_ptrs[kb + 4];
+            const float* x5p = x_ptrs[kb + 5];
+            const float* x6p = x_ptrs[kb + 6];
+            const float* x7p = x_ptrs[kb + 7];
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+            __m256 a2 = _mm256_setzero_ps(), a3 = _mm256_setzero_ps();
+            __m256 a4 = _mm256_setzero_ps(), a5 = _mm256_setzero_ps();
+            __m256 a6 = _mm256_setzero_ps(), a7 = _mm256_setzero_ps();
+
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
+                const __m256 s1v = _mm256_set1_ps(scale1);
+                const __m256 s2v = _mm256_set1_ps(scale2);
+                const size_t g_off = (size_t)g * 256;
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    __m256 w = _mm256_fmadd_ps(
+                        _mm256_loadu_ps(codebook_s7 + ((size_t)i2 << 3)),
+                        s2v,
+                        _mm256_mul_ps(_mm256_loadu_ps(codebook_s7 + ((size_t)i1 << 3)), s1v)
+                    );
+                    const size_t col = g_off + ((size_t)oct << 3);
+                    a0 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x0p + col), a0);
+                    a1 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x1p + col), a1);
+                    a2 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x2p + col), a2);
+                    a3 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x3p + col), a3);
+                    a4 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x4p + col), a4);
+                    a5 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x5p + col), a5);
+                    a6 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x6p + col), a6);
+                    a7 = _mm256_fmadd_ps(w, _mm256_loadu_ps(x7p + col), a7);
+                }
+            }
+            y_ptrs[kb + 0][row] = hsum256_ps(a0);
+            y_ptrs[kb + 1][row] = hsum256_ps(a1);
+            y_ptrs[kb + 2][row] = hsum256_ps(a2);
+            y_ptrs[kb + 3][row] = hsum256_ps(a3);
+            y_ptrs[kb + 4][row] = hsum256_ps(a4);
+            y_ptrs[kb + 5][row] = hsum256_ps(a5);
+            y_ptrs[kb + 6][row] = hsum256_ps(a6);
+            y_ptrs[kb + 7][row] = hsum256_ps(a7);
+        }
+        for (; kb < K; kb++) {
+            const float* xp = x_ptrs[kb];
+            __m256 a0 = _mm256_setzero_ps();
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const __m256 s1v = _mm256_set1_ps(fp16_to_fp32(read_u16_le(glyph + 0)));
+                const __m256 s2v = _mm256_set1_ps(fp16_to_fp32(read_u16_le(glyph + 2)));
+                const size_t g_off = (size_t)g * 256;
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    __m256 w = _mm256_fmadd_ps(
+                        _mm256_loadu_ps(codebook_s7 + ((size_t)i2 << 3)),
+                        s2v,
+                        _mm256_mul_ps(_mm256_loadu_ps(codebook_s7 + ((size_t)i1 << 3)), s1v)
+                    );
+                    a0 = _mm256_fmadd_ps(w, _mm256_loadu_ps(xp + g_off + ((size_t)oct << 3)), a0);
+                }
+            }
+            y_ptrs[kb][row] = hsum256_ps(a0);
+        }
+#else
+        for (int kb = 0; kb < K; kb += 16) {
+            const int kt = (K - kb < 16) ? (K - kb) : 16;
+            float acc[16];
+            for (int t = 0; t < kt; t++) acc[t] = 0.0f;
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * 132;
+                const float scale1 = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float scale2 = fp16_to_fp32(read_u16_le(glyph + 2));
+                for (int oct = 0; oct < 32; oct++) {
+                    uint16_t i1 = read_u16_le(glyph + 4 + oct * 2) & 2047u;
+                    uint16_t i2 = read_u16_le(glyph + 68 + oct * 2) & 2047u;
+                    const float* cb1 = codebook_s7 + ((size_t)i1 << 3);
+                    const float* cb2 = codebook_s7 + ((size_t)i2 << 3);
+                    float w[8];
+                    for (int i = 0; i < 8; i++) w[i] = scale1 * cb1[i] + scale2 * cb2[i];
+                    for (int t = 0; t < kt; t++) {
+                        const float* xg = x_ptrs[kb + t] + (size_t)g * 256 + (oct << 3);
+                        float dot = 0.0f;
+                        for (int i = 0; i < 8; i++) dot += w[i] * xg[i];
+                        acc[t] += dot;
+                    }
+                }
+            }
+            for (int t = 0; t < kt; t++) y_ptrs[kb + t][row] = acc[t];
+        }
+#endif
     }
 }
 
@@ -826,6 +990,181 @@ NEON_API void gemv_opt5_mmap(
             row_acc += base_acc;
         }
         y[row] = row_acc;
+    }
+
+    if (xg_sum != stack_sums) {
+        neon_free(xg_sum);
+    }
+}
+
+NEON_API void gemv_opt5_mmap_multi(
+    const uint8_t* NEON_RESTRICT mmap_base,
+    size_t tensor_byte_offset,
+    const float* const* NEON_RESTRICT x_ptrs,
+    float* const* NEON_RESTRICT y_ptrs,
+    int K,
+    int d_out,
+    int d_in,
+    int bytes_per_glyph
+) {
+    if (K <= 0 || d_out <= 0 || d_in <= 0) return;
+    if (K == 1) {
+        gemv_opt5_mmap(mmap_base, tensor_byte_offset, x_ptrs[0], y_ptrs[0], d_out, d_in, bytes_per_glyph);
+        return;
+    }
+
+    ensure_sign_lut_initialized();
+    const int bpg = (bytes_per_glyph == 48) ? 48 : 36;
+    const int glyphs_per_row = d_in / 256;
+    const uint8_t* tensor_ptr = mmap_base + tensor_byte_offset;
+    const size_t total_sums = (size_t)K * (size_t)glyphs_per_row;
+
+    float stack_sums[2048];
+    float* xg_sum = (total_sums <= 2048)
+        ? stack_sums
+        : (float*)neon_alloc(total_sums * sizeof(float));
+    if (!xg_sum) return;
+
+    for (int k = 0; k < K; k++) {
+        const float* xk = x_ptrs[k];
+        float* sk = xg_sum + (size_t)k * (size_t)glyphs_per_row;
+        for (int g = 0; g < glyphs_per_row; g++) {
+            const float* xs = xk + (size_t)g * 256;
+#if HAS_NEON
+            float32x4_t acc = vdupq_n_f32(0.0f);
+            for (int i = 0; i < 256; i += 16) {
+                acc = vaddq_f32(acc, vld1q_f32(xs + i));
+                acc = vaddq_f32(acc, vld1q_f32(xs + i + 4));
+                acc = vaddq_f32(acc, vld1q_f32(xs + i + 8));
+                acc = vaddq_f32(acc, vld1q_f32(xs + i + 12));
+            }
+            sk[g] = vaddvq_f32(acc);
+#elif HAS_AVX2
+            __m256 acc = _mm256_setzero_ps();
+            for (int i = 0; i < 256; i += 32) {
+                acc = _mm256_add_ps(acc, _mm256_loadu_ps(xs + i));
+                acc = _mm256_add_ps(acc, _mm256_loadu_ps(xs + i + 8));
+                acc = _mm256_add_ps(acc, _mm256_loadu_ps(xs + i + 16));
+                acc = _mm256_add_ps(acc, _mm256_loadu_ps(xs + i + 24));
+            }
+            sk[g] = hsum256_ps(acc);
+#else
+            float s = 0.0f;
+            for (int i = 0; i < 256; i++) s += xs[i];
+            sk[g] = s;
+#endif
+        }
+    }
+
+    int row;
+#if HAS_OMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (row = 0; row < d_out; row++) {
+        const uint8_t* row_ptr = tensor_ptr + (size_t)row * (size_t)glyphs_per_row * (size_t)bpg;
+        int kb = 0;
+#if HAS_NEON
+        for (; kb + 4 <= K; kb += 4) {
+            const float* x0p = x_ptrs[kb + 0];
+            const float* x1p = x_ptrs[kb + 1];
+            const float* x2p = x_ptrs[kb + 2];
+            const float* x3p = x_ptrs[kb + 3];
+            const float* s0p = xg_sum + (size_t)(kb + 0) * (size_t)glyphs_per_row;
+            const float* s1p = xg_sum + (size_t)(kb + 1) * (size_t)glyphs_per_row;
+            const float* s2p = xg_sum + (size_t)(kb + 2) * (size_t)glyphs_per_row;
+            const float* s3p = xg_sum + (size_t)(kb + 3) * (size_t)glyphs_per_row;
+            float r0 = 0.0f, r1 = 0.0f, r2 = 0.0f, r3 = 0.0f;
+
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * (size_t)bpg;
+                const float scale = fp16_to_fp32(read_u16_le(glyph + 0));
+                const float bias  = fp16_to_fp32(read_u16_le(glyph + 2));
+                const uint8_t* bitmask = glyph + 4;
+                const size_t g_off = (size_t)g * 256;
+
+                float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+                float32x4_t a2 = vdupq_n_f32(0.0f), a3 = vdupq_n_f32(0.0f);
+                for (int b = 0; b < 32; b++) {
+                    const float* lut = g_sign_lut[bitmask[b]];
+                    const float32x4_t l0 = vld1q_f32(lut);
+                    const float32x4_t l4 = vld1q_f32(lut + 4);
+                    const size_t col = g_off + (size_t)b * 8;
+                    a0 = vfmaq_f32(vfmaq_f32(a0, l0, vld1q_f32(x0p + col)), l4, vld1q_f32(x0p + col + 4));
+                    a1 = vfmaq_f32(vfmaq_f32(a1, l0, vld1q_f32(x1p + col)), l4, vld1q_f32(x1p + col + 4));
+                    a2 = vfmaq_f32(vfmaq_f32(a2, l0, vld1q_f32(x2p + col)), l4, vld1q_f32(x2p + col + 4));
+                    a3 = vfmaq_f32(vfmaq_f32(a3, l0, vld1q_f32(x3p + col)), l4, vld1q_f32(x3p + col + 4));
+                }
+                float b0 = scale * vaddvq_f32(a0) + bias * s0p[g];
+                float b1 = scale * vaddvq_f32(a1) + bias * s1p[g];
+                float b2 = scale * vaddvq_f32(a2) + bias * s2p[g];
+                float b3 = scale * vaddvq_f32(a3) + bias * s3p[g];
+                if (bpg == 48) {
+                    const uint8_t* outlier_idx = glyph + 36;
+                    const uint8_t* outlier_res = glyph + 40;
+                    for (int o = 0; o < 4; o++) {
+                        size_t oi = g_off + (size_t)outlier_idx[o];
+                        float ores = fp16_to_fp32(read_u16_le(outlier_res + o * 2));
+                        b0 += ores * x0p[oi];
+                        b1 += ores * x1p[oi];
+                        b2 += ores * x2p[oi];
+                        b3 += ores * x3p[oi];
+                    }
+                }
+                r0 += b0; r1 += b1; r2 += b2; r3 += b3;
+            }
+            y_ptrs[kb + 0][row] = r0;
+            y_ptrs[kb + 1][row] = r1;
+            y_ptrs[kb + 2][row] = r2;
+            y_ptrs[kb + 3][row] = r3;
+        }
+#endif
+        for (; kb < K; kb++) {
+            const float* xp = x_ptrs[kb];
+            const float* sp = xg_sum + (size_t)kb * (size_t)glyphs_per_row;
+            float row_acc = 0.0f;
+            for (int g = 0; g < glyphs_per_row; g++) {
+                const uint8_t* glyph = row_ptr + (size_t)g * (size_t)bpg;
+                const float* x_slice = xp + (size_t)g * 256;
+                float scale = fp16_to_fp32(read_u16_le(glyph + 0));
+                float bias  = fp16_to_fp32(read_u16_le(glyph + 2));
+                const uint8_t* bitmask = glyph + 4;
+#if HAS_NEON
+                float32x4_t acc = vdupq_n_f32(0.0f);
+                for (int b = 0; b < 32; b++) {
+                    const float* lut = g_sign_lut[bitmask[b]];
+                    acc = vfmaq_f32(acc, vld1q_f32(lut),     vld1q_f32(x_slice + b * 8));
+                    acc = vfmaq_f32(acc, vld1q_f32(lut + 4), vld1q_f32(x_slice + b * 8 + 4));
+                }
+                float sign_dot = vaddvq_f32(acc);
+#elif HAS_AVX2
+                __m256 acc = _mm256_setzero_ps();
+                for (int b = 0; b < 32; b++) {
+                    acc = _mm256_fmadd_ps(_mm256_load_ps(g_sign_lut[bitmask[b]]),
+                                          _mm256_loadu_ps(x_slice + b * 8), acc);
+                }
+                float sign_dot = hsum256_ps(acc);
+#else
+                float sign_dot = 0.0f;
+                for (int b = 0; b < 32; b++) {
+                    const float* lut = g_sign_lut[bitmask[b]];
+                    const float* xb  = x_slice + b * 8;
+                    for (int i = 0; i < 8; i++) sign_dot += lut[i] * xb[i];
+                }
+#endif
+                float base_acc = (scale * sign_dot) + (bias * sp[g]);
+                if (bpg == 48) {
+                    const uint8_t* outlier_idx = glyph + 36;
+                    const uint8_t* outlier_res = glyph + 40;
+                    for (int o = 0; o < 4; o++) {
+                        uint8_t oi = outlier_idx[o];
+                        float ores = fp16_to_fp32(read_u16_le(outlier_res + o * 2));
+                        base_acc += ores * x_slice[oi];
+                    }
+                }
+                row_acc += base_acc;
+            }
+            y_ptrs[kb][row] = row_acc;
+        }
     }
 
     if (xg_sum != stack_sums) {
