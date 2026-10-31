@@ -31,16 +31,19 @@ texts = {}
 for f in FILES:
     p = HERE / f
     check(f"exists: {f}", p.is_file())
-    texts[f] = p.read_text() if p.is_file() else ""
+    texts[f] = p.read_text(encoding="utf-8") if p.is_file() else ""
 agent, sampling, evalcfg, prompt = (texts[k] for k in FILES)
 
 # ---- contract checks
 check("model: gemma-4-31b-it-qat-w4a16-ct (V10 badge verbatim)", "gemma-4-31b-it-qat-w4a16-ct" in agent)
 check("9 legal tools, !include wiring intact",
       "instruction: !include prompts/system.md" in agent and "generate_content_config: !include configs/sampling.yaml" in agent)
-temp = float(re.search(r"temperature:\s*([\d.]+)", sampling).group(1))
-max_out = int(re.search(r"max_output_tokens:\s*(\d+)", sampling).group(1))
-think = int(re.search(r"thinking_budget:\s*(\d+)", sampling).group(1))
+m_temp = re.search(r"temperature:\s*([\d.]+)", sampling)
+temp = float(m_temp.group(1)) if m_temp else 0.0
+m_max_out = re.search(r"max_output_tokens:\s*(\d+)", sampling)
+max_out = int(m_max_out.group(1)) if m_max_out else 0
+m_think = re.search(r"thinking_budget:\s*(\d+)", sampling)
+think = int(m_think.group(1)) if m_think else 0
 check("temp 0.2 (V10 badge conditions — temp-1.0 experiment lives in the v2 lane, not here)", temp == 0.2)
 check("thinking summaries ON (E17/E18: disabling costs 10-19 pts)", "include_thoughts: true" in sampling)
 check("max_output_tokens 16384 (README gotcha #1: 8192 risks truncated tool calls @ thinking-4096)", max_out == 16384 and max_out >= think + 6000)
@@ -77,18 +80,23 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
         zi = zipfile.ZipInfo(f, date_time=FIXED_DT)
         zi.compress_type = zipfile.ZIP_DEFLATED
         z.writestr(zi, texts[f])
-zf = zipfile.ZipFile(OUT)
-check("zip integrity", zf.testzip() is None)
-members = set(zf.namelist())
-check("zip carries EXACTLY the contract files (no LICENSE/NOTICE inside)", members == CONTRACT_MEMBERS, str(sorted(members)))
+with zipfile.ZipFile(OUT) as zf:
+    check("zip integrity", zf.testzip() is None)
+    members = set(zf.namelist())
+    check("zip carries EXACTLY the contract files (no LICENSE/NOTICE inside)", members == CONTRACT_MEMBERS, str(sorted(members)))
 sha = hashlib.sha256(OUT.read_bytes()).hexdigest()
 size = OUT.stat().st_size
 print(f"\nsha256: {sha}  (deterministic — same content pins same sha on every node)")
 print(f"bundle: {OUT} ({size} bytes)")
-# determinism self-proof: rebuild and compare
-with zipfile.ZipFile(OUT, "a") as _:
-    pass
-sha2 = hashlib.sha256(OUT.read_bytes()).hexdigest()
+# determinism self-proof: independent in-memory rebuild from source strings
+import io
+buf2 = io.BytesIO()
+with zipfile.ZipFile(buf2, "w", zipfile.ZIP_DEFLATED) as z2:
+    for f in FILES:
+        zi = zipfile.ZipInfo(f, date_time=FIXED_DT)
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        z2.writestr(zi, texts[f])
+sha2 = hashlib.sha256(buf2.getvalue()).hexdigest()
 check("sha stable across rebuild (determinism law)", sha == sha2)
 
 fails = [r for r in results if not r[1]]

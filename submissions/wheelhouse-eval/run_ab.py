@@ -30,7 +30,9 @@ TASK_SEED = 20261019   # fixed seed → reproducible subset across lanes + rerun
 SESSION_BUDGET_H = 11.0
 EST_RUN_H = 4.0        # conservative per-lane estimate at 8 min/task ceiling
 
+import atexit
 LOG = open("/kaggle/working/run.log", "a", buffering=1)
+atexit.register(LOG.close)
 def log(*a):
     s = time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a)
     print(s, flush=True); LOG.write(s + "\n")
@@ -135,7 +137,8 @@ if not repo.exists():
         log("using attached candidates at", repo)
 
 # 4. the paired task subset: seeded, sorted, reproducible
-all_ids = [json.loads(l)["instance_id"] for l in open(tasks) if l.strip()]
+with open(tasks, encoding="utf-8") as _f_tasks:
+    all_ids = [json.loads(l)["instance_id"] for l in _f_tasks if l.strip()]
 sub_ids = sorted(random.Random(TASK_SEED).sample(sorted(all_ids), min(TASK_COUNT, len(all_ids))))
 log(f"paired subset: {len(sub_ids)} of {len(all_ids)} tasks (seed {TASK_SEED})")
 
@@ -182,26 +185,40 @@ def evaluate(name, rel):
         task_ids=sub_ids, concurrency=1, display_mode="quiet", verbose=False)
     log(f"RUN {name}: {rel} eval={ev} tasks={len(sub_ids)}")
     t = time.time(); res = asyncio.run(Evaluator(cfg).run())
-    log(f"RUN_DONE {name}: resolved {res.resolved}/{res.total} in {(time.time()-t)/60:.0f} min")
+    res_resolved = getattr(res, "resolved", "?")
+    res_total = getattr(res, "total", "?")
+    log(f"RUN_DONE {name}: resolved {res_resolved}/{res_total} in {(time.time()-t)/60:.0f} min")
     sh(f"cd /kaggle/working/results && tar -czf /kaggle/working/{name}.tgz {name}")
     return res
 
 done = {}
-for name, rel in RUNS:
-    elapsed_h = (time.time() - T0) / 3600
-    if elapsed_h + EST_RUN_H > SESSION_BUDGET_H:
-        log(f"SKIP {name}: {elapsed_h:.1f} h used, not enough session left"); continue
-    try:
-        done[name] = evaluate(name, rel)
-    except Exception as e:
-        log(f"RUN_FAILED {name}: {type(e).__name__}: {e}")
-server.stop() if hasattr(server, "stop") else None
+try:
+    for name, rel in RUNS:
+        elapsed_h = (time.time() - T0) / 3600
+        if elapsed_h + EST_RUN_H > SESSION_BUDGET_H:
+            log(f"SKIP {name}: {elapsed_h:.1f} h used, not enough session left"); continue
+        try:
+            done[name] = evaluate(name, rel)
+        except Exception as e:
+            log(f"RUN_FAILED {name}: {type(e).__name__}: {e}")
+finally:
+    if hasattr(server, "stop"):
+        try:
+            server.stop()
+        except Exception as _e_srv:
+            log(f"server.stop() failed: {_e_srv}")
 
 # 7. paired A/B read-out + pre-registered decision rule
 def per_task(name):
     p = pathlib.Path(f"/kaggle/working/results/{name}/task_results.jsonl")
     if not p.exists(): return {}
-    return {json.loads(l)["instance_id"]: json.loads(l) for l in open(p) if l.strip()}
+    res = {}
+    with open(p, encoding="utf-8") as f:
+        for l in f:
+            if l.strip():
+                item = json.loads(l)
+                res[item["instance_id"]] = item
+    return res
 
 if len(done) >= 2:
     ctrl = RUNS[0][0]
@@ -221,6 +238,7 @@ if len(done) >= 2:
                                        "decision_rule": "ship only if net >= +3 on the same paired set",
                                        "verdict": verdict}
         log(f"PAIRED {name} vs {ctrl}: +{delta} / -{loss} (net {delta-loss:+d}) → {verdict}")
-    json.dump(out, open("/kaggle/working/paired_ab.json", "w"), indent=1)
+    with open("/kaggle/working/paired_ab.json", "w", encoding="utf-8") as _f_ab:
+        json.dump(out, _f_ab, indent=1)
     log("paired_ab.json written")
 log(f"ALL_DONE after {(time.time()-T0)/3600:.2f} h")

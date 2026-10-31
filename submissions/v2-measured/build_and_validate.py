@@ -11,7 +11,6 @@ validates every invariant that matters to the swegemma harness:
 Prints PASS/FAIL per check + the bundle sha256. Exit 0 only on full pass.
 """
 import hashlib
-import json
 import re
 import sys
 import zipfile
@@ -34,7 +33,7 @@ texts = {}
 for f in FILES:
     p = HERE / f
     check(f"exists: {f}", p.is_file())
-    texts[f] = p.read_text() if p.is_file() else ""
+    texts[f] = p.read_text(encoding="utf-8") if p.is_file() else ""
 
 agent, sampling, evalcfg, prompt = texts["agent.yaml"], texts["configs/sampling.yaml"], texts["eval_config.yaml"], texts["prompts/system.md"]
 
@@ -47,10 +46,14 @@ check("!include sampling wiring intact", "generate_content_config: !include conf
 check("no python entrypoints (declarative-only)", "def " not in agent and "import " not in agent)
 
 # ---- sampling.yaml checks (regex parse — yaml lib optional on edge nodes)
-temp = float(re.search(r"temperature:\s*([\d.]+)", sampling).group(1))
-top_p = float(re.search(r"top_p:\s*([\d.]+)", sampling).group(1))
-max_out = int(re.search(r"max_output_tokens:\s*(\d+)", sampling).group(1))
-think = int(re.search(r"thinking_budget:\s*(\d+)", sampling).group(1))
+m_temp = re.search(r"temperature:\s*([\d.]+)", sampling)
+temp = float(m_temp.group(1)) if m_temp else 0.0
+m_top_p = re.search(r"top_p:\s*([\d.]+)", sampling)
+top_p = float(m_top_p.group(1)) if m_top_p else 0.0
+m_max_out = re.search(r"max_output_tokens:\s*(\d+)", sampling)
+max_out = int(m_max_out.group(1)) if m_max_out else 0
+m_think = re.search(r"thinking_budget:\s*(\d+)", sampling)
+think = int(m_think.group(1)) if m_think else 0
 summaries = "include_thoughts: true" in sampling
 check("thinking summaries ON (E17/E18: disabling costs ~19 pts)", summaries)
 check("max_output_tokens >= thinking_budget + 6k headroom (README gotcha #1)", max_out >= think + 6000, f"{max_out} vs {think}")
@@ -90,7 +93,8 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
         zi.compress_type = zipfile.ZIP_DEFLATED
         zi.external_attr = 0o644 << 16
         z.writestr(zi, texts[f])
-check("zip integrity", zipfile.ZipFile(OUT).testzip() is None)
+with zipfile.ZipFile(OUT) as _ztest:
+    check("zip integrity", _ztest.testzip() is None)
 size = OUT.stat().st_size
 check("zip size sane (< 3 GiB contract limit)", size < 3 * 1024**3, f"{size} bytes")
 sha = hashlib.sha256(OUT.read_bytes()).hexdigest()

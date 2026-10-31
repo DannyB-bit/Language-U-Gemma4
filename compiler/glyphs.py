@@ -77,8 +77,7 @@ class Radicals:
         return bytes((self.rc, self.rf, self.ra))
 
     def __repr__(self):
-        return f"Radicals(rc=0x{self.rc:02x}, rf=0x{self.rf:02x}, ra=0x{ra:02x})".replace("ra=0x", "ra=0x") if False else (
-            f"Radicals(rc=0x{self.rc:02x}, rf=0x{self.rf:02x}, ra=0x{self.ra:02x})")
+        return f"Radicals(rc=0x{self.rc:02x}, rf=0x{self.rf:02x}, ra=0x{self.ra:02x})"
 
 
 def proposition_to_radicals(prop) -> Radicals:

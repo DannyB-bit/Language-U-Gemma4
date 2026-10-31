@@ -31,14 +31,14 @@ LINEAGE_SHA = "234969efed3a86a519d74be15beea0381f1b63e0d92c18a47cad82a15956bb74"
 
 results = []
 def check(name, ok, detail=""):
-    results.append((name, bool(ok)))
+    results.append((name, bool(ok), detail))
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""))
 
 texts = {}
 for f in FILES:
     p = HERE / f
     check(f"exists: {f}", p.is_file())
-    texts[f] = p.read_text() if p.is_file() else ""
+    texts[f] = p.read_text(encoding="utf-8") if p.is_file() else ""
 
 agent, sampling, evalcfg, prompt = (texts["agent.yaml"], texts["configs/sampling.yaml"],
                                     texts["eval_config.yaml"], texts["prompts/system.md"])
@@ -57,9 +57,12 @@ check("!include wiring intact (prompt + sampling)",
 check("declarative-only (no python)", "def " not in agent and "import " not in agent)
 
 # ---- sampling: badge conditions verbatim + the one fix
-temp = float(re.search(r"temperature:\s*([\d.]+)", sampling).group(1))
-max_out = int(re.search(r"max_output_tokens:\s*(\d+)", sampling).group(1))
-think = int(re.search(r"thinking_budget:\s*(\d+)", sampling).group(1))
+m_temp = re.search(r"temperature:\s*([\d.]+)", sampling)
+temp = float(m_temp.group(1)) if m_temp else 0.0
+m_max_out = re.search(r"max_output_tokens:\s*(\d+)", sampling)
+max_out = int(m_max_out.group(1)) if m_max_out else 0
+m_think = re.search(r"thinking_budget:\s*(\d+)", sampling)
+think = int(m_think.group(1)) if m_think else 0
 check("temp 0.2 (badge conditions of the 0.17 draw)", temp == 0.2)
 check("thinking summaries ON", "include_thoughts: true" in sampling)
 check("max_output_tokens 16384 (README gotcha #1 fix)", max_out == 16384)
@@ -86,9 +89,9 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
         zi = zipfile.ZipInfo(f, date_time=(2026, 1, 1, 0, 0, 0))
         zi.external_attr = 0o644 << 16
         z.writestr(zi, texts[f])
-check("zip integrity + exactly-4 contract members",
-      zipfile.ZipFile(OUT).testzip() is None
-      and zipfile.ZipFile(OUT).namelist() == FILES)
+with zipfile.ZipFile(OUT) as _zf:
+    check("zip integrity + exactly-4 contract members",
+          _zf.testzip() is None and _zf.namelist() == FILES)
 sha = hashlib.sha256(OUT.read_bytes()).hexdigest()
 print(f"\nsha256: {sha}")
 print(f"bundle: {OUT} ({OUT.stat().st_size} bytes)")

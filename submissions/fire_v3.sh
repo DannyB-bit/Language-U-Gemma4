@@ -9,6 +9,11 @@
 # Usage:  bash submissions/fire_v3.sh
 set -euo pipefail
 
+if ! command -v kaggle &> /dev/null; then
+  echo "FATAL: kaggle CLI not found on PATH. Install it or configure credentials before firing." >&2
+  exit 1
+fi
+
 REPO=Language-U-Gemma4
 CAND=submissions/v3-converged/build/submission.zip
 EXPECT_SHA=04cdcdfca4d23481618834a5f3facf4a134d023ec896f7aa8a4a5c40d4700e5e
@@ -28,6 +33,7 @@ echo "── 3. firing ──"
 kaggle competitions submit -c gemma-4-developer-agent -f "$CAND" -m "$DESC"
 
 echo "── 4. post-fire receipt ──"
+# Sleep 10s to allow Kaggle backend ingestion/queue registration before querying submission receipt
 sleep 10
 kaggle competitions submissions -c gemma-4-developer-agent | head -6
 echo "Fired. Post the new ref number to the fleet + Dan."

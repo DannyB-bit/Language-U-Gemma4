@@ -30,12 +30,15 @@ def to_tasks(score: float) -> float:
 
 def classify(delta_tasks: float) -> str:
     d = abs(delta_tasks)
+    direction = "GAIN" if delta_tasks > 0 else ("LOSS" if delta_tasks < 0 else "FLAT")
     if d < INCONCLUSIVE:
-        return "NOISE — statistically indistinguishable; do not order recipes by this"
+        return f"NOISE ({direction}) — statistically indistinguishable; do not order recipes by this"
     if d < NOISE_SPREAD:
-        return ("INCONCLUSIVE — inside the identical-bytes spread; "
+        return (f"INCONCLUSIVE ({direction}) — inside the identical-bytes spread; "
                 "order a wheelhouse run before spending a slot")
-    return "SIGNAL — exceeds the documented identical-bytes spread; worth a slot"
+    if delta_tasks > 0:
+        return f"SIGNAL (GAIN) — exceeds the documented identical-bytes spread (+{round(delta_tasks, 1)} tasks); worth a slot"
+    return f"SIGNAL (REGRESSION) — significant regression (-{round(abs(delta_tasks), 1)} tasks); do not spend a slot"
 
 
 def main() -> int:

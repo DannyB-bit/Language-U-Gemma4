@@ -28,8 +28,15 @@ RUNTIME_FILES = [
 ]
 
 
-def build() -> bytes:
+try:
     import yaml  # safe loader with !include resolution like the harness
+except ImportError:
+    yaml = None  # type: ignore
+
+
+def build() -> bytes:
+    if yaml is None:
+        raise ImportError("PyYAML is required for agent/build.py")
 
     class IncludeLoader(yaml.SafeLoader):
         pass
@@ -37,7 +44,8 @@ def build() -> bytes:
     files = {}
     for rel in RUNTIME_FILES:
         p = os.path.join(HERE, rel)
-        files[rel] = open(p, encoding="utf-8").read()
+        with open(p, encoding="utf-8") as f:
+            files[rel] = f.read()
 
     def include(loader, node):
         rel = loader.construct_scalar(node)
@@ -86,15 +94,18 @@ def build() -> bytes:
 
         for rel in RUNTIME_FILES:
             write_member(rel, files[rel])
-        write_member("LICENSE.txt", open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8").read())
-        write_member("NOTICE.txt", open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8").read())
+        with open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8") as f_lic:
+            write_member("LICENSE.txt", f_lic.read())
+        with open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8") as f_not:
+            write_member("NOTICE.txt", f_not.read())
     data = buf.getvalue()
     with open(OUT, "wb") as f:
         f.write(data)
     print(f"Submission: {OUT}")
     print(f"SHA-256: {hashlib.sha256(data).hexdigest()}")
     print(f"Size: {len(data)} bytes")
-    print(f"Members: {zipfile.ZipFile(OUT).namelist()}")
+    with zipfile.ZipFile(OUT) as zf_read:
+        print(f"Members: {zf_read.namelist()}")
     print("ALL STRUCTURAL CHECKS PASS")
     return data
 

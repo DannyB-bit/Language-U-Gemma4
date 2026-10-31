@@ -13,11 +13,28 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from glyphs import (
-    AXES, Radicals, proposition_to_radicals, rotate_h8,
-    build_trit_codebook, encode_glyph_132, decode_glyph_132,
-    encode_glyph_36, glyph_checksum,
-)
+try:
+    from compiler.glyphs import (
+        AXES, Radicals, proposition_to_radicals, rotate_h8,
+        build_trit_codebook, encode_glyph_132, decode_glyph_132,
+        encode_glyph_36, glyph_checksum,
+    )
+except ImportError:
+    from glyphs import (
+        AXES, Radicals, proposition_to_radicals, rotate_h8,
+        build_trit_codebook, encode_glyph_132, decode_glyph_132,
+        encode_glyph_36, glyph_checksum,
+    )
+
+try:
+    from compiler.vm import VMInstruction, Op, GlyphProgram
+except ImportError:
+    try:
+        from vm import VMInstruction, Op, GlyphProgram
+    except ImportError:
+        VMInstruction = None  # type: ignore
+        Op = None  # type: ignore
+        GlyphProgram = None  # type: ignore
 
 
 @dataclass
@@ -100,8 +117,11 @@ def compile_program(program, codebook=None) -> "GlyphProgram":
     """Compile parsed directives into the Glyph-VM instruction stream.
     Each emit becomes a VM instruction: [op=EMIT_GLYPH][radicals RC/RF/RA]
     [container law][glyph bytes or immediate payload]."""
+    if VMInstruction is None or Op is None or GlyphProgram is None:
+        raise ImportError(
+            "Glyph-VM module ('compiler.vm' or 'vm') is required to compile programs into VM instructions."
+        )
     codebook = codebook or build_trit_codebook()
-    from vm import VMInstruction, Op
     out: List[VMInstruction] = []
     for kind, arg in program:
         if kind == "halt":
@@ -123,5 +143,4 @@ def compile_program(program, codebook=None) -> "GlyphProgram":
             out.append(VMInstruction(Op.EMIT_GLYPH_36, radicals=rad, blob=glyph))
     if not out or out[-1].op != Op.HALT:
         out.append(VMInstruction(Op.HALT))
-    from vm import GlyphProgram
     return GlyphProgram(instructions=out, codebook=codebook)
