@@ -1,8 +1,9 @@
 """
-neon_runner — Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.1.0 — GlyphAttentionV2)
+neon_runner — Language-U-Gemma4-NeonRunner-Bridge-V2 (v2.2.0 — OpticalCarrierV1)
 ================================================================================
-Unified runtime, stream bridge, and Single-Pass Flash-Glyph GQA Attention engine
-connecting `DannyB-bit/Language-U-Gemma4` with `DannyB-bit/Neon-Runner`.
+Unified runtime, stream bridge, Single-Pass Flash-Glyph GQA Attention, and
+Lossless 2D Optical Context Caching engine connecting `DannyB-bit/Language-U-Gemma4`
+with `DannyB-bit/Neon-Runner`.
 """
 
 from .codebooks import (
@@ -33,6 +34,13 @@ from .glyph_attention import (
     GlyphKVStats,
     dense_gqa_attention_reference,
 )
+from .optical_carrier import (
+    OPTICAL_CARRIER_COMPONENT_ID,
+    OPTICAL_CARRIER_VERSION,
+    CarrierHeader,
+    OpticalCarrierCodec,
+    OpticalGemmaBridge,
+)
 
 __all__ = [
     "BRIDGE_COMPONENT_ID",
@@ -43,6 +51,11 @@ __all__ = [
     "GLYPH_ATTN_VERSION",
     "GlyphKVCacheV2",
     "GlyphKVStats",
+    "OPTICAL_CARRIER_COMPONENT_ID",
+    "OPTICAL_CARRIER_VERSION",
+    "CarrierHeader",
+    "OpticalCarrierCodec",
+    "OpticalGemmaBridge",
     "SENTINEL_INDEX",
     "CodebookRegistryV2",
     "LoadedCodebookV2",

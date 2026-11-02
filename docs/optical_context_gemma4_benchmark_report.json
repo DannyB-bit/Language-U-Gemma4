@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-11-02T23:48:23Z",
+  "component_id": "Language-U-Gemma4-OpticalCarrier-V1",
+  "version": "2.2.0",
+  "hardware": "Windows Silicon / Intel/AMD Host CPU",
+  "scaling_results": [
+    {
+      "name": "SWE Issue Contract (52 tok)",
+      "token_count": 10,
+      "glyph_count": 5,
+      "raw_text_bytes": 208,
+      "carrier_bytes": 1203,
+      "grid_modules": "46x46",
+      "image_px": "184x184",
+      "compression_ratio": "26.8%",
+      "encode_ms": 0.83,
+      "cold_ingestion_ms": 5.43,
+      "in_memory_dma_ms": 0.244,
+      "prefill_ms": 19.308,
+      "prefill_throughput_tok_per_sec": 517.9,
+      "parity_verified": true
+    },
+    {
+      "name": "Git Diff & Patch Turn (128 tok)",
+      "token_count": 128,
+      "glyph_count": 10,
+      "raw_text_bytes": 297,
+      "carrier_bytes": 2088,
+      "grid_modules": "66x66",
+      "image_px": "264x264",
+      "compression_ratio": "54.9%",
+      "encode_ms": 0.85,
+      "cold_ingestion_ms": 5.72,
+      "in_memory_dma_ms": 0.301,
+      "prefill_ms": 52.445,
+      "prefill_throughput_tok_per_sec": 2440.7,
+      "parity_verified": true
+    },
+    {
+      "name": "Multi-File Repository Context (512 tok)",
+      "token_count": 512,
+      "glyph_count": 32,
+      "raw_text_bytes": 1760,
+      "carrier_bytes": 3352,
+      "grid_modules": "106x106",
+      "image_px": "424x424",
+      "compression_ratio": "72.8%",
+      "encode_ms": 2.65,
+      "cold_ingestion_ms": 6.08,
+      "in_memory_dma_ms": 0.477,
+      "prefill_ms": 179.828,
+      "prefill_throughput_tok_per_sec": 2847.2,
+      "parity_verified": true
+    }
+  ],
+  "streaming_benchmark": {
+    "num_frames": 100,
+    "duration_sec": 0.0153,
+    "fps": 6522.2,
+    "bandwidth_mb_per_sec": 1.77,
+    "token_throughput_per_sec": 626129.2,
+    "bit_parity_pct": 100.0
+  }
+}
