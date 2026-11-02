@@ -213,8 +213,8 @@ def run_benchmark(model_dir: Path, max_global_seq: int, threads: int, out_json: 
         codebook_path=str(cb_path),
         so_path=acc.so_path,
     ) as bridge:
-        projs_l0 = {p["name"]: p for p in bridge.layout["projections"] if p["layer"] == 0}
-        projs_l5 = {p["name"]: p for p in bridge.layout["projections"] if p["layer"] == 5}
+        projs_l0 = {(p.get("name") or p.get("tensor_name")): p for p in bridge.layout["projections"] if p["layer"] == 0}
+        projs_l5 = {(p.get("name") or p.get("tensor_name")): p for p in bridge.layout["projections"] if p["layer"] == 5}
 
         # Layer 0 (Sliding: 32Q / 16KV / 256d, V != K)
         pfx0 = "model.language_model.layers.0"

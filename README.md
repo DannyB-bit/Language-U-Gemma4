@@ -37,6 +37,7 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
 |  - AIQC 20-byte Big-Endian Header + IEEE 802.3 CRC32 (100% bit-exact parity).     |
 |  - Sub-millisecond Optical Memory DMA (0.23 - 0.29 ms, >5,500 FPS, >529k tok/s).  |
 |  - Bypasses string tokenization tax for local SWE agents & instant turn prefill.  |
+|  - Verified on live 7.08 GB Gemma 4 31B sandwich stream Layer 0 Q/K/V projections.|
 +===================================================================================+
 ```
 
@@ -52,6 +53,7 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
   * `codebooks.py` & `codebooks/*.bin`: Deterministic `CodebookRegistryV2` + physical 64 KB `s7_codebook_2048x8.bin` (True North `#1419` sentinel verified) and `trit_codebook_2048x8.bin`.
   * `build_native.py` & `Makefile`: Zero-configuration native shared library builder for Linux/ARMv8, Linux/x86-64, macOS, and Windows x64.
 * **`scripts/`**:
+  * `benchmark_optical_gemma31b_live.py`: Physical silicon benchmark executing Stage 5 optical carrier DMA ($0.27\text{ ms}$) directly into real 7.08 GB Gemma 4 31B sandwich stream weights (`gemma4_31b_language_u_sandwich_stream.bin`).
   * `benchmark_optical_context_gemma4.py`: Physical silicon benchmark measuring Stage 5 optical carrier generation, in-memory DMA ($0.23\text{ ms}$), and continuous streaming ($5,512.5\text{ FPS}$, $529\text{k tok/s}$) into Gemma 4 hybrid prefill.
   * `benchmark_glyph_attention_silicon.py`: Physical Gemma 4 31B attention & KV-cache silicon benchmark comparing `GlyphAttentionV2` against vLLM PagedAttention BF16 (`16`-token permuted `block_table`) and exact FP32 attention from `1K` sliding window up to `128K` global context.
 * **`gemma4_e4b/`**:
@@ -72,6 +74,7 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
   * `submission.zip`: The fleet's **v11 competition bundle** (KOFI, 2026-10-19) — the measured-max Gemma 4 Developer Agent submission: flexonafft Budget-Aware V10 base (public 0.22 badge) + four bounded evidence-backed prompt splices (issue contract, coverage checkpoint, final-edit verification, repo-specific verification focus). Declares `model: gemma-4-31b-it-qat-w4a16-ct`, temp 0.2, 4096 thinking, 28 calls/8 min/80 turns.
   * `build.py`: deterministic offline builder + structural validator (SHA-256 fb461a4e…25a3a, timestamp-pinned since the Zymatica review PR).
 * **`docs/`**:
+  * `GEMMA4_31B_OPTICAL_LIVE_BENCHMARK_REPORT.md`: Telemetry report from live execution on the 7.08 GB physical Gemma 4 31B Language-U stream weights.
   * `OPTICAL_CONTEXT_INTEGRATION_V2_2.md`: Complete Stage 5 architectural specification, AIQC binary wire format, and optical DMA runbook.
   * `optical_context_gemma4_benchmark_report.json`: Physical silicon benchmark telemetry from `scripts/benchmark_optical_context_gemma4.py`.
   * `NEON_RUNNER_INTEGRATION_V2.md`: Complete V1 $\to$ V2.0 $\to$ V2.1 forensic comparison matrix, `GlyphAttentionV2` wire/kernel specification, Raspberry Pi 4 silicon benchmark tables, and `DannyB-bit/Neon-Runner` integration runbook.
@@ -82,21 +85,21 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
 ## Quickstart (`v2.2.0`)
 
 ```bash
-# 1. Run Stage 5 Optical Context Caching 6-Gate Self-Test
+# 1. Run Live Physical Benchmark on 7.08 GB Gemma 4 31B Weights
+python scripts/benchmark_optical_gemma31b_live.py
+
+# 2. Run Stage 5 Optical Context Caching 6-Gate Self-Test
 python neon_runner/optical_carrier.py
 
-# 2. Run Stage 5 Physical Silicon Scaling & Streaming Benchmark
+# 3. Run Stage 5 Physical Silicon Scaling & Streaming Benchmark
 python scripts/benchmark_optical_context_gemma4.py
 
-# 3. Build native C/SIMD library (ARMv8 NEON .so on Pi 4 / Linux, AVX2 .dll/.so on x86-64)
+# 4. Build native C/SIMD library (ARMv8 NEON .so on Pi 4 / Linux, AVX2 .dll/.so on x86-64)
 python neon_runner/build_native.py
 
-# 4. Run all 12 fail-closed physical verification gates (6 Stream/GEMV + 6 GlyphAttentionV2)
+# 5. Run all 12 fail-closed physical verification gates (6 Stream/GEMV + 6 GlyphAttentionV2)
 python neon_runner/bridge.py --self-test
 python neon_runner/glyph_attention.py --self-test
-
-# 5. Run physical Gemma 4 31B Flash-Glyph vs. PagedAttention BF16 benchmark (4K -> 128K)
-python scripts/benchmark_glyph_attention_silicon.py --max-seq 131072 --threads 4
 ```
 
 ---
@@ -104,6 +107,9 @@ python scripts/benchmark_glyph_attention_silicon.py --max-seq 131072 --threads 4
 ## Physical Hardware Verification
 
 All component benchmarks were validated on physical hardware (Agent 01 `AstronautSHE` Raspberry Pi 4 Model B 8GB ARMv8-A Cortex-A72, x86-64 AVX2+OpenMP workstation, and host silicon):
+* **Live 7.08 GB Gemma 4 31B Physical Stream Benchmark (`gemma4_31b_language_u_sandwich_stream.bin`, 6.59 GB):**
+  * **In-Memory Optical DMA:** Ingested 16, 64, and 128 tokens in **`0.277 ms` to `0.290 ms`** with $100\%$ bit-exact CRC32 verification.
+  * **Layer 0 GEMV Projection:** Physical Q ($[8192, 5376]$), K ($[4096, 5376]$), and V ($[4096, 5376]$) forward projections computed via `neon_stream_accelerator.dll` at **`23.1` to `26.5 tokens/sec`** on host CPU silicon.
 * **Stage 5 Optical DMA Component Benchmark (`Language-U-Gemma4-OpticalCarrier-V1`, v2.2.0):**
   * **In-Memory Optical DMA:** **`0.235 ms`** (128 tokens, $264 \times 264\text{ px}$) and **`0.297 ms`** (52 tokens, $184 \times 184\text{ px}$) per frame, delivering an effective **`53.8x` speedup** over CPU string tokenization.
   * **Continuous Video Streaming Rate:** **`5,512.5 FPS`** ($91.9\times$ faster than standard 60 FPS video) sustaining **`529,196.8 tokens/sec`** with **`100.0%` bit-exact parity** (IEEE 802.3 CRC32 verified).

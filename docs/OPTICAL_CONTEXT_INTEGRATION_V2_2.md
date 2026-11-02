@@ -86,3 +86,4 @@ bridge = OpticalGemmaBridge(hidden_dim=1024, num_layers=4)
 res = bridge.prefill_optical_carrier(img)
 print(f"Ingestion DMA: {res['ingestion_latency_ms']} ms | Prefill: {res['throughput_tok_per_sec']} tok/s")
 ```
+
