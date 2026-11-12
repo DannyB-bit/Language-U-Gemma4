@@ -142,11 +142,15 @@ reproduced here.
 
 ## Reproduce this change
 
-NumPy, Python 3 and a C compiler are sufficient for the new preparation suite.
+NumPy, Pillow, Python 3 and a C compiler are required for the new preparation
+suite. Pillow is loaded by the package's existing optical-carrier import, even
+when invoking stream-only tools. Pinned dependencies are supplied in
+[`requirements-pi4.txt`](../requirements-pi4.txt).
 The commands below generate software evidence on the current host; running them
 on a Pi does not by itself add a full-model quality benchmark.
 
 ```bash
+python3 -m pip install -r requirements-pi4.txt
 python3 neon_runner/build_native.py
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=2 \
   python3 -m unittest discover -s tests -p test_pi4_barrier.py -v
