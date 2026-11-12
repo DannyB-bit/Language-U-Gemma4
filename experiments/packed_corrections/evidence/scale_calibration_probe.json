@@ -1,0 +1,53 @@
+{
+  "scope": "Existing BF16 scale-slot fitting on one real Q excerpt. Fixed factors, no model-level accuracy/coherence proof.",
+  "selected_variant": 2,
+  "variants": [
+    {
+      "ridge_strength": 0.01,
+      "file_bytes": 93632,
+      "train": {
+        "relative_squared_error": 0.04280706761512345,
+        "output_cosine": 0.9783709184156413
+      },
+      "validation": {
+        "relative_squared_error": 0.10375440770650665,
+        "output_cosine": 0.9472594472106652
+      },
+      "packed_vs_dense_relative_error": 2.168534218007055e-07
+    },
+    {
+      "ridge_strength": 0.1,
+      "file_bytes": 93632,
+      "train": {
+        "relative_squared_error": 0.0519214024187708,
+        "output_cosine": 0.9737280409404658
+      },
+      "validation": {
+        "relative_squared_error": 0.08127018627335807,
+        "output_cosine": 0.9585113250310385
+      },
+      "packed_vs_dense_relative_error": 2.0457999877183724e-07
+    },
+    {
+      "ridge_strength": 1.0,
+      "file_bytes": 93632,
+      "train": {
+        "relative_squared_error": 0.062003394573567475,
+        "output_cosine": 0.9685717215153796
+      },
+      "validation": {
+        "relative_squared_error": 0.07946240704058564,
+        "output_cosine": 0.9594663876367864
+      },
+      "packed_vs_dense_relative_error": 2.038487870956974e-07
+    }
+  ],
+  "before_test": {
+    "relative_squared_error": 0.08068687506782338,
+    "output_cosine": 0.9604991147518808
+  },
+  "after_test": {
+    "relative_squared_error": 0.07579274178503344,
+    "output_cosine": 0.9613990233952129
+  }
+}

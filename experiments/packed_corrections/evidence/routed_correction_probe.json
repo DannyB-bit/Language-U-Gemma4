@@ -1,0 +1,218 @@
+{
+  "scope": "One 128x5376 projection, reused development test. No full-model/coherence proof.",
+  "selection": "Validation error; test never used to fit or select.",
+  "activation_representation": "Unquantized 8D latent in control; 16 bytes if stored FP16, versus prior 4-byte codebook guide. Computation here uses float64.",
+  "shuffled_control_interpretation": "If one expert wins, shuffling routes is a no-op and is not evidence of routing benefit.",
+  "candidates": [
+    {
+      "experts": 1,
+      "total_rank": 8,
+      "ridge": 0.01,
+      "training_counts": [
+        112
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 0,
+      "validation": {
+        "relative_squared_error": 0.07162578611609063,
+        "output_cosine": 0.9635217804994214
+      }
+    },
+    {
+      "experts": 1,
+      "total_rank": 8,
+      "ridge": 0.1,
+      "training_counts": [
+        112
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 0,
+      "validation": {
+        "relative_squared_error": 0.07173044004985968,
+        "output_cosine": 0.9634676106675111
+      }
+    },
+    {
+      "experts": 1,
+      "total_rank": 8,
+      "ridge": 1.0,
+      "training_counts": [
+        112
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 0,
+      "validation": {
+        "relative_squared_error": 0.07273303952468961,
+        "output_cosine": 0.9629489211163422
+      }
+    },
+    {
+      "experts": 1,
+      "total_rank": 8,
+      "ridge": 10.0,
+      "training_counts": [
+        112
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 0,
+      "validation": {
+        "relative_squared_error": 0.07491417476851922,
+        "output_cosine": 0.9618207631445538
+      }
+    },
+    {
+      "experts": 2,
+      "total_rank": 8,
+      "ridge": 0.01,
+      "training_counts": [
+        14,
+        98
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 80,
+      "validation": {
+        "relative_squared_error": 0.07343749721089048,
+        "output_cosine": 0.9625821003385242
+      }
+    },
+    {
+      "experts": 2,
+      "total_rank": 8,
+      "ridge": 0.1,
+      "training_counts": [
+        14,
+        98
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 80,
+      "validation": {
+        "relative_squared_error": 0.07349083748656052,
+        "output_cosine": 0.9625546059361302
+      }
+    },
+    {
+      "experts": 2,
+      "total_rank": 8,
+      "ridge": 1.0,
+      "training_counts": [
+        14,
+        98
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 80,
+      "validation": {
+        "relative_squared_error": 0.07398385497555224,
+        "output_cosine": 0.9623001000619643
+      }
+    },
+    {
+      "experts": 2,
+      "total_rank": 8,
+      "ridge": 10.0,
+      "training_counts": [
+        14,
+        98
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 80,
+      "validation": {
+        "relative_squared_error": 0.07536628752174623,
+        "output_cosine": 0.9615861163766154
+      }
+    },
+    {
+      "experts": 4,
+      "total_rank": 8,
+      "ridge": 0.01,
+      "training_counts": [
+        25,
+        6,
+        65,
+        16
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 112,
+      "validation": {
+        "relative_squared_error": 0.07495250620366746,
+        "output_cosine": 0.9617947573734059
+      }
+    },
+    {
+      "experts": 4,
+      "total_rank": 8,
+      "ridge": 0.1,
+      "training_counts": [
+        25,
+        6,
+        65,
+        16
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 112,
+      "validation": {
+        "relative_squared_error": 0.07497545157218413,
+        "output_cosine": 0.961782957944095
+      }
+    },
+    {
+      "experts": 4,
+      "total_rank": 8,
+      "ridge": 1.0,
+      "training_counts": [
+        25,
+        6,
+        65,
+        16
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 112,
+      "validation": {
+        "relative_squared_error": 0.07515757052991334,
+        "output_cosine": 0.9616893092600164
+      }
+    },
+    {
+      "experts": 4,
+      "total_rank": 8,
+      "ridge": 10.0,
+      "training_counts": [
+        25,
+        6,
+        65,
+        16
+      ],
+      "factor_payload_bytes": 88064,
+      "router_bytes": 112,
+      "validation": {
+        "relative_squared_error": 0.0754768454633118,
+        "output_cosine": 0.9615305277733776
+      }
+    }
+  ],
+  "selected": {
+    "experts": 1,
+    "total_rank": 8,
+    "ridge": 0.01,
+    "training_counts": [
+      112
+    ],
+    "factor_payload_bytes": 88064,
+    "router_bytes": 0,
+    "validation": {
+      "relative_squared_error": 0.07162578611609063,
+      "output_cosine": 0.9635217804994214
+    }
+  },
+  "test": {
+    "relative_squared_error": 0.0687073257341564,
+    "output_cosine": 0.9650412061489938
+  },
+  "shuffled_route_test": {
+    "relative_squared_error": 0.0687073257341564,
+    "output_cosine": 0.9650412061489938
+  },
+  "previous_quantized_8d_test": {
+    "relative_squared_error": 0.07089566755310787,
+    "output_cosine": 0.9639053763777572
+  }
+}
