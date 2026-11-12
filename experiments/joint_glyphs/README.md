@@ -89,6 +89,21 @@ The output directory must be new. Four `.luj` files, JSON receipts and the
 recovered English text are written. No downloaded model weights or private
 repository sources are committed. Public inputs retain their upstream terms.
 
+Decode in a separate process using only the chunk and its shared tokenizer:
+
+```sh
+python3 experiments/joint_glyphs/decode_joint_chunk.py \
+  experiments/joint_glyphs/proof/qat_exact.luj \
+  --tokenizer "$LANGUAGE_U_EXPERIMENT_DIR/activation-cache/tokenizer.json" \
+  --dtype fp32 --weights-out experiments/joint_glyphs/proof/recovered_fp32.npy
+```
+
+Use `--dtype fp16` with a different output filename for FP16. The decoder needs
+no original weights, calibration arrays or network access. It exports a 5x256
+weight array (5,120 FP32 payload bytes or 2,560 FP16 payload bytes), reconstructs
+the English token stream and executes the integer program. Output casts that
+would lose recovered numerical values fail rather than silently rounding.
+
 ## Format and rejection rules
 
 The little-endian stream header is `<4sBBHI32s32s32s`: magic LUJ1, version 1,
