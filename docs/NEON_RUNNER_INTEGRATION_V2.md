@@ -38,9 +38,9 @@ Where vLLM / PagedAttention hits two physical bottlenecks on edge and long-conte
 
 ## 3. Physical Silicon Benchmark: Agent 01 `AstronautSHE` (Raspberry Pi 4 Cortex-A72)
 
-> **Component Benchmark Disambiguation:** The table below reports the **Attention Kernel & KV Cache Component Benchmark** (`flash_glyph_attention_gqa_c` + `encode_kv_glyph_fast_c` vs. native C/NEON/OpenMP `paged_bf16_attention_gqa_c` with 16-token permuted `block_table` pages and exact FP32 reference) evaluated on **physical Gemma 4 31B Layer 0 & Layer 5 Q/K/V/O activations** streamed from `gemma4_31b_language_u_sandwich_stream.bin` (`15,100,968,976` B) on `/mnt/SHE-VAULT`. Full end-to-end token generation additionally couples BPE tokenization (`tokenizer.json`), BF16 embeddings (`embed_tokens`), RMSNorm/QK-Norm + RoPE, 60-layer FFN orchestration, and vocabulary sampling.
+> **Component Benchmark Disambiguation:** The table below reports the **Attention Kernel & KV Cache Component Benchmark** (`flash_glyph_attention_gqa_c` + `encode_kv_glyph_fast_c` vs. native C/NEON/OpenMP `paged_bf16_attention_gqa_c` with 16-token permuted `block_table` pages and exact FP32 reference) evaluated on **physical Gemma 4 31B Layer 0 & Layer 5 Q/K/V/O activations** streamed from `gemma4_31b_language_u_sandwich_stream.bin` (`15,100,968,976` B) on external SSD (`$LANGUAGE_U_STREAM_DIR`). Full end-to-end token generation additionally couples BPE tokenization (`tokenizer.json`), BF16 embeddings (`embed_tokens`), RMSNorm/QK-Norm + RoPE, 60-layer FFN orchestration, and vocabulary sampling.
 
-* **Hardware:** `AstronautSHE` — Raspberry Pi 4 Model B 8GB (`aarch64`, ARMv8-A Cortex-A72, 4 OpenMP threads, Linux `6.18.50+rpt-rpi-v8`, `/mnt/SHE-VAULT` external SSD)
+* **Hardware:** `AstronautSHE` — Raspberry Pi 4 Model B 8GB (`aarch64`, ARMv8-A Cortex-A72, 4 OpenMP threads, Linux `6.18.50+rpt-rpi-v8`, external SSD)
 * **Online Single-Token KV Encode (Global L5, 4 KV heads $\times$ 512d = 8 glyphs):** **`46.3 us/tok`** (Opt5 48B Top-4 Outlier) | **`165.2 us/tok`** (Opt4 132B $O(1)$ Lattice)
 * **Raw JSON Telemetry Receipt:** [`docs/glyph_attention_v2_pi4_benchmark_report.json`](glyph_attention_v2_pi4_benchmark_report.json)
 

@@ -154,11 +154,14 @@ def build_paged_pool(
 
 
 def _resolve_31b_asset(filename: str, primary_dir: Path) -> Path:
-    candidates = [
-        Path("/mnt/SHE-VAULT/gemma-31b-language-u") / filename,
+    candidates = []
+    env_dir = os.environ.get("LANGUAGE_U_STREAM_DIR", "").strip()
+    if env_dir:
+        candidates.append(Path(env_dir) / filename)
+    candidates.extend([
         primary_dir / filename,
-        Path("/home/astronautshe/gemma-31b-language-u") / filename,
-    ]
+        Path.home() / "gemma-31b-language-u" / filename,
+    ])
     for cand in candidates:
         if cand.is_file():
             return cand

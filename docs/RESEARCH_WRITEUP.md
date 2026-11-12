@@ -11,9 +11,9 @@
 Modern artificial intelligence splits one intelligence into three incompatible currencies: raw floating-point tensors for weight storage, statistical subword fragments for language and code representation, and separate interpreted runtimes for execution. On consumer and edge hardware, this fragmentation cripples autonomous software engineering (SWE) agents - starving RAM with gigabyte weight footprints, quadratically exhausting attention KV-caches on multi-thousand-token file dumps, and inducing multi-turn hallucination cascades when repository retrieval returns false positives.
 
 We introduce **The Glyph Standard (Language-U & Consider-Trinity)**, a unified discrete data type on the octonionic unit 7-sphere ($S^7$) that simultaneously serves three natures in one symbol:
-1. **Nature 1  -  Storage Container:** Packs 256 neural weights into **36 bytes** (1.125 bits/weight ternary lattice) or **132 bytes** (4.125 bits/weight dual-stage Residual Vector Quantization on a 2,048-vertex $S^7$ codebook), governed by **Law I (The Zero-Remainder Census Law, $R \equiv 0 \pmod{256}$)**. We prove that this law holds universally across **`google/gemma-4-E4B-it`** ($d_{\text{model}}=2560, d_{\text{ff}}=10240, \text{PLE}=256, \text{vocab}=262144 \implies R \equiv 0$ across all matrices), **`embeddinggemma-2`** ($768\text{-D} \to 61.3\text{ KB}$ index, $96.0\times$ compression), and 0.8B-9B reference models ($33,711,216$ glyphs, $R \equiv 0$).
-2. **Nature 2  -  Semantic Proposition & Codebase Compass:** Encodes closed semantic propositions ($\text{Action} \oplus \text{Target} \oplus \text{Context} \oplus \text{Constraint}$) at an empirical **20.4-token sweet spot** ($416.2\times$ quadratic attention FLOP reduction; 95.1% KV-cache savings) and indexes repository AST symbols via 6-channel Hybrid Reciprocal Rank Fusion governed by a **Two-Tier Trust Law (`STRONG`, `WEAK`, `MISS`)** with zero false positives (35/35 hardware pass rate).
-3. **Nature 3  -  Executable Machine Code:** Packs 6D Cuneiform coordinates into a 28-bit glyph instruction (`rc | rf<<4 | ra<<20`) across a **16-Operation Semantic ALU**, lowering through constant-folded C to native **AArch64 NEON / x86-64 ELF machine code** with **`0.00e+00` double-entry parity error** (21/21 compiler gates green on physical ARM Cortex-A72 silicon).
+1. **Nature 1  -  Storage Container:** Packs 256 neural weights into **36 bytes** (1.125 bits/weight ternary lattice) or **132 bytes** (4.125 bits/weight dual-stage Residual Vector Quantization on a 2,048-vertex $S^7$ codebook), governed by **Law I (The Zero-Remainder Census Law, $R \equiv 0 \pmod{256}$)**. We prove that this law holds universally across **`google/gemma-4-E4B-it`** ($7,517,503,488$ pure LM 2D weights = $29,365,248$ Macro-Glyphs; $29,390,592$ w/ multimodal projectors, $R \equiv 0$), **`embeddinggemma-2`** ($768\text{-D} \to 61.31\text{ KiB}$ index, $96.0\times$ compression), `gemma-4-31b` ($114,401,280$ glyphs, $R \equiv 0$), and 0.8B-9B reference models ($33,711,216$ glyphs, $R \equiv 0$).
+2. **Nature 2  -  Semantic Proposition & Codebase Compass:** Encodes closed semantic propositions ($\text{Action} \oplus \text{Target} \oplus \text{Context} \oplus \text{Constraint}$) at an empirical **20.4-token sweet spot** ($416.2\times$ quadratic attention FLOP reduction; 95.1% KV-cache savings) and indexes repository AST symbols via 6-channel Hybrid Reciprocal Rank Fusion governed by a **Two-Tier Trust Law (`STRONG`, `WEAK`, `MISS`)** with zero OOD false positives (35/35 dev pass rate).
+3. **Nature 3  -  Executable Machine Code:** Packs 6D Cuneiform coordinates into a non-overlapping 24-bit glyph instruction (`rc | (rf << 8) | (ra << 16)`) across a **16-Operation Semantic ALU**, lowering through constant-folded C to native **AArch64 NEON / x86-64 ELF machine code** with **`0.00e+00` double-entry parity error** (21/21 compiler gates green on physical ARM Cortex-A72 silicon).
 
 ---
 
@@ -32,9 +32,9 @@ To resolve all three walls in a single formalism, we present **The Macro-Glyph**
 +===================================================================================+
 |  NATURE 1: STORAGE               NATURE 2: SEMANTICS          NATURE 3: EXECUTION |
 |  -----------------               -------------------          ------------------- |
-|  256 neural weights packed       Closed ATCC Proposition:     28-bit Glyph Opcode |
-|  into 36B (Opt5 Ternary) or      [Action (+) Target (+)       (rc | rf<<4 |       |
-|  132B (Opt4 Dual-Stage RVQ)      Context (+) Constraint]      ra<<20) -> 16-Op    |
+|  256 neural weights packed       Closed ATCC Proposition:     24-bit Glyph Opcode |
+|  into 36B (Opt5 Ternary) or      [Action (+) Target (+)       (rc | (rf<<8) |     |
+|  132B (Opt4 Dual-Stage RVQ)      Context (+) Constraint]      (ra<<16)) -> 16-Op  |
 |  on S^7 via Hadamard H_8.        @ 20.4-token sweet spot      Semantic ALU ->     |
 |  Gemma 4 E4B & Qwen 9B           + 6-Channel S^7 Compass      Constant-Folded C   |
 |  Census: R = 0 (Exact).          (96x RAG compression).       -> ELF AArch64/x86. |
@@ -64,9 +64,9 @@ A macro-glyph encapsulates a $16 \times 16$ tile of **256 neural weights** ($32$
 
 | Architecture / Subject | Key Dimensions ($d_{\text{model}}, d_{\text{ff}}, \text{PLE}$) | Total Active Weights | Discrete Macro-Glyphs ($\div 256$) | Remainder ($R$) |
 | :--- | :--- | :--- | :--- | :--- |
-| **`google/gemma-4-E4B-it`** | $d=2560, d_{\text{ff}}=10240, \text{PLE}=256, V=262144$ | $4,917,821,440$ (Core 2D) | **$19,210,240$ Glyphs** | **$R = 0$ (Exact)** |
-| **Gemma 4 E4B PLE Table** | $262,144 \times 256$ (Per-Layer Input) | $67,108,864$ | **$262,144$ (1 Glyph/Token)** | **$R = 0$ (Exact)** |
-| **`google/embeddinggemma-2`** | $768\text{-D}$ MRL (1,962 Code/Doc Chunks) | $1,506,816$ floats ($5.28\text{ MB}$) | **$61.3\text{ KB}$ ($96.0\times$ Compressed)** | **$R = 0$ (Exact)** |
+| **`google/gemma-4-E4B-it`** | $d=2560, d_{\text{ff}}=10240, \text{PLE}=256, V=262144$ (HF Pure LM 2D) | $7,517,503,488$ (LM 2D) | **$29,365,248$ Glyphs** (`29,390,592` w/ MM) | **$R = 0$ (Exact)** |
+| **Gemma 4 E4B PLE Table** | $262,144 \times 10,752$ ($42 \times 256$) | $2,818,572,288$ | **$11,010,048$ Glyphs** | **$R = 0$ (Exact)** |
+| **`google/embeddinggemma-2`** | $768\text{-D}$ MRL (1,962 Code/Doc Chunks) | $1,506,816$ floats ($6,027,264\text{ B}$ / $5.75\text{ MiB}$) | **$62,784\text{ B}$ ($61.31\text{ KiB}$, $96.0\times$)** | **$R = 0$ (Exact)** |
 | **Subject 1 (`Qwen3.5-0.8B`)** | $d=1024, 244\text{ Matrices}$ | $615,579,648$ | **$2,404,608$ Glyphs** | **$R = 0$ (Exact)** |
 | **Subject 2 (`Qwen3.5-9B`)** | $d=4096, d_{\text{ff}}=12288, 367\text{ Matrices}$ | $8,630,071,296$ | **$33,711,216$ Glyphs** | **$R = 0$ (Exact)** |
 
@@ -85,7 +85,7 @@ In its second nature, a macro-glyph represents a closed semantic proposition str
 $$\mathbf{Macro\text{-}Glyph} = [\text{Action } (\mathcal{A})] \oplus [\text{Target } (\mathcal{T})] \oplus [\text{Context } (\mathcal{C})] \oplus [\text{Constraint } (\mathcal{K})]$$
 
 * **The 20.4-Token Density Constant:** Across propositional corpora, semantic coherence peaks at **$20.4$ BPE tokens** ($\approx 15.4$ words / $113$ characters). Under-packing ($<12$ tokens) starves context; over-packing ($>22$ words) leaks across orthogonal sub-manifolds of $S^7$, dropping inverse-resonance recovery from $1.000$ to $\sim 0.65$. Shrinking sequence length by $20.4\times$ yields a **$(20.4)^2 = 416.2\times$ theoretical reduction in quadratic self-attention FLOPs** and **95.1% KV-cache savings**.
-* **L1-Cache Codebase Navigation & Two-Tier Trust Law (`trinity-hybrid-retrieval`):**
+* **L1-Cache Codebase Navigation & Two-Tier Trust Law (`trinity_retrieval/` in `Language-U-Gemma4`):**
   For local Gemma 4 SWE agents navigating complex repositories, we fuse **6 retrieval channels** (Exact AST symbol, BM25F, code morphology n-grams, `embeddinggemma-2` 768-D MRL, $S^7$ Octonionic Compass spherical resonance in $<0.05\text{ ms}$, and True North attractor coherence) via Reciprocal Rank Fusion ($\text{RRF}(d) = \frac{0.6}{60 + r_{\text{bm25}}} + \frac{0.4}{60 + r_{S^7}}$).
   To prevent multi-turn agent hallucination cascades on non-existent symbols, our **Two-Tier Trust Law** gates every retrieval:
   * **`STRONG` (Execute):** High $S^7$ resonance + lexical consensus $\to$ injects a surgical **50-token code slice** (95% prompt token savings over 3K-8K file dumps).
@@ -94,7 +94,7 @@ $$\mathbf{Macro\text{-}Glyph} = [\text{Action } (\mathcal{A})] \oplus [\text{Tar
 
 ### 2.4 Nature 3 (Execution): 6D Cuneiform Radicals & The 16-Op Semantic ALU Compiler
 
-Unlike all prior quantization or token-compression schemes, a macro-glyph is also an **executable instruction**. Each proposition maps to a 6D Cuneiform address `[Domain, Subdomain, Operation, Modality, Depth, Polarity]` packed into three 8-bit radicals (`RC = domain<<4 | subdomain`, `RF = op<<4 | modality`, `RA = depth<<4 | polarity`) forming a 28-bit glyph opcode (`rc | rf<<4 | ra<<20`).
+Unlike all prior quantization or token-compression schemes, a macro-glyph is also an **executable instruction**. Each proposition maps to a 6D Cuneiform address `[Domain, Subdomain, Operation, Modality, Depth, Polarity]` packed into three 8-bit radicals (`RC = domain<<4 | subdomain`, `RF = op<<4 | modality`, `RA = depth<<4 | polarity`) forming a non-overlapping 24-bit glyph opcode (`rc | (rf << 8) | (ra << 16)`).
 
 The **Language-U Compiler** lowers glyph programs through a **16-Operation Semantic ALU** (`compute, decode, encode, transform, verify, rotate, project, reduce, hash, emit, load, store, add, multiply, compare, branch`) into constant-folded C and compiles via `gcc`/`clang` to **native AArch64 NEON / x86-64 ELF machine code** (`fcvt`, `ldp`, `str`, `vmlaq_f32`) with zero interpreter dispatch.
 
@@ -108,8 +108,8 @@ All benchmarks were executed on physical silicon - including **Raspberry Pi 4 Mo
 
 | Verification Gate / Metric | Measured Result on Physical Silicon | Hardware Host & Verification Artifact |
 | :--- | :--- | :--- |
-| **Gemma 4 E4B + Qwen 9B Census Law** | **100% $R \equiv 0 \pmod{256}$** ($19.21\text{M}$ & $33.71\text{M}$ glyphs) | Verified via `consider_trinity_e4b_core.py` & `audit_glyph_census.py` |
-| **`embeddinggemma-2` $S^7$ Index Footprint** | **5.28 MB $\to$ 61.3 KB ($96.0\times$ compression)** | Fits entirely in CPU L1/L2 cache; $<0.05\text{ ms}$ resonance scan |
+| **Gemma 4 E4B + Qwen 9B Census Law** | **100% $R \equiv 0 \pmod{256}$** ($29.37\text{M}$ LM & $33.71\text{M}$ glyphs) | Verified via HF `safetensors` audit & `audit_glyph_census.py` |
+| **`embeddinggemma-2` $S^7$ Index Footprint** | **6.03 MB (5.75 MiB) $\to$ 61.31 KiB ($96.0\times$ compression)** | Fits in CPU L1/L2 cache; $0.0119\text{--}0.0146\text{ ms}$ scan |
 | **Two-Tier Trust Law Abstention Gate** | **35 / 35 Passing (0.0% False Positives)** | Halts immediately on unseen queries (e.g. `"zero knowledge proofs"`) |
 | **ARM NEON SIMD Decode Throughput** | **2.86M - 13.13M glyphs/s** ($2.57\text{s}$ full 9B decode) | Raspberry Pi 4 Cortex-A72 NEON (`vmlaq_f32`), **0.0 MB idle RAM** (`mmap`) |
 | **Language-U Compiler & Semantic ALU** | **21/21 Compiler + 5/5 ALU Gates Green** | Native ELF AArch64 == Reference VM (`max_err = 0.00e+00`, `0x0edf9291`) |

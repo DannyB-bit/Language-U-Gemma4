@@ -433,6 +433,6 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         try:
             sys.stdout.reconfigure(encoding="utf-8")
-        except Exception:
-            pass
+        except (AttributeError, ValueError) as exc:
+            print(f"[warn] utf-8 stdout reconfigure skipped: {exc}", file=sys.stderr)
     verify_language_u_codec()

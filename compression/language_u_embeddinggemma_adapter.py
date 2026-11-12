@@ -137,7 +137,8 @@ class EmbeddingGemma2MRLProjector:
         self.num_octonions = target_dim // 8
         self.backend_name: Optional[str] = None
         self._impl = None
-        if backend in ('real', 'auto'):
+        disable_real = os.environ.get("LUC_NO_GEMMA", "").strip().lower() in ("1", "true", "yes")
+        if backend == 'real' or (backend == 'auto' and not disable_real):
             try:
                 self._impl = RealEmbeddingGemma2(target_dim)
                 self.backend_name = 'real'
@@ -149,6 +150,10 @@ class EmbeddingGemma2MRLProjector:
                 warnings.warn(
                     f'[language-u] EmbeddingGemma-2 real backend unavailable ({exc}); '
                     f'falling back to hash embedding — semantic quality reduced.')
+        elif backend == 'auto' and disable_real:
+            import warnings
+            warnings.warn(
+                '[language-u] LUC_NO_GEMMA=1 set; using hash embedding fallback — semantic quality reduced.')
         self._impl = HashEmbeddingFallback(target_dim)
         self.backend_name = 'hash'
 
@@ -217,8 +222,18 @@ class REAEvidenceGraphScorer:
     Scores hypotheses against observations with contradiction pruning.
     """
 
-    def __init__(self, target_dim: int = 128):
-        self.projector = EmbeddingGemma2MRLProjector(target_dim=target_dim)
+    def __init__(self, target_dim: int = 128, backend: str = 'auto'):
+        self.target_dim = target_dim
+        self.backend = backend
+        self._projector: Optional[EmbeddingGemma2MRLProjector] = None
+
+    @property
+    def projector(self) -> EmbeddingGemma2MRLProjector:
+        if self._projector is None:
+            self._projector = EmbeddingGemma2MRLProjector(
+                target_dim=self.target_dim, backend=self.backend
+            )
+        return self._projector
 
     def extract_observations_from_prompt(self, prompt: str) -> List[Dict[str, Any]]:
         """Extracts individual constraint and property observations from problem text."""

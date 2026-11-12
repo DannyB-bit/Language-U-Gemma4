@@ -18,10 +18,10 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
 |  - Zero-Remainder Census Law (R = 0 mod 256) universally across Gemma 4 E4B/31B   |
 |    weights AND KV heads (head_dim = 256 -> 1 glyph, global 512 -> 2 glyphs).      |
 |                                                                                   |
-|  STAGE 2: COMPRESSION (real-language-u-compression)                               |
+|  STAGE 2: COMPRESSION (`trinity_retrieval/` & `compression/`)                     |
 |  - Sylvester-Hadamard H_8 Orthogonal Rotation (||H_8 H_8^T - I_8||_F < 1e-12).    |
-|  - 96.0x Index Compression (embeddinggemma-2: 5.28 MB -> 61.3 KB resident on S^7). |
-|  - Two-Tier Trust Law (STRONG, WEAK, MISS) with 0 false positives (35/35 pass).  |
+|  - 96.0x Index Compression (embeddinggemma-2: 6.03 MB / 5.75 MiB -> 61.31 KiB S^7).|
+|  - Two-Tier Trust Law (STRONG, WEAK, MISS) with 0/6 OOD FPs (35/35 dev, 17/23 NB).|
 |                                                                                   |
 |  STAGE 3: COMPILER & NEON-RUNNER BRIDGE (Language-U-Gemma4-NeonRunner-Bridge-V2)  |
 |  - 16-Op Semantic ALU on so(8) Lie algebra + Unified ARMv8 NEON / x86-64 AVX2     |
@@ -59,6 +59,12 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
 * **`gemma4_e4b/`**:
   * `consider_trinity_e4b_core.py`: Full Gemma 4 E4B Census Law validator, $S^7$ projection, and Semantic ALU execution gatekeeper.
   * `encode_gemma4_e4b_to_glyphs.py`: Streaming encoder converting `google/gemma-4-E4B-it` safetensors directly into `Neon-Runner`-ready `.lanu` Option 4 (`neon-opt4`) and Dual-Road (`hybrid`) macro-glyph streams + `tensor_layout.json`.
+* **`trinity_retrieval/` & `tests/retrieval/` (Nature 2 Consolidated Retrieval & Edge Streaming Suite)**:
+  * `language_u_octonion.py` & `affine_hadamard_h64.py`: Sylvester-Hadamard $H_8$ projection (`768-D -> 8-D` $S^7$, `6,027,264 B -> 62,784 B`, exact `96.0x` index compression) and $H_{64}$ binary hypercube packing.
+  * `noise_stability_sieve.py`, `roadmap_hybrid_v5_gemma.py`, `battery_contract.py`, `test_35_hardware_suite.py`: 6-channel Hybrid RRF engine and **Two-Tier Trust Law** (`STRONG` / `WEAK` / `MISS`) with 3-scale query stability sieve (`0/6` OOD false positives across the 35-query dev suite).
+  * `gemma2_paths.py`, `gemma2_embedding.py`: Cross-platform resolver (`$GEMMA2_WEIGHTS_DIR`, `$GEMMA2_MODEL_PATH`, Hugging Face Hub) and mean-pooled PyTorch embedder for `google/embeddinggemma-2`.
+  * `air_trinity_streamer.py`, `edge_lora_streamer.py`, `sparse_octonion_streamer.py`, `edge_self_test.py`: Memory-constrained layer streaming, LoRA gradient flow, and sparse octonion routing.
+  * `swe_navigation_benchmark_results.json`: Recorded summary metrics for the 1,962-chunk code/doc benchmark (`6,027,264 B -> 62,784 B`, `0.0146 ms` mean $S^7$ scan).
 * **`compression/`**:
   * `language_u_codec.py`: Sylvester-Hadamard $H_8$ rotation and octonionic codebook quantization.
   * `compression_engine.py`: Multi-mode RVQ and ternary lattice packing engine.
@@ -74,11 +80,14 @@ Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlene
   * `submission.zip`: The fleet's **v11 competition bundle** (KOFI, 2026-10-19) — the measured-max Gemma 4 Developer Agent submission: flexonafft Budget-Aware V10 base (public 0.22 badge) + four bounded evidence-backed prompt splices (issue contract, coverage checkpoint, final-edit verification, repo-specific verification focus). Declares `model: gemma-4-31b-it-qat-w4a16-ct`, temp 0.2, 4096 thinking, 28 calls/8 min/80 turns.
   * `build.py`: deterministic offline builder + structural validator (SHA-256 fb461a4e…25a3a, timestamp-pinned since the Zymatica review PR).
 * **`docs/`**:
+  * `paper_arxiv.tex` & `README_Paper_Manuscript.md`: Competition manuscript and full reproducible ledger (`R = 0 mod 256` across Gemma 4 E4B & 31B, Nature 2 $S^7$ RAG, 24-bit Semantic ALU, Optical DMA, `GlyphAttentionV2`, and `langu_c`).
+  * `Language-U_Architecture_Infographic.png`: High-resolution architecture overview figure.
+  * `RESEARCH_WRITEUP.md`: Extended technical research writeup.
   * `GEMMA4_31B_OPTICAL_LIVE_BENCHMARK_REPORT.md`: Telemetry report from live execution on the 7.08 GB physical Gemma 4 31B Language-U stream weights.
   * `OPTICAL_CONTEXT_INTEGRATION_V2_2.md`: Complete Stage 5 architectural specification, AIQC binary wire format, and optical DMA runbook.
   * `optical_context_gemma4_benchmark_report.json`: Physical silicon benchmark telemetry from `scripts/benchmark_optical_context_gemma4.py`.
   * `NEON_RUNNER_INTEGRATION_V2.md`: Complete V1 $\to$ V2.0 $\to$ V2.1 forensic comparison matrix, `GlyphAttentionV2` wire/kernel specification, Raspberry Pi 4 silicon benchmark tables, and `DannyB-bit/Neon-Runner` integration runbook.
-  * `glyph_attention_v2_pi4_benchmark_report.json`: Raw silicon benchmark telemetry captured on Agent 01 `AstronautSHE` (Raspberry Pi 4 Cortex-A72 + `/mnt/SHE-VAULT` SSD).
+  * `glyph_attention_v2_pi4_benchmark_report.json`: Raw silicon benchmark telemetry captured on Agent 01 `AstronautSHE` (Raspberry Pi 4 Cortex-A72 + external SSD).
 
 ---
 
@@ -100,6 +109,13 @@ python neon_runner/build_native.py
 # 5. Run all 12 fail-closed physical verification gates (6 Stream/GEMV + 6 GlyphAttentionV2)
 python neon_runner/bridge.py --self-test
 python neon_runner/glyph_attention.py --self-test
+
+# 6. Run consolidated Nature 2 (trinity_retrieval/) verification gates & unit tests
+python trinity_retrieval/edge_self_test.py
+python trinity_retrieval/language_u_octonion.py
+python trinity_retrieval/affine_hadamard_h64.py
+python trinity_retrieval/noise_stability_sieve.py
+python -m unittest discover -s tests/retrieval -v
 ```
 
 ---
@@ -114,13 +130,13 @@ All component benchmarks were validated on physical hardware (Agent 01 `Astronau
   * **In-Memory Optical DMA:** **`0.235 ms`** (128 tokens, $264 \times 264\text{ px}$) and **`0.297 ms`** (52 tokens, $184 \times 184\text{ px}$) per frame, delivering an effective **`53.8x` speedup** over CPU string tokenization.
   * **Continuous Video Streaming Rate:** **`5,512.5 FPS`** ($91.9\times$ faster than standard 60 FPS video) sustaining **`529,196.8 tokens/sec`** with **`100.0%` bit-exact parity** (IEEE 802.3 CRC32 verified).
   * **Gemma 4 Prefill Integration:** Direct optical prefill forward passes at **`3,476.6` to `3,806.5 tokens/sec`** directly into hybrid recurrent layers.
-* **Census Law:** $100\%$ $R \equiv 0 \pmod{256}$ across all $4,917,821,440$ core weights ($7,351,042,048$ total active weights / $28,715,008$ glyphs) of `google/gemma-4-E4B-it`, $114,401,280$ glyphs of `gemma-4-31b-it`, and every sliding (`256d` = 1 glyph) and global (`512d` = 2 glyphs) KV head.
+* **Census Law:** $100\%$ $R \equiv 0 \pmod{256}$ across `google/gemma-4-E4B-it` HF `safetensors` (`7,517,503,488` pure LM 2D weights / `29,365,248` glyphs; `29,390,592` w/ multimodal projectors; core connectome analytical model `7,351,042,048` weights / `28,715,008` glyphs), `114,401,280` glyphs of `gemma-4-31b-it`, and every sliding (`256d` = 1 glyph) and global (`512d` = 2 glyphs) KV head.
 * **GlyphAttentionV2 Component Benchmark (`AstronautSHE` Pi 4 Cortex-A72, Real Gemma 4 31B Q/K/V/O States):**
   * **Online KV Encode:** `46.3 us/tok` (Option 5 `48 B` Outlier) and `165.2 us/tok` (Option 4 `132 B` $O(1)$ Lattice) across 8 global glyphs (`4 KV x 512d`).
   * **Layer 0 Sliding Window (`W = 1,024`, `32Q/16KV/256d`):** `Opt5_Ring_DualRoad` runs in **`4.36 ms` (`1.76x` faster than vLLM PagedBF16 `7.67 ms`)** at **`6.52x` smaller RAM (`2,512 KB`)** and **`o_proj_cos = 0.99597` (`20.8 dB` SNR)**.
   * **Layer 5 Global Long-Context (`4K -> 128K`, `32Q/4KV/512d`, `k_eq_v = True`):** At `128K` tokens, `Opt5_DualRoad_48B` cuts KV RAM **`21.2x` (`1,024.00 MB` $\to$ `48.27 MB`)** while running in **`713.98 ms` (`1.60x` faster than vLLM PagedBF16 `1,140.71 ms`)**.
-* **Index Footprint:** 5.28 MB $\to$ 61.3 KB ($96.0\times$ compression) fitting entirely in L1/L2 cache.
-* **Abstention Gate:** 35/35 Passing ($0.0\%$ False Positives) under the Two-Tier Trust Law.
+* **Index Footprint:** `6,027,264 B` (`6.03 MB` / `5.75 MiB`) $\to$ `62,784 B` (`61.31 KiB`, $96.0\times$ compression) fitting in L1/L2 cache.
+* **Abstention Gate:** `0/6` OOD false positives (`35/35` dev suite pass; `17/23` strict pass / `0` OOD FPs in executed Kaggle notebook) under the Two-Tier Trust Law.
 
 ---
 

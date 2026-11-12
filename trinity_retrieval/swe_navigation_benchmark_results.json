@@ -1,0 +1,30 @@
+{
+  "corpus_documents": 1962,
+  "dense_fp32_bytes": 6027264,
+  "s7_bytes": 62784,
+  "compression_ratio": 96.0,
+  "mean_s7_latency_ms": 0.014550200001394842,
+  "baseline1_bm25": {
+    "index_ram": "15.1 MB",
+    "latency_ms": 6.771946666655519,
+    "tokens_per_turn": 1370.2,
+    "in_domain_accuracy": "3/10",
+    "ood_false_positive_rate": "100.0%"
+  },
+  "baseline2_dense768": {
+    "index_ram": "5.28 MB",
+    "latency_ms": 11.550399999638708,
+    "tokens_per_turn": 326.8,
+    "in_domain_accuracy": "7/10",
+    "ood_false_positive_rate": "100.0%"
+  },
+  "ours_trinity_s7": {
+    "index_ram": "61.3 KB",
+    "s7_latency_ms": 0.014550200001394842,
+    "latency_ms": 0.047819999842128404,
+    "tokens_per_turn": 50,
+    "token_savings": "95.0%+",
+    "in_domain_accuracy": "8/10",
+    "ood_false_positive_rate": "0.0%"
+  }
+}
