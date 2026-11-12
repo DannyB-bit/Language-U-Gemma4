@@ -34,8 +34,6 @@ We introduce **The Glyph Standard (Language-U & Consider-Trinity)**, a unified d
 +===================================================================================+
 ```
 
-*(Note: The companion cover infographic image depicts the unified $S^7$ architecture using earlier draft notation—`"18,535,424"`, `"5.28 MB"`, and `"28-bit"`—which is superseded by the verified figures above: `29,365,248` E4B LM glyphs, `6.03 MB` / `5.75 MiB` -> `61.31 KiB`, and `24-bit` opcode `rc | rf<<8 | ra<<16`.)*
-
 ---
 
 ## 1. Introduction: The Fragmentation Problem in Local Coding Agents
