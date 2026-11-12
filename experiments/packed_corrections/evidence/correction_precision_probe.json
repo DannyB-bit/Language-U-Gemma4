@@ -1,0 +1,256 @@
+{
+  "scope": "128 rows of L0 Q, reused development test; not language accuracy or Pi memory/speed.",
+  "selection": "Minimum validation error within FP16 rank-8 file-byte budget; no test selection.",
+  "execution": "Stored binary base and stored correction, both chunked FP32 NumPy operators.",
+  "data_sha256": "2785da8b5bbe02e463ef5ed77a78fe81b1242029b22986d9b816977e7e77fab8",
+  "base_sha256": "673e2407219b35a8bb7f16ef42e8fd2355a05644e8412c99add441a22ae5cf50",
+  "correction_budget_bytes": 88128,
+  "candidates": [
+    {
+      "storage": "fp16",
+      "rank": 8,
+      "ridge": 0.01,
+      "file": "correction-fp16-r8-ridge0.01.rcf",
+      "bytes_including_header_and_scales": 88128,
+      "validation": {
+        "relative_squared_error": 0.07162579060706273,
+        "output_cosine": 0.9635217781705067
+      },
+      "stored_fp32_vs_float64_relative_error": 2.182743039703882e-07,
+      "sha256": "6029660a00bf87cff21e64218bb3be62454748a608da0e8c84edb852603054e7"
+    },
+    {
+      "storage": "int8",
+      "rank": 8,
+      "ridge": 0.01,
+      "file": "correction-int8-r8-ridge0.01.rcf",
+      "bytes_including_header_and_scales": 44640,
+      "validation": {
+        "relative_squared_error": 0.0716263653322207,
+        "output_cosine": 0.9635214801258882
+      },
+      "stored_fp32_vs_float64_relative_error": 2.2505538736883052e-07,
+      "sha256": "07de81c3bccf50eed5b7f598061a542a4792ebc4e747e374ef583c3bab1b4454"
+    },
+    {
+      "storage": "int8",
+      "rank": 12,
+      "ridge": 0.01,
+      "file": "correction-int8-r12-ridge0.01.rcf",
+      "bytes_including_header_and_scales": 66672,
+      "validation": {
+        "relative_squared_error": 0.07070724366267146,
+        "output_cosine": 0.9639987543888711
+      },
+      "stored_fp32_vs_float64_relative_error": 2.400676281490135e-07,
+      "sha256": "49181870dbfb3a13bc769f047611a1cb51b0e29acea3f18a9d0599676ec83a35"
+    },
+    {
+      "storage": "int8",
+      "rank": 15,
+      "ridge": 0.01,
+      "file": "correction-int8-r15-ridge0.01.rcf",
+      "bytes_including_header_and_scales": 83196,
+      "validation": {
+        "relative_squared_error": 0.07005951553952308,
+        "output_cosine": 0.9643352175381753
+      },
+      "stored_fp32_vs_float64_relative_error": 2.6699881934586113e-07,
+      "sha256": "8631afe273a3333280eb4e32c16400eaf568d77a2f6c7880cab123b0542471b9"
+    },
+    {
+      "storage": "fp16",
+      "rank": 8,
+      "ridge": 0.1,
+      "file": "correction-fp16-r8-ridge0.1.rcf",
+      "bytes_including_header_and_scales": 88128,
+      "validation": {
+        "relative_squared_error": 0.07173044052200686,
+        "output_cosine": 0.9634676104272791
+      },
+      "stored_fp32_vs_float64_relative_error": 2.3263225885033206e-07,
+      "sha256": "ac9826b1fd1c4496e56a961387eefdb9116b3224eb377744905d6ca4e7125ff7"
+    },
+    {
+      "storage": "int8",
+      "rank": 8,
+      "ridge": 0.1,
+      "file": "correction-int8-r8-ridge0.1.rcf",
+      "bytes_including_header_and_scales": 44640,
+      "validation": {
+        "relative_squared_error": 0.0717392482559989,
+        "output_cosine": 0.9634630301949069
+      },
+      "stored_fp32_vs_float64_relative_error": 2.3162343098438543e-07,
+      "sha256": "7ae3736db85747a03cbd9fac27f02f8ffc917fca20b8fe1016d4a5849cc987f0"
+    },
+    {
+      "storage": "int8",
+      "rank": 12,
+      "ridge": 0.1,
+      "file": "correction-int8-r12-ridge0.1.rcf",
+      "bytes_including_header_and_scales": 66672,
+      "validation": {
+        "relative_squared_error": 0.07083835998925525,
+        "output_cosine": 0.9639303467005372
+      },
+      "stored_fp32_vs_float64_relative_error": 2.482695970130776e-07,
+      "sha256": "a0451f69f6656e6cf45f76b83a769ca47ea259d788695b7547cf04788f6e6305"
+    },
+    {
+      "storage": "int8",
+      "rank": 15,
+      "ridge": 0.1,
+      "file": "correction-int8-r15-ridge0.1.rcf",
+      "bytes_including_header_and_scales": 83196,
+      "validation": {
+        "relative_squared_error": 0.07025013208800852,
+        "output_cosine": 0.9642355812985028
+      },
+      "stored_fp32_vs_float64_relative_error": 2.728845823133712e-07,
+      "sha256": "fb35b80444195441cacb8c27e7ea0be7777bdb19a37bb97998aa8561db4b29d9"
+    },
+    {
+      "storage": "fp16",
+      "rank": 8,
+      "ridge": 1.0,
+      "file": "correction-fp16-r8-ridge1.0.rcf",
+      "bytes_including_header_and_scales": 88128,
+      "validation": {
+        "relative_squared_error": 0.07273303749927601,
+        "output_cosine": 0.9629489221737535
+      },
+      "stored_fp32_vs_float64_relative_error": 2.1826863330326797e-07,
+      "sha256": "c95d8ab1a868f7f7a553333b4929a841b8725e807b1e56f8c41905ff364acf96"
+    },
+    {
+      "storage": "int8",
+      "rank": 8,
+      "ridge": 1.0,
+      "file": "correction-int8-r8-ridge1.0.rcf",
+      "bytes_including_header_and_scales": 44640,
+      "validation": {
+        "relative_squared_error": 0.07272913777279316,
+        "output_cosine": 0.9629509717672318
+      },
+      "stored_fp32_vs_float64_relative_error": 1.9363780723027768e-07,
+      "sha256": "76cb5247a4234185c1fb083d20406737ecdf226cd9e82f1ad9ac0569dc3c55d9"
+    },
+    {
+      "storage": "int8",
+      "rank": 12,
+      "ridge": 1.0,
+      "file": "correction-int8-r12-ridge1.0.rcf",
+      "bytes_including_header_and_scales": 66672,
+      "validation": {
+        "relative_squared_error": 0.07215045852966605,
+        "output_cosine": 0.9632509050696545
+      },
+      "stored_fp32_vs_float64_relative_error": 2.0218898209073973e-07,
+      "sha256": "1a2bdfb8ce8879cba0b2b2987bf7594c09f42bf21475f25c63797c9473b827c3"
+    },
+    {
+      "storage": "int8",
+      "rank": 15,
+      "ridge": 1.0,
+      "file": "correction-int8-r15-ridge1.0.rcf",
+      "bytes_including_header_and_scales": 83196,
+      "validation": {
+        "relative_squared_error": 0.07181249801145304,
+        "output_cosine": 0.9634262005650741
+      },
+      "stored_fp32_vs_float64_relative_error": 2.1282017564288646e-07,
+      "sha256": "ad30e414ac01cef8b36274690a82d82891b1e30f0425930138fb30b2f44023cd"
+    },
+    {
+      "storage": "fp16",
+      "rank": 8,
+      "ridge": 10.0,
+      "file": "correction-fp16-r8-ridge10.0.rcf",
+      "bytes_including_header_and_scales": 88128,
+      "validation": {
+        "relative_squared_error": 0.07491417278786776,
+        "output_cosine": 0.9618207641720331
+      },
+      "stored_fp32_vs_float64_relative_error": 1.7501054333833732e-07,
+      "sha256": "de3c1d6c0c6a3df9297ed3730dc451f3c304c8603ee587bfefeb841791043703"
+    },
+    {
+      "storage": "int8",
+      "rank": 8,
+      "ridge": 10.0,
+      "file": "correction-int8-r8-ridge10.0.rcf",
+      "bytes_including_header_and_scales": 44640,
+      "validation": {
+        "relative_squared_error": 0.07491913766341426,
+        "output_cosine": 0.9618181796741515
+      },
+      "stored_fp32_vs_float64_relative_error": 1.5777521780012012e-07,
+      "sha256": "2dcf26ad2cea439ecde09f24c3981a21fe3386eaf53b7bdbac54760e72f71aad"
+    },
+    {
+      "storage": "int8",
+      "rank": 12,
+      "ridge": 10.0,
+      "file": "correction-int8-r12-ridge10.0.rcf",
+      "bytes_including_header_and_scales": 66672,
+      "validation": {
+        "relative_squared_error": 0.0747630712292677,
+        "output_cosine": 0.9618989288872309
+      },
+      "stored_fp32_vs_float64_relative_error": 1.6101441991210988e-07,
+      "sha256": "70e2a6c95f62ddcf07216829862f581cea917be6971d9543a4460d37290e7402"
+    },
+    {
+      "storage": "int8",
+      "rank": 15,
+      "ridge": 10.0,
+      "file": "correction-int8-r15-ridge10.0.rcf",
+      "bytes_including_header_and_scales": 83196,
+      "validation": {
+        "relative_squared_error": 0.07465450852881599,
+        "output_cosine": 0.9619555506018068
+      },
+      "stored_fp32_vs_float64_relative_error": 1.6462840335217993e-07,
+      "sha256": "993e0f83796f71d378abe54b658eb2827be71a6028aa194f7513a878695879c7"
+    }
+  ],
+  "selected": {
+    "storage": "int8",
+    "rank": 15,
+    "ridge": 0.01,
+    "file": "correction-int8-r15-ridge0.01.rcf",
+    "bytes_including_header_and_scales": 83196,
+    "validation": {
+      "relative_squared_error": 0.07005951553952308,
+      "output_cosine": 0.9643352175381753
+    },
+    "stored_fp32_vs_float64_relative_error": 2.6699881934586113e-07,
+    "sha256": "8631afe273a3333280eb4e32c16400eaf568d77a2f6c7880cab123b0542471b9"
+  },
+  "fp16_control": {
+    "storage": "fp16",
+    "rank": 8,
+    "ridge": 0.01,
+    "file": "correction-fp16-r8-ridge0.01.rcf",
+    "bytes_including_header_and_scales": 88128,
+    "validation": {
+      "relative_squared_error": 0.07162579060706273,
+      "output_cosine": 0.9635217781705067
+    },
+    "stored_fp32_vs_float64_relative_error": 2.182743039703882e-07,
+    "sha256": "6029660a00bf87cff21e64218bb3be62454748a608da0e8c84edb852603054e7"
+  },
+  "base_test": {
+    "relative_squared_error": 0.07579274275643741,
+    "output_cosine": 0.9613990228206739
+  },
+  "fp16_control_test": {
+    "relative_squared_error": 0.0687073346033116,
+    "output_cosine": 0.9650412015946656
+  },
+  "selected_test": {
+    "relative_squared_error": 0.06697667751973001,
+    "output_cosine": 0.965934488072525
+  }
+}

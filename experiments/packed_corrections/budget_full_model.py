@@ -27,4 +27,3 @@ print(json.dumps({"scope":"Dimension calculation only; no built full model, qual
                   "records":records,
                   "optional_rank8_guidance_payload":sum(p["d_in"]+p["d_out"] for p in matrices)*16,
                   "optional_extra_codebook_and_guidance_headers":65536+64*len(matrices)},indent=2))
-
