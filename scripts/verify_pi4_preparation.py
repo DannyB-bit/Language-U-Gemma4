@@ -87,7 +87,7 @@ def verify():
             "gate_1": {"status": "UNVERIFIED",
                        "missing_evidence": ["Validated RAM-fit 31B candidate and complete byte/reserve ledger (full original now audited separately)",
                                             "Captured calibration and held-out model activations",
-                                            "Hamlet tokens [715, 100] plus >=3 held-out prompt outputs and logits",
+                                            "Tokenizer-consistent control tokens for Hamlet plus >=3 held-out prompt outputs and logits",
                                             "Pi 4 warm-run resident pages, major faults, read bytes/token, RSS"]},
             "gate_2": {"status": "NOT_RUN_GATE_1_REQUIRED", "pi4_speedup_claim": None},
             "full_model_distribution_preservation": "NOT_ESTABLISHED"}

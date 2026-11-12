@@ -6,6 +6,11 @@ The source is pinned to
 All new measurements below concern artifact bytes and host arithmetic. They do
 not report physical Pi 4 generation throughput or a new quantized model's quality.
 
+Follow-up: [full text/control review](FULL_TEXT_GATE_REVIEW.md) records missing
+checkpoint parameters, source-weight lineage, full-vocabulary inference and
+the measured failure of a real size-feasible candidate. The byte-preservation
+results below remain valid.
+
 ## Verified full-stream result
 
 | Item | Result |

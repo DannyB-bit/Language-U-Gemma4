@@ -1,0 +1,189 @@
+{
+  "schema": "language-u-restored-software-validation-v1",
+  "created_utc": "2026-11-12T15:31:40.082443+00:00",
+  "host_architecture": "x86_64",
+  "python": "3.12.14",
+  "scope": "Fresh software checks after workspace restart; E4B committed samples and explicit unit fixtures. No large-checkpoint inference or physical Pi measurement repeated.",
+  "runs": [
+    {
+      "label": "host preparation",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_pi4_barrier.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "tests": 21
+    },
+    {
+      "label": "host text arithmetic",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_text_runtime.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "tests": 6
+    },
+    {
+      "label": "retrieval math",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/retrieval",
+        "-p",
+        "test_retrieval_math.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "tests": 3
+    },
+    {
+      "label": "strict stream C",
+      "argv": [
+        "cc",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-DNEON_SHARED_LIB_ONLY",
+        "-shared",
+        "-fPIC",
+        "neon_runner/neon_stream_accelerator_v2.c",
+        "-lm",
+        "-o",
+        "pi4-runs/libstrict.so"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "strict source C",
+      "argv": [
+        "cc",
+        "-O2",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-shared",
+        "-fPIC",
+        "neon_runner/qat_reference.c",
+        "-o",
+        "pi4-runs/libqat-strict.so"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "portable preparation",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_pi4_barrier.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "tests": 21
+    },
+    {
+      "label": "portable text arithmetic",
+      "argv": [
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_text_runtime.py",
+        "-v"
+      ],
+      "returncode": 0,
+      "tests": 6
+    },
+    {
+      "label": "sample evidence",
+      "argv": [
+        "python",
+        "scripts/verify_pi4_preparation.py",
+        "--report",
+        "pi4-runs/restored-preparation.json"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "CLI help recover_31b_parameters.py",
+      "argv": [
+        "python",
+        "scripts/recover_31b_parameters.py",
+        "--help"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "CLI help build_31b_lowbit_candidate.py",
+      "argv": [
+        "python",
+        "scripts/build_31b_lowbit_candidate.py",
+        "--help"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "CLI help verify_31b_weight_lineage.py",
+      "argv": [
+        "python",
+        "scripts/verify_31b_weight_lineage.py",
+        "--help"
+      ],
+      "returncode": 0,
+      "tests": null
+    },
+    {
+      "label": "CLI help run_31b_text_gate.py",
+      "argv": [
+        "python",
+        "scripts/run_31b_text_gate.py",
+        "--help"
+      ],
+      "returncode": 0,
+      "tests": null
+    }
+  ],
+  "tests_passed": 57,
+  "source_sha256": {
+    "neon_runner/checkpoint_io.py": "e3b36c20091c27d9ff0a77502c3b7604088307b2674c741f5ed3337ef6c0de63",
+    "neon_runner/qat_reference.c": "36f7b38365bf92fdd0b900538c56fb742b396cbf7b7c6b62019d7f2456c93ffd",
+    "neon_runner/text_runtime.py": "a8d995ec8b9212c9a85b09dd139ef7f1176a4d012ea61c868429cd93de7e0a65",
+    "neon_runner/lowbit_embedding.py": "a5a255f444fc86161fd02f7040e52bb86b8bf58867475a35b0b5e0cb2a0a3dc3",
+    "scripts/run_31b_text_gate.py": "ddaa3ffddbd54b9f2a934a3713a46e26a8de32a1f66d578f1ffd6dfccaf1b9ff",
+    "scripts/recover_31b_parameters.py": "35a142a8bd800fb34fdbb932becdb513355b3754ece41e241d8053a2b7eca6e5",
+    "scripts/build_31b_lowbit_candidate.py": "6aab88b15e5ed211fc29976d1aa905231329bedf6c7cc2e5a6153f41a1828e06",
+    "scripts/verify_31b_weight_lineage.py": "c30013be29bcf8d08e76bb76749c0c4d0af7a5be0305dfc9b7883fa676c7d7f2",
+    "tests/test_text_runtime.py": "3ea93a394ac35399d84995ef083651efce405198307c6e29dfc59023311411df"
+  }
+}

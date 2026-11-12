@@ -5,17 +5,19 @@ on:
     paths:
       - 'neon_runner/**'
       - 'scripts/*pi4*'
-      - 'scripts/verify_31b_artifact.py'
+      - 'scripts/*31b*'
       - 'tests/test_pi4_barrier.py'
-      - 'requirements-pi4.txt'
+      - 'tests/test_text_runtime.py'
+      - 'requirements-pi4*.txt'
       - '.github/workflows/pi4-preparation.yml'
   pull_request:
     paths:
       - 'neon_runner/**'
       - 'scripts/*pi4*'
-      - 'scripts/verify_31b_artifact.py'
+      - 'scripts/*31b*'
       - 'tests/test_pi4_barrier.py'
-      - 'requirements-pi4.txt'
+      - 'tests/test_text_runtime.py'
+      - 'requirements-pi4*.txt'
       - '.github/workflows/pi4-preparation.yml'
 
 permissions:
@@ -45,11 +47,14 @@ jobs:
       - name: Sample correctness and retrieval math
         run: |
           python -m unittest discover -s tests -p test_pi4_barrier.py -v
+          python -m unittest discover -s tests -p test_text_runtime.py -v
           python -m unittest discover -s tests/retrieval -p test_retrieval_math.py -v
       - name: Strict portable C build and parity
         run: |
           mkdir -p pi4-runs
           gcc -O2 -Wall -Wextra -Werror -DNEON_SHARED_LIB_ONLY -shared -fPIC neon_runner/neon_stream_accelerator_v2.c -lm -o pi4-runs/libstrict.so
+          gcc -O2 -std=c11 -Wall -Wextra -Werror -shared -fPIC neon_runner/qat_reference.c -o pi4-runs/libqat-strict.so
           LANGU_GEMV_SO="$PWD/pi4-runs/libstrict.so" python -m unittest discover -s tests -p test_pi4_barrier.py -v
+          LANGU_QAT_SO="$PWD/pi4-runs/libqat-strict.so" python -m unittest discover -s tests -p test_text_runtime.py -v
       - name: Sample evidence only; this is not a physical Pi 4 proof
         run: python scripts/verify_pi4_preparation.py --report pi4-runs/ci-preparation.json
