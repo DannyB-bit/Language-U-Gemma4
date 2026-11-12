@@ -50,4 +50,3 @@ for name,expected in [
     if not path.exists():
         path.write_bytes(raw)
 print("Verified pinned public header, Q excerpt/scales, codebook and layout")
-

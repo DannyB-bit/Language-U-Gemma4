@@ -46,6 +46,7 @@ python3 experiments/packed_corrections/binary_factor_probe.py
 python3 experiments/packed_corrections/tune_factor_scales.py
 python3 experiments/packed_corrections/probe_glyph_guidance.py
 python3 experiments/packed_corrections/probe_routed_corrections.py
+python3 experiments/packed_corrections/probe_correction_precision.py
 python3 experiments/packed_corrections/budget_full_model.py
 ```
 
@@ -75,3 +76,45 @@ Its runtime reserve is assumed. It does not establish that the successful
 The earlier full 31B low-bit candidate failed its quality gate. A full
 source-correct model, independent generation tests and measured memory/I/O are
 still required. No private repository review or source corpus is included here.
+
+
+## Stored correction with FP32 execution
+
+The follow-up freezes the calibrated BFP1 base and compares corrections within
+an 88,128-byte file budget (rank-8 FP16 factors plus a 64-byte header). Candidate
+ranks/storage and ridge are selected using validation only. Both the base and
+correction run through chunked FP32 operators on the evaluation inputs.
+
+| Correction | Stored bytes, including header/scales | Development error | Output cosine |
+| --- | ---: | ---: | ---: |
+| FP16 rank 8 | 88,128 | 0.06870733 | 0.96504120 |
+| INT8 rank 15 | 83,196 | 0.06697668 | 0.96593449 |
+
+Validation selected INT8 rank 15, ridge 0.01. Compared with the FP16 control,
+this saves 4,932 bytes (5.60%) and lowers development error by 2.52%. Stored FP32
+correction output agrees with an independent float64 oracle using the same
+stored coefficients to 2.67e-7 relative error on validation inputs. This parity
+checks execution, not recovery of the original uncompressed model.
+
+`correction_codec.py` writes RCF1: a 64-byte `<4s7I4Q` header, optional FP32
+per-row scales, then row-major A and B. Fields are magic, version, output width,
+input width, rank, type (1=FP16, 2=INT8), zero flags, zero reserved, scale bytes,
+A bytes, B bytes and total payload bytes. INT8 uses symmetric [-127,127] values
+and one FP32 scale for each A/B row. A maps input to latent; B maps latent to
+output. Files reject malformed dimensions, lengths, flags and nonfinite values.
+Writers use exclusive creation. The reader does not materialize B@A.
+
+The selected rank-15 latent uses 60 bytes in the tested FP32 operator. Increasing
+rank increases arithmetic as well as correction capacity; smaller files alone
+do not prove faster inference or lower total peak RAM. Native ARM kernels,
+full-model calibration and new independent language evaluations are still open.
+
+Run the nine offline format/arithmetic tests with:
+
+```sh
+python3 -m unittest discover -s tests -p test_packed_corrections.py -v
+```
+
+The precision receipt records input/base SHA-256, every candidate, exact file
+sizes, selected file SHA-256 and independent parity results. The same small
+development test is reused; no full-model quality claim is made.
