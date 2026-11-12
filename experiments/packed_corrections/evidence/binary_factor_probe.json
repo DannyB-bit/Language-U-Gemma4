@@ -1,0 +1,83 @@
+{
+  "scope": "NumPy initializer and packed-factor component only; not complete NanoQuant, no 31B model quality/Pi proof.",
+  "upstream_code_revision": "a9e0a430881ff80d83b622c3129e330dc33c04f5",
+  "variants": [
+    {
+      "rank": 80,
+      "input_shrinkage": 0.0,
+      "bytes": 66112,
+      "bpw_including_header_and_scales": 0.7686011904761905,
+      "validation": {
+        "relative_squared_error": 0.14227746427059174,
+        "output_cosine": 0.9278078675270081
+      },
+      "packed_vs_dense_relative_error": 1.7788908320372627e-07,
+      "sha256": "9f54e7f83ca2c12efa6863ff80014679f7ded4ee78ea03d99fbb2db178d24ca5"
+    },
+    {
+      "rank": 80,
+      "input_shrinkage": 0.6,
+      "bytes": 66112,
+      "bpw_including_header_and_scales": 0.7686011904761905,
+      "validation": {
+        "relative_squared_error": 0.15627403557300568,
+        "output_cosine": 0.9209272265434265
+      },
+      "packed_vs_dense_relative_error": 1.877621947651919e-07,
+      "sha256": "0cd0cad802553abddaf704952708e7e7c2f40ecdc007f5e095f40a13e98e0da8"
+    },
+    {
+      "rank": 104,
+      "input_shrinkage": 0.0,
+      "bytes": 82624,
+      "bpw_including_header_and_scales": 0.9605654761904762,
+      "validation": {
+        "relative_squared_error": 0.10331082344055176,
+        "output_cosine": 0.9486642479896545
+      },
+      "packed_vs_dense_relative_error": 1.8673124679717315e-07,
+      "sha256": "095cec366110c90e0dd27eeacc43ccff937012c1af54b81f514a8ca667139c5e"
+    },
+    {
+      "rank": 104,
+      "input_shrinkage": 0.6,
+      "bytes": 82624,
+      "bpw_including_header_and_scales": 0.9605654761904762,
+      "validation": {
+        "relative_squared_error": 0.11582251638174057,
+        "output_cosine": 0.9430467486381531
+      },
+      "packed_vs_dense_relative_error": 1.9117844649452962e-07,
+      "sha256": "77a0953fd0488ef282fc82063af93f5c36b975584bdd6d7764680f1527401f16"
+    },
+    {
+      "rank": 120,
+      "input_shrinkage": 0.0,
+      "bytes": 93632,
+      "bpw_including_header_and_scales": 1.0885416666666667,
+      "validation": {
+        "relative_squared_error": 0.08691741526126862,
+        "output_cosine": 0.9573559165000916
+      },
+      "packed_vs_dense_relative_error": 1.9431403467137038e-07,
+      "sha256": "48c32dfa17576baa4f2949ad0f2e33f1941304a41ab0e71327c7a5b42ba25b30"
+    },
+    {
+      "rank": 120,
+      "input_shrinkage": 0.6,
+      "bytes": 93632,
+      "bpw_including_header_and_scales": 1.0885416666666667,
+      "validation": {
+        "relative_squared_error": 0.09461503475904465,
+        "output_cosine": 0.9534541964530945
+      },
+      "packed_vs_dense_relative_error": 1.9521861693353183e-07,
+      "sha256": "a9af1ab04740b44b8c669b592386218acc36bd6edc627db57e6ed5c015fae59a"
+    }
+  ],
+  "selected_index": 4,
+  "selected_test": {
+    "relative_squared_error": 0.08068687468767166,
+    "output_cosine": 0.960499107837677
+  }
+}

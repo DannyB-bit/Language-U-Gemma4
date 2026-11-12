@@ -1,0 +1,50 @@
+{
+  "scope": "8D quantized activation guidance on one real 128x5376 first-layer Q excerpt. Numeric error correction, not sentence compression or whole-model coherence.",
+  "selection": "Validation error only; final control set reused from preceding component experiments.",
+  "variants": [
+    {
+      "ridge": 0.01,
+      "validation": {
+        "relative_squared_error": 0.07482069337393875,
+        "output_cosine": 0.9618624607941293
+      },
+      "guide_bytes_per_projection_and_token": 4,
+      "guidance_projection_and_decoder_payload_bytes": 88064,
+      "shared_codebook_bytes": 65536
+    },
+    {
+      "ridge": 0.1,
+      "validation": {
+        "relative_squared_error": 0.0746151592745093,
+        "output_cosine": 0.9619693426030471
+      },
+      "guide_bytes_per_projection_and_token": 4,
+      "guidance_projection_and_decoder_payload_bytes": 88064,
+      "shared_codebook_bytes": 65536
+    },
+    {
+      "ridge": 1.0,
+      "validation": {
+        "relative_squared_error": 0.07507116991479816,
+        "output_cosine": 0.9617343010550591
+      },
+      "guide_bytes_per_projection_and_token": 4,
+      "guidance_projection_and_decoder_payload_bytes": 88064,
+      "shared_codebook_bytes": 65536
+    }
+  ],
+  "selected_variant": 1,
+  "test_no_guidance": {
+    "relative_squared_error": 0.07579274178503344,
+    "output_cosine": 0.9613990233952129
+  },
+  "test_correct_guidance": {
+    "relative_squared_error": 0.07089566755310787,
+    "output_cosine": 0.9639053763777572
+  },
+  "test_shuffled_guidance": {
+    "relative_squared_error": 0.07743434148050438,
+    "output_cosine": 0.9605035799823267
+  },
+  "note": "Every variant needs learned A/B sidecars. 4 bytes is the per-input temporary glyph, not the full cost of this capability."
+}
