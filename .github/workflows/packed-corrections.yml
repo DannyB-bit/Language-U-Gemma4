@@ -5,11 +5,15 @@ on:
     paths:
       - 'experiments/packed_corrections/**'
       - 'tests/test_packed_corrections.py'
+      - 'experiments/joint_glyphs/**'
+      - 'tests/test_joint_glyphs.py'
       - '.github/workflows/packed-corrections.yml'
   pull_request:
     paths:
       - 'experiments/packed_corrections/**'
       - 'tests/test_packed_corrections.py'
+      - 'experiments/joint_glyphs/**'
+      - 'tests/test_joint_glyphs.py'
       - '.github/workflows/packed-corrections.yml'
 
 permissions:
@@ -34,4 +38,6 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r experiments/packed_corrections/requirements.txt
       - name: Offline stored arithmetic and malformed-file checks
-        run: python -m unittest discover -s tests -p test_packed_corrections.py -v
+        run: |
+          python -m unittest discover -s tests -p test_packed_corrections.py -v
+          python -m unittest discover -s tests -p test_joint_glyphs.py -v
