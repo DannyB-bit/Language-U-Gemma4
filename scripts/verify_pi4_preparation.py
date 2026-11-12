@@ -74,7 +74,9 @@ def verify():
     tracked_sources = ["neon_runner/bridge.py", "neon_runner/pi4_stream.py",
                        "neon_runner/pi4_quantization.py", "neon_runner/neon_stream_accelerator_v2.c",
                        "neon_runner/neon_stream_accelerator_v2.h", "scripts/pi4_barrier_break.py",
-                       "scripts/verify_pi4_preparation.py", "tests/test_pi4_barrier.py"]
+                       "scripts/verify_pi4_preparation.py", "tests/test_pi4_barrier.py",
+                       "neon_runner/native_census.py", "neon_runner/stream_census.c",
+                       "scripts/verify_31b_artifact.py"]
     return {"schema": "language-u-pi4-preparation-v1", "created_utc": datetime.now(timezone.utc).isoformat(),
             "scope": "Host software correctness on committed E4B sample records only",
             "host_architecture": platform.machine(), "host_os": platform.system(),
@@ -83,7 +85,7 @@ def verify():
             "source_sha256": {path: sha256_file(ROOT / path) for path in tracked_sources},
             "samples": samples, "specified_31b_10_percent_budget": mixed_budget(high_glyphs=11_440_128),
             "gate_1": {"status": "UNVERIFIED",
-                       "missing_evidence": ["Full 31B stream and complete byte/reserve ledger",
+                       "missing_evidence": ["Validated RAM-fit 31B candidate and complete byte/reserve ledger (full original now audited separately)",
                                             "Captured calibration and held-out model activations",
                                             "Hamlet tokens [715, 100] plus >=3 held-out prompt outputs and logits",
                                             "Pi 4 warm-run resident pages, major faults, read bytes/token, RSS"]},

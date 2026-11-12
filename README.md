@@ -11,6 +11,9 @@
 adds lossless 132-to-92-byte RVQ packing, calibration tools, native execution
 support and an Opt5 H8 GEMV fix. Sample decode parity is verified; the full
 31B RAM-residency, held-out quality and Pi 4 speed gates remain unverified.
+The [full Hugging Face 31B artifact review](docs/HF_31B_ARTIFACT_REVIEW.md) now
+verifies the complete source hash and lossless reverse reconstruction after a
+756,940,800-byte reduction, and includes the companion embedding RAM cost.
 
 Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlenecks of offline developer agents by unifying model weights, long-context KV states, codebase semantics, and native machine execution into a single discrete data type: the **Macro-Glyph** on the octonionic unit 7-sphere ($S^7$).
 

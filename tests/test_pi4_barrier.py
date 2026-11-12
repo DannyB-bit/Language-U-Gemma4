@@ -8,12 +8,13 @@ import ctypes
 import json
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
 
 import numpy as np
 
-from neon_runner.bridge import NeonRunnerBridgeV2, NeonStreamAccelerator, pack_lanu_header, H8_MATRIX
+from neon_runner.bridge import NeonRunnerBridgeV2, NeonStreamAccelerator, pack_lanu_header, parse_lanu_header, H8_MATRIX
 from neon_runner.codebooks import CodebookRegistryV2
 from neon_runner.pi4_quantization import (
     ChannelStats, shared_channel_scale, fold_shared_rmsnorm, fold_geglu_up,
@@ -24,6 +25,7 @@ from neon_runner.pi4_stream import (
     checked_layout, pack_opt4_92, unpack_opt4_92, repack_stream, redundancy_scan,
 )
 from scripts.pi4_barrier_break import calibrate
+from neon_runner.native_census import native_redundancy_scan
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "model"
@@ -46,6 +48,25 @@ class Pi4BarrierTests(unittest.TestCase):
         packed = pack_opt4_92(self.raw)
         self.assertEqual(len(packed), 160 * 92)
         self.assertEqual(unpack_opt4_92(packed), self.raw)
+
+    def test_uploaded_31b_v1_header_and_legacy_stream_compatibility(self):
+        # Actual 16-byte header read from the pinned HF 31B artifact.
+        header = bytes.fromhex("4c414e5501002d0000a0d10600c02001")
+        parsed = parse_lanu_header(header)
+        self.assertEqual((parsed.version, parsed.total_glyphs, parsed.boundary_glyphs),
+                         (1, 114401280, 18923520))
+        self.assertEqual(pack_lanu_header(114401280, 18923520, version=1), header)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "legacy-v1.lanu"
+            old_header = parse_lanu_header(SOURCE.read_bytes()[:16])
+            source.write_bytes(pack_lanu_header(old_header.total_glyphs, old_header.boundary_glyphs, version=1) + self.raw)
+            checked_layout(source, LAYOUT)
+            report = repack_stream(source, LAYOUT, Path(tmp) / "packed")
+            with NeonRunnerBridgeV2(str(source), str(LAYOUT)) as legacy, \
+                    NeonRunnerBridgeV2(report["stream"], report["layout"]) as packed:
+                np.testing.assert_allclose(legacy.gemv(legacy.layout["projections"][0], self.probe),
+                                           packed.gemv(packed.layout["projections"][0], self.probe),
+                                           rtol=2e-5, atol=1e-5)
 
     def test_all_2048_indices_and_record_boundaries(self):
         # Unit fixtures only: cover every legal index and every bit alignment.
@@ -151,6 +172,39 @@ class Pi4BarrierTests(unittest.TestCase):
             self.assertEqual(report["unique_glyphs"], len(expected))
             self.assertEqual(report["payload_bytes"], len(raw) - 16)
 
+    @unittest.skipUnless(sys.platform.startswith("linux") and ctypes.sizeof(ctypes.c_void_p) == 8, "64-bit Linux census")
+    def test_native_census_matches_sqlite_and_resolves_forced_collisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = redundancy_scan(HYBRID, HYBRID_LAYOUT, Path(tmp) / "exact.db")
+            for bits in (64, 1):
+                actual = native_redundancy_scan(HYBRID, HYBRID_LAYOUT, hash_bits=bits)
+                for field in ("glyphs", "unique_glyphs", "payload_bytes", "unique_payload_bytes", "zlib_bytes"):
+                    self.assertEqual(actual[field], expected[field])
+                if bits == 1:
+                    self.assertGreater(actual["largest_fingerprint_group"], 2)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and ctypes.sizeof(ctypes.c_void_p) == 8, "64-bit Linux census")
+    def test_native_census_detects_exact_duplicate_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stream, metadata = Path(tmp) / "duplicates.lanu", Path(tmp) / "duplicates.json"
+            layout = json.loads(LAYOUT.read_text())
+            count = 2 * (len(self.raw) // 132)
+            stream.write_bytes(pack_lanu_header(count, count, version=1) + self.raw + self.raw)
+            p = layout["projections"][0]
+            p.update(d_out=32, glyphs=count, tensor_bytes=count*132, shape=[32, 2560])
+            layout.update(total_macro_glyphs=count, stream_size_bytes=16+count*132)
+            metadata.write_text(json.dumps(layout))
+            result = native_redundancy_scan(stream, metadata, hash_bits=1)
+            self.assertEqual(result["glyphs"], count)
+            self.assertEqual(result["unique_glyphs"], count//2)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and ctypes.sizeof(ctypes.c_void_p) == 8, "64-bit Linux census")
+    def test_native_census_rejects_budget_and_wrong_artifact(self):
+        with self.assertRaisesRegex(ValueError, "workspace budget"):
+            native_redundancy_scan(SOURCE, LAYOUT, max_workspace=0)
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            native_redundancy_scan(SOURCE, LAYOUT, expected_sha256="0"*64)
+
     def test_calibration_streaming_and_cli_export(self):
         stats = ChannelStats.empty(2560)
         for row in self.weights:
@@ -236,6 +290,10 @@ class Pi4BarrierTests(unittest.TestCase):
             mixed_budget(high_glyphs=maximum + 1)
         with self.assertRaises(ValueError):
             mixed_budget(runtime_reserve=1_000_000_000)
+        # The newly available HF companion tables cannot be hidden in a 200MB
+        # reserve: even all-36-byte linear weights plus those tables exceed 5GB.
+        with self.assertRaisesRegex(ValueError, "all-36-byte"):
+            mixed_budget(sidecar_bytes=2_818_572_288 + 2_990_082)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ import sqlite3
 import struct
 import zlib
 
+import numpy as np
+
 def validate_projection(projection, stream_size):
     def integer(key, default=None):
         value = projection.get(key, default)
@@ -43,7 +45,7 @@ def checked_layout(stream_path, layout_path):
     if len(raw) != 16:
         raise ValueError("Truncated LANU header")
     magic, version, flags, total, boundary = struct.unpack("<4sHHII", raw)
-    if (magic, version) not in ((b"LANU", 2), (b"LANP", 3)) or boundary > total:
+    if (magic, version) not in ((b"LANU", 1), (b"LANU", 2), (b"LANP", 3)) or boundary > total:
         raise ValueError("Invalid or unsupported LANU header")
     if layout.get("stream_size_bytes", size) != size:
         raise ValueError("Layout stream_size_bytes disagrees with physical file")
@@ -72,30 +74,38 @@ def pack_opt4_92(raw):
     """
     if len(raw) % 132:
         raise ValueError("Opt4 source is not a whole number of 132-byte glyphs")
-    out = bytearray()
-    for i in range(0, len(raw), 132):
-        record = raw[i:i + 132]
-        indices = struct.unpack("<64H", record[4:])
-        packed = 0
-        for j, index in enumerate(indices):
-            if index >= 2048:
-                raise ValueError("Opt4 index exceeds 11 bits; refusing lossy masking")
-            packed |= index << (11 * j)
-        out.extend(record[:4])
-        out.extend(packed.to_bytes(88, "little"))
-    return bytes(out)
+    source = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 132)
+    indices = source[:, 4:].copy().view("<u2")
+    if np.any(indices >= 2048):
+        raise ValueError("Opt4 index exceeds 11 bits; refusing lossy masking")
+    out = np.zeros((len(source), 92), dtype=np.uint8)
+    out[:, :4] = source[:, :4]
+    # Vectorize over a caller-bounded batch, retaining exact LSB-first encoding.
+    # Right shifts preserve spill bits without overflowing the uint16 values.
+    for j in range(64):
+        byte, shift = divmod(j * 11, 8)
+        value = indices[:, j]
+        out[:, 4 + byte] |= ((value << shift) & 255).astype(np.uint8)
+        out[:, 5 + byte] |= ((value >> (8 - shift)) & 255).astype(np.uint8)
+        if shift > 5:
+            out[:, 6 + byte] |= (value >> (16 - shift)).astype(np.uint8)
+    return out.tobytes()
 
 
 def unpack_opt4_92(raw):
     if len(raw) % 92:
         raise ValueError("Packed Opt4 is not a whole number of 92-byte glyphs")
-    out = bytearray()
-    for i in range(0, len(raw), 92):
-        record = raw[i:i + 92]
-        bits = int.from_bytes(record[4:], "little")
-        out.extend(record[:4])
-        out.extend(struct.pack("<64H", *[(bits >> (11 * j)) & 2047 for j in range(64)]))
-    return bytes(out)
+    source = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 92)
+    out = np.empty((len(source), 132), dtype=np.uint8)
+    out[:, :4] = source[:, :4]
+    indices = out[:, 4:].view("<u2")
+    for j in range(64):
+        byte, shift = divmod(j * 11, 8)
+        value = source[:, 4 + byte].astype(np.uint32) | (source[:, 5 + byte].astype(np.uint32) << 8)
+        if shift > 5:
+            value |= source[:, 6 + byte].astype(np.uint32) << 16
+        indices[:, j] = (value >> shift) & 2047
+    return out.tobytes()
 
 
 def sha256_file(path):

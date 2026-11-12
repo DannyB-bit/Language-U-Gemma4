@@ -89,7 +89,7 @@ def parse_lanu_header(raw_16: bytes) -> StreamHeaderV2:
     if len(raw_16) != LANU_HEADER_BYTES:
         raise ValueError(f"Header slice must be {LANU_HEADER_BYTES} bytes, got {len(raw_16)}")
     magic, ver, flags, total_g, bound_g = struct.unpack("<4sHHII", raw_16)
-    if (magic, ver) not in ((LANU_MAGIC, 2), (LANU_PACKED_MAGIC, 3)):
+    if (magic, ver) not in ((LANU_MAGIC, 1), (LANU_MAGIC, 2), (LANU_PACKED_MAGIC, 3)):
         raise ValueError(f"Invalid stream magic/version: {magic!r}/{ver}")
     if bound_g > total_g:
         raise ValueError(f"Lying header detected: boundary_glyphs ({bound_g}) > total_glyphs ({total_g})")
@@ -105,7 +105,7 @@ def parse_lanu_header(raw_16: bytes) -> StreamHeaderV2:
 def pack_lanu_header(total_glyphs: int, boundary_glyphs: int, version: int = 2, flags: int = 45) -> bytes:
     if total_glyphs < 0 or boundary_glyphs < 0 or boundary_glyphs > total_glyphs:
         raise ValueError(f"Invalid glyph counts: total={total_glyphs}, boundary={boundary_glyphs}")
-    if version not in (2, 3):
+    if version not in (1, 2, 3):
         raise ValueError(f"Unsupported container version: {version}")
     magic = LANU_PACKED_MAGIC if version == 3 else LANU_MAGIC
     return struct.pack("<4sHHII", magic, version, flags, total_glyphs, boundary_glyphs)

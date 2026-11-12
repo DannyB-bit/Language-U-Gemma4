@@ -7,6 +7,12 @@ The 31B RAM-resident inference target remains **unverified**. This change suppli
 working format support, calibration primitives, fixes, and reproducible software
 evidence. It does not report a Pi 4 speedup or a successful 31B quality gate.
 
+**Full-artifact update:** the subsequently supplied Hugging Face stream is now
+downloaded, hash-verified, scanned in full and losslessly repacked. See the
+[31B artifact review](HF_31B_ARTIFACT_REVIEW.md) for the 756,940,800-byte saving,
+LANU v1 compatibility fix, exact redundancy census and revised embedding-inclusive
+memory ledger. The sample-only results below remain a separate software check.
+
 ## Measured contribution
 
 The committed E4B weight samples can be repacked without changing their Opt4
@@ -209,7 +215,7 @@ does not perform lossy 132-to-36 conversion or produce a RAM-qualified model.
 
 ## Validation and remaining gate
 
-* New software suite: **17 tests passed** on Linux x86-64, both the host SIMD
+* New software suite: **21 tests passed** on Linux x86-64, both the host SIMD
   build and the strict scalar C build.
 * Existing bridge and glyph-attention self-tests: **6/6 + 6/6 passed** on this
   host. These legacy tests contain constructed inputs and their labels/timings

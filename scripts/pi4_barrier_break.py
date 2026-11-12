@@ -58,11 +58,18 @@ def main():
     budget.add_argument("--high-glyphs", type=int)
     scan = commands.add_parser("scan", help="Exact uniqueness and streaming zlib; SQLite uses disk space")
     pack = commands.add_parser("pack", help="Losslessly repack Opt4 while retaining Opt5 records")
-    for command in (scan, pack):
+    native = commands.add_parser("scan-native", help="Exact 64-bit Linux census with bounded sorting workspace")
+    for command in (scan, pack, native):
         command.add_argument("--stream", required=True)
         command.add_argument("--layout", required=True)
     scan.add_argument("--database", required=True, help="New SQLite file; allow stream size plus overhead")
+    native.add_argument("--max-workspace", type=int, default=4_000_000_000,
+                        help="C working-allocation budget; excludes Python and mmap page residency")
+    native.add_argument("--expected-sha256")
+    native.add_argument("--report", help="New JSON report; existing evidence is never overwritten")
     pack.add_argument("--output-directory", required=True, help="New directory, never an existing stream")
+    pack.add_argument("--chunk-glyphs", type=int, default=1024,
+                      help="Bounded offline packing batch; 16384 was used for the full 31B artifact")
     calibration = commands.add_parser("calibrate", help="Summarize captured projection-input .npy files")
     calibration.add_argument("--activations", required=True)
     calibration.add_argument("--output", required=True)
@@ -76,10 +83,18 @@ def main():
     elif args.command == "scan":
         result = redundancy_scan(args.stream, args.layout, args.database)
     elif args.command == "pack":
-        result = repack_stream(args.stream, args.layout, args.output_directory)
+        result = repack_stream(args.stream, args.layout, args.output_directory, chunk_glyphs=args.chunk_glyphs)
+    elif args.command == "scan-native":
+        from neon_runner.native_census import native_redundancy_scan
+        result = native_redundancy_scan(args.stream, args.layout, max_workspace=args.max_workspace,
+                                        expected_sha256=args.expected_sha256)
     else:
         result = calibrate(args.activations, args.output, args.tile_hessians)
-    print(json.dumps(result, indent=2, allow_nan=False))
+    rendered = json.dumps(result, indent=2, allow_nan=False)
+    if getattr(args, "report", None):
+        with Path(args.report).open("x", encoding="utf-8") as output:
+            output.write(rendered + "\n")
+    print(rendered)
 
 
 if __name__ == "__main__":
