@@ -3,6 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import contextlib
 import sqlite3
 import struct
 import zlib
@@ -187,7 +188,7 @@ def redundancy_scan(stream_path, layout_path, database_path):
     compressed, payload_bytes, records = 0, 0, 0
     digest = hashlib.sha256(header)
     try:
-        with sqlite3.connect(database) as connection, Path(stream_path).open("rb") as src:
+        with contextlib.closing(sqlite3.connect(database)) as connection, Path(stream_path).open("rb") as src:
             connection.execute("PRAGMA cache_size=-8192")
             connection.execute("CREATE TABLE glyphs (codec INTEGER, width INTEGER, rotation TEXT, payload BLOB, "
                                "PRIMARY KEY(codec,width,rotation,payload)) WITHOUT ROWID")

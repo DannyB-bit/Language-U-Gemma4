@@ -404,13 +404,14 @@ NEON_API void decode_glyphs_opt4_packed_c(
     float* NEON_RESTRICT out_weights,
     int n_glyphs, int apply_fwht8, int num_threads
 ) {
+    int g;
 #if HAS_OMP
     if (num_threads > 0) omp_set_num_threads(num_threads);
     #pragma omp parallel for schedule(static)
 #else
     (void)num_threads;
 #endif
-    for (int g = 0; g < n_glyphs; ++g) {
+    for (g = 0; g < n_glyphs; ++g) {
         const uint8_t* src = glyphs + (size_t)g * 92;
         uint8_t expanded[132]; /* One glyph on the worker stack, never a matrix. */
         memcpy(expanded, src, 4);
@@ -427,10 +428,11 @@ NEON_API void gemv_opt4_packed_mmap(
 ) {
     const int glyphs_per_row = d_in / 256;
     const uint8_t* tensor = mmap_base + tensor_byte_offset;
+    int row;
 #if HAS_OMP
     #pragma omp parallel for schedule(static)
 #endif
-    for (int row = 0; row < d_out; ++row) {
+    for (row = 0; row < d_out; ++row) {
         float total = 0.0f;
         for (int g = 0; g < glyphs_per_row; ++g) {
             const uint8_t* p = tensor + ((size_t)row * glyphs_per_row + g) * 92;
