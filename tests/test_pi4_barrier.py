@@ -1,0 +1,242 @@
+"""Software correctness tests, not activation calibration or Pi 4 benchmarks.
+
+Numeric probes use decoded committed Gemma sample weights. Hand-built records
+exercise format boundaries and the missing-bias counterexample only.
+"""
+from copy import deepcopy
+import ctypes
+import json
+from pathlib import Path
+import struct
+import tempfile
+import unittest
+
+import numpy as np
+
+from neon_runner.bridge import NeonRunnerBridgeV2, NeonStreamAccelerator, pack_lanu_header, H8_MATRIX
+from neon_runner.codebooks import CodebookRegistryV2
+from neon_runner.pi4_quantization import (
+    ChannelStats, shared_channel_scale, fold_shared_rmsnorm, fold_geglu_up,
+    transform_tile_hessian, gptq_opt5_tile, decode_opt5_36, mixed_budget,
+    opt5_block_frobenius, bounded_skip_mask,
+)
+from neon_runner.pi4_stream import (
+    checked_layout, pack_opt4_92, unpack_opt4_92, repack_stream, redundancy_scan,
+)
+from scripts.pi4_barrier_break import calibrate
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL = ROOT / "model"
+SOURCE = MODEL / "gemma4_e4b_sample_layer0_q_proj.neon_opt4.lanu"
+LAYOUT = MODEL / "gemma4_e4b_sample_layer0_q_proj.neon_opt4.layout.json"
+HYBRID = MODEL / "gemma4_e4b_sample_neon_hybrid_v2.lanu"
+HYBRID_LAYOUT = MODEL / "gemma4_e4b_sample_neon_hybrid_v2.layout.json"
+
+
+class Pi4BarrierTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.acc = NeonStreamAccelerator(auto_build=True)
+        cls.cb = CodebookRegistryV2.resolve("compass_s7").array
+        cls.raw = SOURCE.read_bytes()[16:]
+        cls.weights = cls.acc.decode(cls.raw, cls.cb, num_threads=1).reshape(16, 2560)
+        cls.probe = cls.weights[1].copy()
+
+    def test_real_sample_exact_roundtrip(self):
+        packed = pack_opt4_92(self.raw)
+        self.assertEqual(len(packed), 160 * 92)
+        self.assertEqual(unpack_opt4_92(packed), self.raw)
+
+    def test_all_2048_indices_and_record_boundaries(self):
+        # Unit fixtures only: cover every legal index and every bit alignment.
+        indices = list(range(2048))
+        raw = b"".join(struct.pack("<2e64H", 0.125, -0.25, *indices[i:i+64])
+                       for i in range(0, len(indices), 64))
+        self.assertEqual(unpack_opt4_92(pack_opt4_92(raw)), raw)
+        for rotation in (False, True):
+            expected = self.acc.decode(raw, self.cb, apply_fwht8=rotation, num_threads=1)
+            actual = self.acc.decode_packed_opt4(pack_opt4_92(raw), self.cb,
+                                                 apply_fwht8=rotation, num_threads=1)
+            np.testing.assert_array_equal(actual, expected)
+
+    def test_reject_noncanonical_indices_and_partial_records(self):
+        corrupt = bytearray(self.raw)
+        corrupt[4:6] = struct.pack("<H", 2048)
+        with self.assertRaises(ValueError):
+            pack_opt4_92(corrupt)
+        with self.assertRaises(ValueError):
+            pack_opt4_92(self.raw[:-1])
+        with self.assertRaises(ValueError):
+            unpack_opt4_92(b"x" * 91)
+
+    def test_native_decode_bitwise_identical(self):
+        for rotation in (False, True):
+            old = self.acc.decode(self.raw, self.cb, apply_fwht8=rotation, num_threads=1)
+            packed = self.acc.decode_packed_opt4(pack_opt4_92(self.raw), self.cb,
+                                                 apply_fwht8=rotation, num_threads=1)
+            np.testing.assert_array_equal(packed, old)
+
+    def test_native_fwht_supports_in_place_attention_call(self):
+        values = self.weights[0].copy()
+        expected = (values.reshape(-1, 8) @ H8_MATRIX.T).reshape(-1)
+        function = self.acc.lib.fwht8_vec_c
+        function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        function.restype = None
+        pointer = values.ctypes.data_as(ctypes.c_void_p)
+        function(pointer, pointer, values.size)
+        np.testing.assert_allclose(values, expected, atol=1e-7, rtol=1e-6)
+
+    def test_hybrid_repack_and_native_gemv_both_rotations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = repack_stream(HYBRID, HYBRID_LAYOUT, Path(tmp) / "packed", chunk_glyphs=7)
+            self.assertEqual(report["saved_bytes"], 160 * 40)
+            self.assertEqual(Path(report["stream"]).read_bytes()[:4], b"LANP")
+            with NeonRunnerBridgeV2(str(HYBRID), str(HYBRID_LAYOUT)) as old, NeonRunnerBridgeV2(
+                    report["stream"], report["layout"]) as new:
+                for p_old, p_new in zip(old.layout["projections"], new.layout["projections"]):
+                    for rotation in ("direct", "fwht8"):
+                        po, pn = deepcopy(p_old), deepcopy(p_new)
+                        po["rotation_mode"] = pn["rotation_mode"] = rotation
+                        np.testing.assert_allclose(new.gemv(pn, self.probe), old.gemv(po, self.probe),
+                                                   rtol=2e-5, atol=1e-5)
+                p_old, p_new = old.layout["projections"][1], new.layout["projections"][1]
+                self.assertEqual(bytes(old._memmap[p_old["stream_byte_offset"]:]),
+                                 bytes(new._memmap[p_new["stream_byte_offset"]:]))
+
+    def test_opt5_fwht_gemv_and_legacy_fallback(self):
+        with NeonRunnerBridgeV2(str(HYBRID), str(HYBRID_LAYOUT)) as bridge:
+            p = deepcopy(bridge.layout["projections"][1])
+            p["rotation_mode"] = "fwht8"
+            raw = bytes(bridge._memmap[p["stream_byte_offset"]:])
+            decoded = self.acc.decode_opt5(raw, bytes_per_glyph=48, apply_fwht8=True).reshape(16, 2560)
+            expected = decoded @ self.probe
+            np.testing.assert_allclose(bridge.gemv(p, self.probe), expected, rtol=3e-5, atol=1e-5)
+            bridge.accelerator.has_v2_opt5 = False
+            np.testing.assert_allclose(bridge.gemv(p, self.probe), expected, rtol=3e-5, atol=1e-5)
+
+    def test_native_call_rejects_invalid_ranges_and_formats(self):
+        with NeonRunnerBridgeV2(str(SOURCE), str(LAYOUT)) as bridge:
+            for change in ({"bytes_per_glyph": 91}, {"codec_id": 9}, {"d_in": 255},
+                           {"stream_byte_offset": -1}, {"stream_byte_offset": 32},
+                           {"tensor_bytes": 1}, {"rotation_mode": "unknown"}):
+                bad = dict(bridge.layout["projections"][0], **change)
+                with self.assertRaises(ValueError):
+                    bridge.gemv(bad, self.probe)
+
+    def test_layout_rejects_overlap_and_header_census(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.json"
+            layout = json.loads(HYBRID_LAYOUT.read_text())
+            layout["projections"][1]["stream_byte_offset"] = 16
+            path.write_text(json.dumps(layout))
+            with self.assertRaises(ValueError):
+                checked_layout(HYBRID, path)
+            corrupt = Path(tmp) / "bad.lanu"
+            raw = SOURCE.read_bytes()
+            corrupt.write_bytes(pack_lanu_header(159, 159) + raw[16:])
+            with self.assertRaises(ValueError):
+                checked_layout(corrupt, LAYOUT)
+
+    def test_exact_scan_uses_full_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = redundancy_scan(HYBRID, HYBRID_LAYOUT, Path(tmp) / "unique.db")
+            expected = set()
+            layout = json.loads(HYBRID_LAYOUT.read_text())
+            raw = HYBRID.read_bytes()
+            for p in layout["projections"]:
+                width = p["bytes_per_glyph"]
+                start = p["stream_byte_offset"]
+                for i in range(p["glyphs"]):
+                    expected.add((p["codec_id"], width, p["rotation_mode"], raw[start+i*width:start+(i+1)*width]))
+            self.assertEqual(report["unique_glyphs"], len(expected))
+            self.assertEqual(report["payload_bytes"], len(raw) - 16)
+
+    def test_calibration_streaming_and_cli_export(self):
+        stats = ChannelStats.empty(2560)
+        for row in self.weights:
+            stats.update(row)
+        np.testing.assert_allclose(stats.h_diag, np.mean(self.weights.astype(np.float64)**2, axis=0))
+        np.testing.assert_allclose(stats.absmax, np.max(np.abs(self.weights), axis=0))
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = Path(tmp) / "probes.npy", Path(tmp) / "stats.npz"
+            # Software test data from weights; explicitly NOT real activation calibration.
+            np.save(source, self.weights)
+            result = calibrate(source, dest, tile_hessians=True)
+            self.assertEqual(result["samples"], 16)
+            with np.load(dest, allow_pickle=False) as loaded:
+                block = self.weights[:, :256].astype(np.float64)
+                np.testing.assert_allclose(loaded["h_blocks"][0], block.T @ block / 16)
+
+    def test_shared_norm_fold_including_unit_offset(self):
+        stats = ChannelStats.empty(2560)
+        stats.update(self.weights)
+        consumers = [self.weights[:7], self.weights[7:11], self.weights[11:]]
+        scale = shared_channel_scale(stats.absmax, consumers)
+        gamma = self.weights[2].astype(np.float64)
+        x = self.probe.astype(np.float64)
+        for unit_offset in (False, True):
+            gamma_new, folded = fold_shared_rmsnorm(gamma, consumers, scale, unit_offset=unit_offset)
+            for original, rescaled in zip(consumers, folded):
+                expected = original @ ((gamma + float(unit_offset)) * x)
+                actual = rescaled @ ((gamma_new + float(unit_offset)) * x)
+                np.testing.assert_allclose(actual, expected, rtol=1e-11, atol=1e-10)
+
+    def test_geglu_fold(self):
+        up = self.weights.astype(np.float64)
+        down = up[:, :16]
+        scale = np.maximum(np.max(np.abs(up), axis=1), 1e-6)
+        folded_up, folded_down = fold_geglu_up(up, down, scale)
+        x = self.probe.astype(np.float64)
+        gate = np.tanh(up @ x)  # Arbitrary fixed gate is enough to test the product identity.
+        np.testing.assert_allclose(folded_down @ ((folded_up @ x) * gate),
+                                   down @ ((up @ x) * gate), rtol=1e-12, atol=1e-10)
+
+    def test_hessian_basis_transform(self):
+        x = self.weights[:, :256].astype(np.float64)
+        h = x.T @ x / len(x)
+        scale = np.maximum(np.max(np.abs(x), axis=0), 1e-6)
+        rotated = ((x / scale).reshape(-1, 8) @ H8_MATRIX.T).reshape(x.shape)
+        actual = transform_tile_hessian(h, scale, rotate_h8=True)
+        np.testing.assert_allclose(actual, rotated.T @ rotated / len(x), atol=1e-10, rtol=1e-10)
+
+    def test_gptq_reference_cannot_worsen_measured_tile_objective(self):
+        x = self.weights[:, :256].astype(np.float64)
+        h = x.T @ x / len(x)
+        payload, report = gptq_opt5_tile(x[2], h)
+        decoded = decode_opt5_36(payload)[0]
+        loss = (x[2] - decoded) @ h @ (x[2] - decoded)
+        self.assertEqual(len(payload), 36)
+        self.assertLessEqual(report["selected_loss"], report["baseline_loss"])
+        self.assertAlmostEqual(loss, report["selected_loss"], places=8)
+        with self.assertRaises(ValueError):
+            gptq_opt5_tile(x[2], -np.eye(256))
+
+    def test_bias_counterexample_and_total_skip_budget(self):
+        # If alpha=0 and beta!=0, the spec's 16*abs(alpha) bound is zero and false.
+        glyph = struct.pack("<2e", 0.0, 0.125) + bytes(32)
+        payload = glyph * 4
+        norms = opt5_block_frobenius(payload, rows=2, input_blocks=2)
+        x = self.weights[1, :512].astype(np.float64)
+        self.assertTrue(np.all(norms > 0))
+        skip, bound = bounded_skip_mask(x, norms, epsilon=0.0)
+        self.assertFalse(np.any(skip))
+        epsilon = float(np.max(norms * np.linalg.norm(x.reshape(-1, 256), axis=1))) * 1.1
+        skip, bound = bounded_skip_mask(x, norms, epsilon=epsilon)
+        matrix = decode_opt5_36(payload).reshape(2, 512)
+        removed = np.repeat(skip, 256) * x
+        self.assertLessEqual(np.linalg.norm(matrix @ removed), bound + 1e-12)
+        self.assertLessEqual(bound, epsilon)
+
+    def test_exact_ram_budget_and_rejected_overflow(self):
+        report = mixed_budget(high_glyphs=11_440_128)
+        self.assertEqual(report["stream_bytes"], 4_759_093_264)
+        self.assertLessEqual(report["total_reserved_bytes"], 5_000_000_000)
+        maximum = mixed_budget()["max_high_glyphs"]
+        with self.assertRaises(ValueError):
+            mixed_budget(high_glyphs=maximum + 1)
+        with self.assertRaises(ValueError):
+            mixed_budget(runtime_reserve=1_000_000_000)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,6 +7,11 @@
 
 ## Architecture Overview
 
+**Pi 4 31B engineering status:** [implementation and evidence review](docs/PI4_BARRIER_BREAK_REVIEW.md)
+adds lossless 132-to-92-byte RVQ packing, calibration tools, native execution
+support and an Opt5 H8 GEMV fix. Sample decode parity is verified; the full
+31B RAM-residency, held-out quality and Pi 4 speed gates remain unverified.
+
 Language-U breaks the storage, KV-cache memory-bandwidth, and execution bottlenecks of offline developer agents by unifying model weights, long-context KV states, codebase semantics, and native machine execution into a single discrete data type: the **Macro-Glyph** on the octonionic unit 7-sphere ($S^7$).
 
 ```

@@ -9,3 +9,4 @@ __pycache__/
 *.lib
 *.exe
 neon_runner/neon_stream_accelerator_v2
+/pi4-runs/
