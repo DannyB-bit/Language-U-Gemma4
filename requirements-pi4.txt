@@ -1,0 +1,4 @@
+# Tested preparation-suite dependencies. Package initialization also imports
+# optical_carrier, which requires Pillow even for stream-only consumers.
+numpy==2.3.5
+pillow==13.0.0

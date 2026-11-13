@@ -1,0 +1,156 @@
+{
+  "schema": "language-u-hf-31b-artifact-audit-v1",
+  "created_utc": "2026-11-12T09:38:57.567863+00:00",
+  "repository": "TheAiCollectiveART/Glyph-Stream-31b",
+  "revision": "bd9c48f1da41b51521570674ba2696657eb7358e",
+  "source_url": "https://huggingface.co/TheAiCollectiveART/Glyph-Stream-31b/tree/bd9c48f1da41b51521570674ba2696657eb7358e",
+  "host_architecture": "x86_64",
+  "scope": "artifact integrity and host arithmetic; no token generation",
+  "native_library_sha256": "49e063edc6271c1923c6e1432d975fb400f1c59f51d36ddedd69c3ec6443e8b8",
+  "verified_local_file_sha256": {
+    "gemma4_31b_language_u_sandwich_stream.bin": "9465174f3bd782eb549457d51f62605e2ecffc4bdc5fd9b5aad8ea89861cf4c8",
+    "gemma4_31b_tensor_layout.json": "5229403e3d93dde3f7719eef16f735b5c1a76611afd9423c75b98af214306bc8",
+    "s7_codebook_2048x8.bin": "099cfea75908bf4ca74820c732e040179e5354f6cd023af099faf1d439c37a47",
+    "config.json": "b100d85e571c25b688e82919d819253063a1defb0e6cee3b9b1c1fbad99bd0c2",
+    "PHYSICAL_PI4_31B_VERIFIED_REPORT.json": "12b79e3923c7941f918a5e2d7fcca4499d11a35b653d1a5d50bd206f3e7d0f5b"
+  },
+  "source_sha256": {
+    "neon_runner/bridge.py": "576ff416e9653d51bad7096a5f96c76798eed3fafdc8ab99c97546cb3747efaf",
+    "neon_runner/pi4_stream.py": "daed469d64d7e97375703013fe168e22c56aab89cbd954530aff611d810b5c6f",
+    "neon_runner/native_census.py": "12a3f136bc4dde9cf6549b5ff12c1573537db1305620070beca6403e19f79d0c",
+    "neon_runner/stream_census.c": "4bf00a81eb212f0b52c3314834d9b7fc6169d48a762c3f4061d2216a1447aa7e",
+    "neon_runner/neon_stream_accelerator_v2.c": "feca6f554407332b6d5625ac0a62e2b446b205c8822f424dc973f7f38540537d",
+    "neon_runner/neon_stream_accelerator_v2.h": "e604f15de0722223d94b597b438199f5b633a250aec70e389f554c5489efe013",
+    "scripts/verify_31b_artifact.py": "b60b3533da84d5db2b90737cb1cce7a1676e751e0eaf4db6a36cacc73535b739",
+    "tests/test_pi4_barrier.py": "cd0d1a66a94bfc232695e5cfafa52c85562da77487b71acad7a5b52586d6a0cf"
+  },
+  "original_header": {
+    "magic": "LANU",
+    "version": 1,
+    "glyphs": 114401280,
+    "boundary_glyphs": 18923520
+  },
+  "projection_count": 410,
+  "sampled_record_checks": 1230,
+  "original_stream_bytes": 7080837136,
+  "packed_stream_bytes": 6323896336,
+  "packed_stream_sha256": "cf664e5db891e7e666e8b1114644003e13bd9832fcafded96b4649ecdf8bc164",
+  "saved_bytes": 756940800,
+  "full_reverse_roundtrip": "PASS",
+  "full_reverse_reconstructed_bytes": 7080837136,
+  "full_reverse_reconstruction_sha256": "9465174f3bd782eb549457d51f62605e2ecffc4bdc5fd9b5aad8ea89861cf4c8",
+  "packed_header": {
+    "magic": "LANP",
+    "version": 3
+  },
+  "codebook": {
+    "family": "golden_s7",
+    "sha256": "099cfea75908bf4ca74820c732e040179e5354f6cd023af099faf1d439c37a47",
+    "repository_sample_codebook_sha256": "f31d84ff9e0888e89c8e1fa0d0f822c321d1aacaea61d37bfb09a2f760d135b4"
+  },
+  "census": {
+    "stream_sha256": "9465174f3bd782eb549457d51f62605e2ecffc4bdc5fd9b5aad8ea89861cf4c8",
+    "glyphs": 114401280,
+    "unique_glyphs": 114400946,
+    "payload_bytes": 7080837120,
+    "zlib_bytes": 6007540883,
+    "zlib_ratio": 1.178658166112059,
+    "unique_payload_bytes": 7080820920,
+    "ideal_dictionary_bytes_excluding_metadata": 7466925240,
+    "unique_by_kind": [
+      0,
+      95477428,
+      0,
+      18923518,
+      0,
+      0,
+      0,
+      0
+    ],
+    "workspace_bytes_excluding_mmap_pages": 3661889536,
+    "largest_fingerprint_group": 5,
+    "fingerprint_bits": 64,
+    "collision_resolution": "full metadata and payload comparison",
+    "scope": "supplied stream only",
+    "pi4_benchmark": false
+  },
+  "representative_gemv_checks": [
+    {
+      "key": "model.language_model.layers.0.self_attn.q_proj.weight_packed",
+      "relative_l2_difference": 2.721734686927065e-07,
+      "cosine": 0.9999999999999639,
+      "max_abs_difference": 0.00048828125,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    },
+    {
+      "key": "model.language_model.layers.0.mlp.down_proj.weight_packed",
+      "relative_l2_difference": 1.976978287480018e-07,
+      "cosine": 0.9999999999999839,
+      "max_abs_difference": 0.001953125,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    },
+    {
+      "key": "model.language_model.layers.5.self_attn.q_proj.weight_packed",
+      "relative_l2_difference": 0.0,
+      "cosine": 1.0,
+      "max_abs_difference": 0.0,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    },
+    {
+      "key": "model.language_model.layers.5.mlp.down_proj.weight_packed",
+      "relative_l2_difference": 0.0,
+      "cosine": 1.0,
+      "max_abs_difference": 0.0,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    },
+    {
+      "key": "model.language_model.layers.59.self_attn.q_proj.weight_packed",
+      "relative_l2_difference": 2.8748161420948656e-07,
+      "cosine": 0.9999999999999597,
+      "max_abs_difference": 9.1552734375e-05,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    },
+    {
+      "key": "model.language_model.layers.59.mlp.down_proj.weight_packed",
+      "relative_l2_difference": 2.3107813039476836e-07,
+      "cosine": 0.9999999999999786,
+      "max_abs_difference": 0.001953125,
+      "probe_kind": "decoded weight row 1; not model activations",
+      "rotation_assumption": "direct; upload layout omits rotation_mode"
+    }
+  ],
+  "memory_ledger": {
+    "existing_embedding_bytes_from_hub_metadata": 2818572288,
+    "existing_norm_bytes_from_hub_metadata": 2990082,
+    "companion_large_files_locally_hash_verified": false,
+    "hypothetical_runtime_reserve_bytes": 200000000,
+    "all36_linear_bytes": 4118446096,
+    "all36_plus_existing_embeddings_and_norms_bytes": 6940008466,
+    "all36_plus_companions_and_reserve_bytes": 7140008466,
+    "ten_percent_92_linear_bytes": 4759093264,
+    "ten_percent_92_plus_companions_and_reserve_bytes": 7780655634,
+    "target_total_available_bytes": 5000000000
+  },
+  "uploaded_pi_report": {
+    "status": "VERIFIED_REAL_WEIGHT_KERNEL_OPERATIONAL_ON_SILICON",
+    "timestamp": "2026-10-17T09:34:30Z",
+    "scope": "Kernel data-path verification over the real 6.97 GB stream with a SYNTHETIC probe vector x (0.01*(i%7)). Confirms: canonical codebook, layout arithmetic, row-aligned GEMVs, and kernel==encoder decode parity. This is NOT token generation: no embedding, no 60-layer forward pass, no logits. First-token generation additionally requires the embedding table, FP32 norms sidecar, final norm + softcapping, and the autoregressive harness (langut.runtime.cortex).",
+    "independently_rerun_on_pi": false
+  },
+  "gate_1": {
+    "status": "NOT_PASSED",
+    "full_linear_artifact_now_available": true,
+    "blockers": [
+      "No validated <=4.8 GB mixed-precision candidate or complete <=5 GB resident runtime",
+      "Existing embedding table must be included, compressed with quality verification, or explicitly streamed",
+      "No captured calibration/held-out activations or multi-prompt raw logits",
+      "No independently measured physical Pi full-generation residency, I/O or latency"
+    ]
+  },
+  "pi4_speedup_claim": null
+}

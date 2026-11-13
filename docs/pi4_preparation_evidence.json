@@ -1,0 +1,136 @@
+{
+  "schema": "language-u-pi4-preparation-v1",
+  "created_utc": "2026-11-12T09:38:26.871958+00:00",
+  "scope": "Host software correctness on committed E4B sample records only",
+  "host_architecture": "x86_64",
+  "host_os": "Linux",
+  "python": "3.12.14",
+  "numpy": "2.3.5",
+  "native_library_sha256": "49e063edc6271c1923c6e1432d975fb400f1c59f51d36ddedd69c3ec6443e8b8",
+  "source_sha256": {
+    "neon_runner/bridge.py": "576ff416e9653d51bad7096a5f96c76798eed3fafdc8ab99c97546cb3747efaf",
+    "neon_runner/pi4_stream.py": "daed469d64d7e97375703013fe168e22c56aab89cbd954530aff611d810b5c6f",
+    "neon_runner/pi4_quantization.py": "ef4eb540dc19fcf0d95d7a41c6e4a37e9b696a813978543277dd6c63438500d2",
+    "neon_runner/neon_stream_accelerator_v2.c": "feca6f554407332b6d5625ac0a62e2b446b205c8822f424dc973f7f38540537d",
+    "neon_runner/neon_stream_accelerator_v2.h": "e604f15de0722223d94b597b438199f5b633a250aec70e389f554c5489efe013",
+    "scripts/pi4_barrier_break.py": "840d59bcb5e13607c8ce674f531d41f1499d05b7dd927f6755dd18e177df02b4",
+    "scripts/verify_pi4_preparation.py": "635cca94af939418f713ee8e35b44ca7240881237015fc72605af18ee11e256d",
+    "tests/test_pi4_barrier.py": "cd0d1a66a94bfc232695e5cfafa52c85562da77487b71acad7a5b52586d6a0cf",
+    "neon_runner/native_census.py": "12a3f136bc4dde9cf6549b5ff12c1573537db1305620070beca6403e19f79d0c",
+    "neon_runner/stream_census.c": "4bf00a81eb212f0b52c3314834d9b7fc6169d48a762c3f4061d2216a1447aa7e",
+    "scripts/verify_31b_artifact.py": "b60b3533da84d5db2b90737cb1cce7a1676e751e0eaf4db6a36cacc73535b739"
+  },
+  "samples": [
+    {
+      "source": "model/gemma4_e4b_sample_layer0_q_proj.neon_opt4.lanu",
+      "redundancy": {
+        "stream_sha256": "343916f0d84e29cbcb89e253900ac64f7329138cf2498a794f908f41b215da0c",
+        "glyphs": 160,
+        "unique_glyphs": 160,
+        "payload_bytes": 21120,
+        "zlib_bytes": 17230,
+        "zlib_ratio": 1.2257690075449796,
+        "unique_payload_bytes": 21120,
+        "ideal_dictionary_bytes_excluding_metadata": 21280,
+        "database_bytes": 32768,
+        "scope": "supplied stream only",
+        "pi4_benchmark": false
+      },
+      "packing": {
+        "source_bytes": 21136,
+        "packed_bytes": 14736,
+        "saved_bytes": 6400,
+        "source_sha256": "343916f0d84e29cbcb89e253900ac64f7329138cf2498a794f908f41b215da0c",
+        "packed_sha256": "59800d88e5641b2d963b440d809a8e607109bf9d594c79fd35bf3a1a69ebe9f1",
+        "roundtrip": "PASS",
+        "model_quality_gate": "UNVERIFIED",
+        "pi4_residency_gate": "UNVERIFIED"
+      },
+      "projection_checks": [
+        {
+          "key": "model.language_model.layers.0.self_attn.q_proj.weight",
+          "probe_kind": "decoded sample weight row 1; not model activations",
+          "native_decode_bitwise_equal": true,
+          "gemv_max_abs_difference_vs_original_container": 2.384185791015625e-07,
+          "gemv_max_abs_difference_vs_decoded_fp64": 1.3976094859202703e-07,
+          "source_bytes_per_glyph": 132,
+          "packed_bytes_per_glyph": 92
+        }
+      ]
+    },
+    {
+      "source": "model/gemma4_e4b_sample_neon_hybrid_v2.lanu",
+      "redundancy": {
+        "stream_sha256": "5d520fc2f397371a1c184e6e87e10f8dec1495ff479b44e03c12e7af6cf5531c",
+        "glyphs": 320,
+        "unique_glyphs": 320,
+        "payload_bytes": 28800,
+        "zlib_bytes": 25104,
+        "zlib_ratio": 1.147227533460803,
+        "unique_payload_bytes": 28800,
+        "ideal_dictionary_bytes_excluding_metadata": 29160,
+        "database_bytes": 45056,
+        "scope": "supplied stream only",
+        "pi4_benchmark": false
+      },
+      "packing": {
+        "source_bytes": 28816,
+        "packed_bytes": 22416,
+        "saved_bytes": 6400,
+        "source_sha256": "5d520fc2f397371a1c184e6e87e10f8dec1495ff479b44e03c12e7af6cf5531c",
+        "packed_sha256": "0c4d79ce67f992c71baf9aed2d7a74c3412602774845fa6c0920c615237c2884",
+        "roundtrip": "PASS",
+        "model_quality_gate": "UNVERIFIED",
+        "pi4_residency_gate": "UNVERIFIED"
+      },
+      "projection_checks": [
+        {
+          "key": "model.language_model.layers.0.self_attn.q_proj.weight",
+          "probe_kind": "decoded sample weight row 1; not model activations",
+          "native_decode_bitwise_equal": true,
+          "gemv_max_abs_difference_vs_original_container": 2.384185791015625e-07,
+          "gemv_max_abs_difference_vs_decoded_fp64": 1.3976094859202703e-07,
+          "source_bytes_per_glyph": 132,
+          "packed_bytes_per_glyph": 92
+        },
+        {
+          "key": "model.language_model.layers.5.self_attn.q_proj.weight",
+          "probe_kind": "decoded sample weight row 1; not model activations",
+          "native_decode_bitwise_equal": true,
+          "gemv_max_abs_difference_vs_original_container": 0.0,
+          "gemv_max_abs_difference_vs_decoded_fp64": 9.502400644123554e-09,
+          "source_bytes_per_glyph": 48,
+          "packed_bytes_per_glyph": 48
+        }
+      ]
+    }
+  ],
+  "specified_31b_10_percent_budget": {
+    "glyphs": 114401280,
+    "high_glyphs": 11440128,
+    "low_glyphs": 102961152,
+    "max_high_glyphs": 12170605,
+    "high_fraction": 0.1,
+    "stream_bytes": 4759093264,
+    "sidecar_bytes": 0,
+    "runtime_reserve_bytes": 200000000,
+    "total_reserved_bytes": 4959093264,
+    "available_ram_bytes": 5000000000,
+    "quality_gate": "UNVERIFIED",
+    "residency_gate": "UNVERIFIED"
+  },
+  "gate_1": {
+    "status": "UNVERIFIED",
+    "missing_evidence": [
+      "Validated RAM-fit 31B candidate and complete byte/reserve ledger (full original now audited separately)",
+      "Captured calibration and held-out model activations",
+      "Hamlet tokens [715, 100] plus >=3 held-out prompt outputs and logits",
+      "Pi 4 warm-run resident pages, major faults, read bytes/token, RSS"
+    ]
+  },
+  "gate_2": {
+    "status": "NOT_RUN_GATE_1_REQUIRED",
+    "pi4_speedup_claim": null
+  },
+  "full_model_distribution_preservation": "NOT_ESTABLISHED"
+}

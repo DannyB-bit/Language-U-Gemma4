@@ -77,6 +77,23 @@ NEON_API void decode_glyphs_c(
     int num_threads
 );
 
+/* Packed Opt4: same two fp16 scales, followed by 64 LSB-first 11-bit
+ * codebook indices (stage 1 then stage 2). Exactly 92 bytes per glyph.
+ * These symbols are additive; existing 132-byte ABIs retain their layout. */
+NEON_API void decode_glyphs_opt4_packed_c(
+    const uint8_t* NEON_RESTRICT glyphs,
+    const float* NEON_RESTRICT cb,
+    float* NEON_RESTRICT out_weights,
+    int n_glyphs, int apply_fwht8, int num_threads
+);
+
+/* x is already pre-rotated if the stream uses fwht8. No tensor expansion. */
+NEON_API void gemv_opt4_packed_mmap(
+    const uint8_t* NEON_RESTRICT mmap_base, size_t tensor_byte_offset,
+    const float* NEON_RESTRICT cb, const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y, int d_out, int d_in
+);
+
 /**
  * High-speed in-cache projection benchmark across n_glyphs (132B Option 4).
  * Returns elapsed wall-clock seconds.
@@ -130,11 +147,12 @@ NEON_API int neon_accelerator_self_test(void);
 
 /**
  * Applies blockwise orthonormal Sylvester-Hadamard FWHT-8 to an array of length n
- * (n must be a multiple of 8). Self-inverse: fwht8_vec_c(fwht8_vec_c(x)) == x.
+ * (n must be a multiple of 8). Supports x_in == x_out; partial overlap is not
+ * supported. Self-inverse: fwht8_vec_c(fwht8_vec_c(x)) == x.
  */
 NEON_API void fwht8_vec_c(
-    const float* NEON_RESTRICT x_in,
-    float* NEON_RESTRICT x_out,
+    const float* x_in,
+    float* x_out,
     int n
 );
 

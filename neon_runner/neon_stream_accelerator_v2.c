@@ -277,8 +277,8 @@ static inline void fwht8(const float* in, float* out) {
 }
 
 NEON_API void fwht8_vec_c(
-    const float* NEON_RESTRICT x_in,
-    float* NEON_RESTRICT x_out,
+    const float* x_in,
+    float* x_out,
     int n
 ) {
     int octets = n / 8;
@@ -385,6 +385,72 @@ NEON_API void decode_glyphs_opt4_mode_c(
             out_weights + (size_t)g * 256,
             apply_fwht8
         );
+    }
+}
+
+static inline uint16_t read_packed11(const uint8_t* glyph, unsigned index) {
+    const unsigned bit = index * 11u;
+    const unsigned shift = bit & 7u;
+    const uint8_t* p = glyph + 4 + (bit >> 3);
+    uint32_t v = (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    /* The last field starts at shift=5, so this never reads past byte 91. */
+    if (shift > 5u) v |= (uint32_t)p[2] << 16;
+    return (uint16_t)((v >> shift) & 2047u);
+}
+
+NEON_API void decode_glyphs_opt4_packed_c(
+    const uint8_t* NEON_RESTRICT glyphs,
+    const float* NEON_RESTRICT cb,
+    float* NEON_RESTRICT out_weights,
+    int n_glyphs, int apply_fwht8, int num_threads
+) {
+    int g;
+#if HAS_OMP
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+    #pragma omp parallel for schedule(static)
+#else
+    (void)num_threads;
+#endif
+    for (g = 0; g < n_glyphs; ++g) {
+        const uint8_t* src = glyphs + (size_t)g * 92;
+        uint8_t expanded[132]; /* One glyph on the worker stack, never a matrix. */
+        memcpy(expanded, src, 4);
+        for (unsigned j = 0; j < 64; ++j)
+            write_u16_le(expanded + 4 + j * 2, read_packed11(src, j));
+        decode_single_glyph_mode(expanded, cb, out_weights + (size_t)g * 256, apply_fwht8);
+    }
+}
+
+NEON_API void gemv_opt4_packed_mmap(
+    const uint8_t* NEON_RESTRICT mmap_base, size_t tensor_byte_offset,
+    const float* NEON_RESTRICT cb, const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y, int d_out, int d_in
+) {
+    const int glyphs_per_row = d_in / 256;
+    const uint8_t* tensor = mmap_base + tensor_byte_offset;
+    int row;
+#if HAS_OMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (row = 0; row < d_out; ++row) {
+        float total = 0.0f;
+        for (int g = 0; g < glyphs_per_row; ++g) {
+            const uint8_t* p = tensor + ((size_t)row * glyphs_per_row + g) * 92;
+            const float* xg = x + (size_t)g * 256;
+            const float s1 = fp16_to_fp32(read_u16_le(p));
+            const float s2 = fp16_to_fp32(read_u16_le(p + 2));
+            float a = 0.0f, b = 0.0f;
+            for (unsigned oct = 0; oct < 32; ++oct) {
+                const float* c1 = cb + ((size_t)read_packed11(p, oct) << 3);
+                const float* c2 = cb + ((size_t)read_packed11(p, oct + 32) << 3);
+                for (unsigned j = 0; j < 8; ++j) {
+                    a += c1[j] * xg[oct * 8 + j];
+                    b += c2[j] * xg[oct * 8 + j];
+                }
+            }
+            total += s1 * a + s2 * b;
+        }
+        y[row] = total;
     }
 }
 
@@ -2156,10 +2222,12 @@ NEON_API int flash_glyph_attention_gqa_c(
                 /* Option 4: Unpack each 8D RVQ octet once in registers & dot against all G queries */
                 for (int gl = 0; gl < glyphs_per_head; gl++) {
                     const uint8_t* glyph = k_tok + (size_t)gl * 132;
+#if HAS_AVX2 || HAS_NEON
                     const float s1 = fp16_to_fp32(read_u16_le(glyph + 0));
                     const float s2 = fp16_to_fp32(read_u16_le(glyph + 2));
                     const uint8_t* p_idx1 = glyph + 4;
                     const uint8_t* p_idx2 = glyph + 68;
+#endif
                     float* k_dst_gl = k_rot + (size_t)gl * 256;
 
 #if HAS_AVX2

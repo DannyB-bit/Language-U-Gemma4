@@ -39,18 +39,22 @@ import numpy as np
 try:
     from .codebooks import CodebookRegistryV2, LoadedCodebookV2
     from .build_native import build_shared_library
+    from .pi4_stream import validate_projection, checked_layout
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from neon_runner.codebooks import CodebookRegistryV2, LoadedCodebookV2
     from neon_runner.build_native import build_shared_library
+    from neon_runner.pi4_stream import validate_projection, checked_layout
 
 
 BRIDGE_VERSION = "2.1.0"
 BRIDGE_COMPONENT_ID = "Language-U-Gemma4-NeonRunner-Bridge-V2"
 LANU_MAGIC = b"LANU"
+LANU_PACKED_MAGIC = b"LANP"
 LANU_HEADER_BYTES = 16
 WEIGHTS_PER_GLYPH = 256
 BPG_OPT4 = 132
+BPG_OPT4_PACKED = 92
 BPG_OPT5_STD = 36
 BPG_OPT5_OUTLIER = 48
 
@@ -85,8 +89,8 @@ def parse_lanu_header(raw_16: bytes) -> StreamHeaderV2:
     if len(raw_16) != LANU_HEADER_BYTES:
         raise ValueError(f"Header slice must be {LANU_HEADER_BYTES} bytes, got {len(raw_16)}")
     magic, ver, flags, total_g, bound_g = struct.unpack("<4sHHII", raw_16)
-    if magic != LANU_MAGIC:
-        raise ValueError(f"Invalid LANU stream magic: {magic!r} (expected {LANU_MAGIC!r})")
+    if (magic, ver) not in ((LANU_MAGIC, 1), (LANU_MAGIC, 2), (LANU_PACKED_MAGIC, 3)):
+        raise ValueError(f"Invalid stream magic/version: {magic!r}/{ver}")
     if bound_g > total_g:
         raise ValueError(f"Lying header detected: boundary_glyphs ({bound_g}) > total_glyphs ({total_g})")
     return StreamHeaderV2(
@@ -101,7 +105,10 @@ def parse_lanu_header(raw_16: bytes) -> StreamHeaderV2:
 def pack_lanu_header(total_glyphs: int, boundary_glyphs: int, version: int = 2, flags: int = 45) -> bytes:
     if total_glyphs < 0 or boundary_glyphs < 0 or boundary_glyphs > total_glyphs:
         raise ValueError(f"Invalid glyph counts: total={total_glyphs}, boundary={boundary_glyphs}")
-    return struct.pack("<4sHHII", LANU_MAGIC, version, flags, total_glyphs, boundary_glyphs)
+    if version not in (1, 2, 3):
+        raise ValueError(f"Unsupported container version: {version}")
+    magic = LANU_PACKED_MAGIC if version == 3 else LANU_MAGIC
+    return struct.pack("<4sHHII", magic, version, flags, total_glyphs, boundary_glyphs)
 
 
 def fwht8_vec_numpy(x: np.ndarray) -> np.ndarray:
@@ -354,6 +361,18 @@ class NeonStreamAccelerator:
         self.has_v2_opt5_multi = hasattr(self.lib, "gemv_opt5_mmap_multi")
         self.has_v2_fwht_gemv = hasattr(self.lib, "gemv_opt4_fwht_mmap")
         self.has_v2_opt4_mode = hasattr(self.lib, "decode_glyphs_opt4_mode_c")
+        self.has_packed_opt4 = hasattr(self.lib, "decode_glyphs_opt4_packed_c") and hasattr(self.lib, "gemv_opt4_packed_mmap")
+        if self.has_packed_opt4:
+            self.lib.decode_glyphs_opt4_packed_c.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.decode_glyphs_opt4_packed_c.restype = None
+            self.lib.gemv_opt4_packed_mmap.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ]
+            self.lib.gemv_opt4_packed_mmap.restype = None
 
         if self.has_v2_opt5:
             self.lib.decode_glyphs_opt5_c.argtypes = [
@@ -529,6 +548,24 @@ class NeonStreamAccelerator:
         flat = out_2d.reshape(-1).astype(np.float32)
         return fwht8_vec_numpy(flat) if apply_fwht8 else flat
 
+    def decode_packed_opt4(self, glyph_bytes, codebook_fp32, *, apply_fwht8=True, num_threads=4):
+        """Decode 92-byte records using the upgraded native ABI; never misread as 132B."""
+        if not self.has_packed_opt4:
+            raise RuntimeError("Rebuild the native library for 92-byte packed Opt4 support")
+        raw = np.frombuffer(glyph_bytes, dtype=np.uint8)
+        if raw.size % BPG_OPT4_PACKED or raw.size // BPG_OPT4_PACKED > 2**31 - 1:
+            raise ValueError("Packed Opt4 buffer length is invalid")
+        cb = np.ascontiguousarray(codebook_fp32, dtype=np.float32)
+        if cb.shape != (2048, 8):
+            raise ValueError("Codebook must have shape (2048, 8)")
+        count = raw.size // BPG_OPT4_PACKED
+        out = np.empty(count * 256, dtype=np.float32)
+        self.lib.decode_glyphs_opt4_packed_c(
+            raw.ctypes.data_as(ctypes.c_void_p), cb.ctypes.data_as(ctypes.c_void_p),
+            out.ctypes.data_as(ctypes.c_void_p), count, int(apply_fwht8), num_threads,
+        )
+        return out
+
     def build_ternary_lut(self, codebook_fp32: np.ndarray) -> Optional[np.ndarray]:
         """Returns a 6,561-entry uint16 LUT for O(1) ternary lattice RVQ encoding, or None if non-ternary."""
         if not self.has_v2_glyph_attn:
@@ -600,6 +637,12 @@ class NeonRunnerBridgeV2:
         self.header = parse_lanu_header(bytes(self._memmap[:LANU_HEADER_BYTES]))
 
         if self.layout:
+            if verify_size_law:
+                try:
+                    checked_layout(sp, self.layout_path)
+                except Exception:
+                    self.close()
+                    raise
             projs = self.layout.get("projections", [])
             expected_bytes = LANU_HEADER_BYTES + sum(int(p["tensor_bytes"]) for p in projs)
             if verify_size_law and actual_size != expected_bytes:
@@ -625,21 +668,35 @@ class NeonRunnerBridgeV2:
         if self._memmap is None or self._mmap_ptr == 0:
             raise RuntimeError("No stream memory-mapped in NeonRunnerBridgeV2")
 
+        validate_projection(proj_meta, self._memmap.size)
+
         d_in = int(proj_meta["d_in"])
         d_out = int(proj_meta["d_out"])
         offset = int(proj_meta.get("stream_byte_offset", proj_meta.get("byte_offset", LANU_HEADER_BYTES)))
         codec_id = int(proj_meta.get("codec_id", 4 if proj_meta.get("codec", "OPT4") == "OPT4" else 5))
         bpg = int(proj_meta.get("bytes_per_glyph", BPG_OPT4 if codec_id == 4 else BPG_OPT5_OUTLIER))
         rot_mode = proj_meta.get("rotation_mode", self.layout.get("rotation_mode", "direct"))
+        if rot_mode not in ("fwht8", "none", "direct"):
+            raise ValueError(f"Unsupported rotation_mode: {rot_mode}")
 
         x_vec = np.ascontiguousarray(x, dtype=np.float32)
-        assert x_vec.shape == (d_in,), f"GEMV input shape mismatch: got {x_vec.shape}, expected ({d_in},)"
+        if x_vec.shape != (d_in,):
+            raise ValueError(f"GEMV input shape mismatch: got {x_vec.shape}, expected ({d_in},)")
         y = np.empty(d_out, dtype=np.float32)
         assert y.shape == (d_out,)
 
         if codec_id == 4:
             cb_ptr = self.codebook.array.ctypes.data_as(ctypes.c_void_p)
             y_ptr = y.ctypes.data_as(ctypes.c_void_p)
+            if bpg == BPG_OPT4_PACKED:
+                if not self.accelerator.has_packed_opt4:
+                    raise RuntimeError("Rebuild the native library for 92-byte packed Opt4 support")
+                x_native = fwht8_vec_numpy(x_vec) if rot_mode == "fwht8" else x_vec
+                self.accelerator.lib.gemv_opt4_packed_mmap(
+                    ctypes.c_void_p(self._mmap_ptr), offset, cb_ptr,
+                    x_native.ctypes.data_as(ctypes.c_void_p), y_ptr, d_out, d_in,
+                )
+                return y
             if rot_mode == "fwht8":
                 if self.accelerator.has_v2_fwht_gemv:
                     self.accelerator.lib.gemv_opt4_fwht_mmap(
@@ -676,11 +733,14 @@ class NeonRunnerBridgeV2:
             return y
 
         # Codec 5 (Option 5: 36B or 48B Top-4 outlier)
+        # H8 is self-adjoint: decoded H8 weights require H8 input here as well.
+        # The previous bridge silently ignored rotation_mode for Option 5 GEMV.
+        x_native = fwht8_vec_numpy(x_vec) if rot_mode == "fwht8" else x_vec
         if self.accelerator.has_v2_opt5:
             self.accelerator.lib.gemv_opt5_mmap(
                 ctypes.c_void_p(self._mmap_ptr),
                 offset,
-                x_vec.ctypes.data_as(ctypes.c_void_p),
+                x_native.ctypes.data_as(ctypes.c_void_p),
                 y.ctypes.data_as(ctypes.c_void_p),
                 d_out,
                 d_in,
@@ -692,7 +752,7 @@ class NeonRunnerBridgeV2:
         tensor_bytes = int(proj_meta.get("tensor_bytes", (d_out * d_in // 256) * bpg))
         raw_slice = self._memmap[offset : offset + tensor_bytes]
         w_mat = self.accelerator.decode_opt5(raw_slice, bytes_per_glyph=bpg).reshape(d_out, d_in)
-        return (w_mat @ x_vec).astype(np.float32)
+        return (w_mat @ x_native).astype(np.float32)
 
     def close(self) -> None:
         if self._memmap is not None:

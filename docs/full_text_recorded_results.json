@@ -1,0 +1,158 @@
+{
+  "schema": "language-u-recorded-session-results-v1",
+  "evidence_origin": "Transcribed from completed tool outputs earlier in this conversation. Raw arrays, detailed JSON and model caches were cleared by a workspace restart. These are not fresh generation measurements.",
+  "restored_source_sha256_matches_earlier_run": {
+    "neon_runner/checkpoint_io.py": "e3b36c20091c27d9ff0a77502c3b7604088307b2674c741f5ed3337ef6c0de63",
+    "neon_runner/qat_reference.c": "36f7b38365bf92fdd0b900538c56fb742b396cbf7b7c6b62019d7f2456c93ffd",
+    "neon_runner/text_runtime.py": "a8d995ec8b9212c9a85b09dd139ef7f1176a4d012ea61c868429cd93de7e0a65",
+    "neon_runner/lowbit_embedding.py": "a5a255f444fc86161fd02f7040e52bb86b8bf58867475a35b0b5e0cb2a0a3dc3",
+    "scripts/run_31b_text_gate.py": "ddaa3ffddbd54b9f2a934a3713a46e26a8de32a1f66d578f1ffd6dfccaf1b9ff"
+  },
+  "physical_pi4_verified": false,
+  "fully_solved": false,
+  "upstream": {
+    "repository": "google/gemma-4-31B-it-qat-w4a16-ct",
+    "revision": "52f3f65bc7a02d555763bc923bd1d9094898219d",
+    "bytes": 23265352448,
+    "whole_file_sha256_verified_before_restart": "1b9b1d622a93f02c0d33f98e502f233b5d707443af6ddc464ed0bf5498506c20"
+  },
+  "companions": {
+    "language_norms_byte_exact": 361,
+    "recovered_scalars": 60,
+    "scalar_npy_sha256": "0075b589b7a66a08afe71a9b724005b488d42f0c5e8de8cb2f58cd6e3f6f4690",
+    "embedding_and_upstream_head_sha256": "269c01c33995af421d19a6802a7c4d8e62bdd718069b293204cd849a31307fe4",
+    "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+  },
+  "source_numpy_native_logit_parity": {
+    "cosine": 0.9999999999996179,
+    "relative_l2_difference": 8.882120039592212e-07,
+    "max_abs_difference": 4.76837158203125e-05,
+    "argmax_matches": true,
+    "numpy_logits_npy_sha256": "d07a6ce9a9553cbfa8c4176693dc1ed529cdc60bf97ea5aa2d13456436c85dc0",
+    "native_logits_npy_sha256": "0d36bc2e5638c89e1dd34a40b00efcbf7eceb18b421b21d6b95e6a97a8a88f89"
+  },
+  "lineage_sample": {
+    "rows_per_matrix": 4,
+    "opt4_matrices": 69,
+    "opt4_direct_median_cosine": -0.0012458618529093196,
+    "opt4_h8_median_cosine": -0.0014661569731567764,
+    "opt5_matrices": 341,
+    "opt5_direct_median_cosine": 0.8152541804962892,
+    "opt5_h8_median_cosine": -0.0015739190040068652,
+    "sampled_opt5_records": 44596,
+    "unscaled_code_reencode_exact_scale_bias_mask_records": 44596,
+    "outlier_bytes_asserted_equal": false
+  },
+  "candidate": {
+    "calibration": false,
+    "gptq": false,
+    "linear_bytes": 4118446096,
+    "embedding_bytes": 539492384,
+    "total_stored_files_bytes": 4661202473,
+    "linear_sha256": "e92663ea0560dc7a1f13d52cd62a1b9c71cecec9b71ac8229f992ac979274902",
+    "embedding_sha256": "2310a5d7bb0bc79c21c96f841bbb07347e3a5b50bb146d5a6c8337b706701190",
+    "peak_host_rss_bytes": 2351316992,
+    "max_tested_context_tokens": 11,
+    "resident_all_weights_verified": false,
+    "quality_pass": false,
+    "gate_exit_code": 1
+  },
+  "raw_checks": [
+    {
+      "prompt": "Who wrote the play Hamlet?",
+      "source_ids": [
+        108,
+        20470
+      ],
+      "candidate_ids": [
+        237456,
+        1638
+      ],
+      "first_logit_cosine": 0.06700417268487309,
+      "exact_greedy_match": false
+    },
+    {
+      "prompt": "What is the capital of France?",
+      "source_ids": [
+        107,
+        100
+      ],
+      "candidate_ids": [
+        1067,
+        872
+      ],
+      "first_logit_cosine": 0.26769580926429254,
+      "exact_greedy_match": false
+    },
+    {
+      "prompt": "What is 2 + 2?",
+      "source_ids": [
+        107,
+        100
+      ],
+      "candidate_ids": [
+        715,
+        715
+      ],
+      "first_logit_cosine": 0.09429623890762219,
+      "exact_greedy_match": false
+    },
+    {
+      "prompt": "Complete the phrase: The opposite of hot is",
+      "source_ids": [
+        7445,
+        236761
+      ],
+      "candidate_ids": [
+        1638,
+        51940
+      ],
+      "first_logit_cosine": 0.44710957987565725,
+      "exact_greedy_match": false
+    }
+  ],
+  "chat_control_hamlet": {
+    "input_ids": [
+      2,
+      105,
+      2364,
+      107,
+      15938,
+      7971,
+      506,
+      1441,
+      124600,
+      236881,
+      106,
+      107,
+      105,
+      4368,
+      107,
+      100,
+      45518,
+      107,
+      101
+    ],
+    "generated_ids": [
+      34848,
+      36951,
+      7971,
+      506,
+      1441,
+      808,
+      201313,
+      22429
+    ],
+    "decoded": "William Shakespeare wrote the play *Hamlet*."
+  },
+  "spec_token_discrepancy": {
+    "ids": [
+      715,
+      100
+    ],
+    "actual_decoded": "//<|channel>",
+    "Shakespeare_ids": [
+      157092
+    ]
+  }
+}

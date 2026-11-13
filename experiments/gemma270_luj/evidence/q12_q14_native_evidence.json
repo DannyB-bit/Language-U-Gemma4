@@ -1,0 +1,317 @@
+{
+  "model": "TheAiCollectiveART/gemma-3-270m-it-bucket",
+  "original_checkpoint_sha256": "700b710a9a99c295ed546647aa81cacf9f81f4c573ea2be613a0e2517a44afab",
+  "tokenizer_sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c",
+  "model_weights": 268098176,
+  "glyphs": 1047259,
+  "shards": 1023,
+  "token_ids_per_five": [
+    20,
+    20,
+    20,
+    21,
+    21
+  ],
+  "codec": "LUJ1 EXACT32 storage of BF16-reconstructed group32 integer-quantized weights; not packed Q14 inference",
+  "development_prompts": [
+    "arithmetic",
+    "capital",
+    "hamlet",
+    "multistep",
+    "minimum"
+  ],
+  "exact102": {
+    "checkpoint_hash": "700b710a9a99c295ed546647aa81cacf9f81f4c573ea2be613a0e2517a44afab",
+    "stored_luj_bytes": 637454658,
+    "weight_relative_l2": 0,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5
+  },
+  "q8": {
+    "checkpoint_hash": "98290a484bec5501444a3e966521062ca53cb13f55143d3bfc7883a1d7a4cb14",
+    "weight_relative_l2": 0.005311979890787278,
+    "same_complete_greedy": 2,
+    "tested_complete_greedy": 5,
+    "shard_bytes": 630373072
+  },
+  "q12": {
+    "checkpoint_hash": "96cc57d6f501b88bc506fc7e46516230ea78ccadbe753c1b0da177535da539cc",
+    "weight_relative_l2": 0.0001856466118924923,
+    "bitwise_preserved_weights": 240072975,
+    "max_abs_weight_error": 0.5,
+    "stored_luj_bytes": 637448527,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 4,
+    "tested_complete_greedy": 5,
+    "prompt_metrics": {
+      "arithmetic": {
+        "cosine": 0.999967449429,
+        "relative_l2": 0.00812126070291,
+        "same_tokens": true
+      },
+      "capital": {
+        "cosine": 0.999346635929,
+        "relative_l2": 0.0362958650776,
+        "same_tokens": true
+      },
+      "hamlet": {
+        "cosine": 0.999892043066,
+        "relative_l2": 0.0192498335942,
+        "same_tokens": false
+      },
+      "multistep": {
+        "cosine": 0.999985378902,
+        "relative_l2": 0.0121990474182,
+        "same_tokens": true
+      },
+      "minimum": {
+        "cosine": 0.999932652191,
+        "relative_l2": 0.0201642714242,
+        "same_tokens": true
+      }
+    }
+  },
+  "q14": {
+    "checkpoint_hash": "996fa320819d77b8ee1217fa6ef5088373a0f1645c0b3ec04cdf8111a722311e",
+    "weight_relative_l2": 0.00002786524625339871,
+    "bitwise_preserved_weights": 260898499,
+    "max_abs_weight_error": 0.125,
+    "stored_luj_bytes": 637484603,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5,
+    "strict_gate": {
+      "min_cosine": 0.999,
+      "max_relative_l2": 0.01,
+      "require_argmax": true,
+      "passed": 4,
+      "total": 5
+    },
+    "prompt_metrics": {
+      "arithmetic": {
+        "cosine": 0.999998357816,
+        "relative_l2": 0.00302162381548,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "capital": {
+        "cosine": 0.999847930822,
+        "relative_l2": 0.0199436078519,
+        "same_tokens": true,
+        "strict_gate": false
+      },
+      "hamlet": {
+        "cosine": 0.999995268805,
+        "relative_l2": 0.00307636191764,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "multistep": {
+        "cosine": 0.999998352742,
+        "relative_l2": 0.00691719174162,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "minimum": {
+        "cosine": 0.999997254421,
+        "relative_l2": 0.0032983001374,
+        "same_tokens": true,
+        "strict_gate": true
+      }
+    }
+  },
+  "independent_fp32_torch_reference": {
+    "reference_kind": "Independent PyTorch implementation of Gemma3 text math (not official Transformers)",
+    "prompts": [
+      "arithmetic",
+      "capital",
+      "hamlet"
+    ],
+    "results": {
+      "arithmetic": {
+        "cosine": 0.999999999999,
+        "relative_l2": 0.0000040176655088,
+        "same_argmax": true
+      },
+      "capital": {
+        "cosine": 0.999999999995,
+        "relative_l2": 0.00000328215484954,
+        "same_argmax": true
+      },
+      "hamlet": {
+        "cosine": 0.999999999995,
+        "relative_l2": 0.00000455171077736,
+        "same_argmax": true
+      }
+    }
+  },
+  "independent_language_benchmark": {
+    "suite_sha256": "5bc26faf9f100080ea561b20b9f437dc197a13931aab3cf3ce578ca9d11a4256",
+    "strict_exact_match": 10,
+    "total": 28,
+    "domain_results": {
+      "arithmetic": [
+        1,
+        8
+      ],
+      "factual": [
+        2,
+        4
+      ],
+      "language": [
+        1,
+        4
+      ],
+      "coding": [
+        1,
+        4
+      ],
+      "logic": [
+        3,
+        6
+      ],
+      "instruction": [
+        2,
+        2
+      ]
+    },
+    "reasoning_scope": "Locally authored, newly frozen before evaluation; not a standardized benchmark and now development data."
+  },
+  "q12_norms": {
+    "checkpoint_hash": "ac7f554a362a5c897b9ec9d6214f0595802126eb36594d18fc19b8a6bc51840f",
+    "quantization_mode": "MIXED_1D_NORMS_BF16_PLUS_GROUP32_QBITS",
+    "preserved_1d_norm_weights": 55936,
+    "quantized_weights": 268042240,
+    "weight_relative_l2": 7.81547251167331e-06,
+    "bitwise_preserved_weights": 240084144,
+    "max_abs_weight_error": 0.00048828125,
+    "stored_luj_bytes": 637448637,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5,
+    "strict_gate_vs_hf_fp32": {
+      "min_cosine": 0.999,
+      "max_relative_l2": 0.01,
+      "require_argmax": true,
+      "passed": 5,
+      "total": 5
+    },
+    "prompt_metrics_vs_hf_fp32": {
+      "arithmetic": {"cosine": 0.999999856607, "relative_l2": 0.0005373536393038895, "max_abs": 0.06326103210449219, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "capital": {"cosine": 0.999998227732, "relative_l2": 0.0018826940279028568, "max_abs": 0.06807708740234375, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "hamlet": {"cosine": 0.999999557184, "relative_l2": 0.0009547013811289201, "max_abs": 0.05727672576904297, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "multistep": {"cosine": 0.999999916438, "relative_l2": 0.00041333551798844757, "max_abs": 0.04973030090332031, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "minimum": {"cosine": 0.999999601847, "relative_l2": 0.0008924809155822408, "max_abs": 0.11142539978027344, "argmax_match": true, "same_tokens": true, "strict_gate": true}
+    }
+  },
+  "q14_norms": {
+    "checkpoint_hash": "2b64ad286431271106f87e7f94fb41269a8c890f2ec16aaf38a5f8ba3ece2986",
+    "quantization_mode": "MIXED_1D_NORMS_BF16_PLUS_GROUP32_QBITS",
+    "preserved_1d_norm_weights": 55936,
+    "quantized_weights": 268042240,
+    "weight_relative_l2": 1.246226961080628e-06,
+    "bitwise_preserved_weights": 260902115,
+    "max_abs_weight_error": 0.0001220703125,
+    "stored_luj_bytes": 637484624,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5,
+    "strict_gate_vs_source": {
+      "min_cosine": 0.999,
+      "max_relative_l2": 0.01,
+      "require_argmax": true,
+      "passed": 5,
+      "total": 5
+    },
+    "strict_gate_vs_hf_fp32": {
+      "min_cosine": 0.999,
+      "max_relative_l2": 0.01,
+      "require_argmax": true,
+      "passed": 5,
+      "total": 5
+    },
+    "prompt_metrics_vs_source": {
+      "arithmetic": {"cosine": 0.999999994597, "relative_l2": 0.00016433603856984418, "max_abs": 0.017953872680664062, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "capital": {"cosine": 0.999999941274, "relative_l2": 0.0003542090315530487, "max_abs": 0.013133049011230469, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "hamlet": {"cosine": 0.999999978735, "relative_l2": 0.00027975008165414536, "max_abs": 0.0132598876953125, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "multistep": {"cosine": 0.999999997309, "relative_l2": 0.0001431947644104047, "max_abs": 0.012508392333984375, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "minimum": {"cosine": 0.999999986984, "relative_l2": 0.0003952714750767791, "max_abs": 0.0298004150390625, "argmax_match": true, "same_tokens": true, "strict_gate": true}
+    },
+    "prompt_metrics_vs_hf_fp32": {
+      "arithmetic": {"cosine": 0.999999994589, "relative_l2": 0.0001628682533179308, "max_abs": 0.01792144775390625, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "capital": {"cosine": 0.999999940409, "relative_l2": 0.0003565234267852963, "max_abs": 0.01316070556640625, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "hamlet": {"cosine": 0.999999978894, "relative_l2": 0.0002784571995853436, "max_abs": 0.013210296630859375, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "multistep": {"cosine": 0.999999997306, "relative_l2": 0.0001457974616843394, "max_abs": 0.012617111206054688, "argmax_match": true, "same_tokens": true, "strict_gate": true},
+      "minimum": {"cosine": 0.999999986979, "relative_l2": 0.00039254027796558944, "max_abs": 0.029659271240234375, "argmax_match": true, "same_tokens": true, "strict_gate": true}
+    },
+    "capital_ablation_vs_source": {
+      "baseline_q14": {"cosine": 0.999847896354, "relative_l2": 0.01994786495190205, "max_abs": 0.36539649963378906, "argmax_match": true, "strict_gate": false},
+      "A_exact_1d_norms": {"cosine": 0.999999941274, "relative_l2": 0.0003542090315530487, "max_abs": 0.013133049011230469, "argmax_match": true, "strict_gate": true},
+      "B_exact_embed": {"cosine": 0.999848559874, "relative_l2": 0.01999481321608354, "max_abs": 0.3639240264892578, "argmax_match": true, "strict_gate": false},
+      "C_exact_attn_proj": {"cosine": 0.999845189167, "relative_l2": 0.020171473010308884, "max_abs": 0.3659524917602539, "argmax_match": true, "strict_gate": false},
+      "D_exact_mlp_proj": {"cosine": 0.999853926364, "relative_l2": 0.019524075815709023, "max_abs": 0.3612699508666992, "argmax_match": true, "strict_gate": false},
+      "E_exact_1d_norms_and_embed": {"cosine": 0.999999968269, "relative_l2": 0.0002616512336040248, "max_abs": 0.009708404541015625, "argmax_match": true, "strict_gate": true}
+    }
+  },
+  "official_transformers_parity": {
+    "transformers_version": "4.55.0",
+    "torch_version": "2.14.1+cpu",
+    "hardware": "Raspberry Pi (aarch64)",
+    "native_source_vs_hf_fp32": {
+      "passed": 5,
+      "total": 5,
+      "prompts": {
+        "arithmetic": {"cosine": 0.999999999999, "relative_l2": 2.235222359965689e-06, "argmax_match": true, "strict_gate": true},
+        "capital": {"cosine": 0.999999999991, "relative_l2": 4.260174524793683e-06, "argmax_match": true, "strict_gate": true},
+        "hamlet": {"cosine": 0.999999999996, "relative_l2": 3.128846484261849e-06, "argmax_match": true, "strict_gate": true},
+        "multistep": {"cosine": 1.0, "relative_l2": 3.1169257415143725e-06, "argmax_match": true, "strict_gate": true},
+        "minimum": {"cosine": 0.999999999998, "relative_l2": 3.6140784393832846e-06, "argmax_match": true, "strict_gate": true}
+      }
+    },
+    "native_source_vs_hf_bf16": {
+      "argmax_match": "5/5",
+      "strict_fp32_gate_passed": 1,
+      "total": 5,
+      "note": "HF BF16 exhibits 0.0075-0.0379 relative L2 from bfloat16 activation accumulation, whereas native C++ accumulates in FP32.",
+      "prompts": {
+        "arithmetic": {"cosine": 0.999978618066, "relative_l2": 0.007510332173129803, "argmax_match": true},
+        "capital": {"cosine": 0.999445051644, "relative_l2": 0.034964170551187376, "argmax_match": true},
+        "hamlet": {"cosine": 0.999883210852, "relative_l2": 0.019451486688964188, "argmax_match": true},
+        "multistep": {"cosine": 0.999983135683, "relative_l2": 0.014535722332142674, "argmax_match": true},
+        "minimum": {"cosine": 0.99989268299, "relative_l2": 0.03786919535039914, "argmax_match": true}
+      }
+    },
+    "q14_vs_hf_fp32": {
+      "passed": 4,
+      "total": 5,
+      "capital": {"cosine": 0.999847839545, "relative_l2": 0.019950914373915725, "argmax_match": true, "strict_gate": false}
+    }
+  },
+  "fresh_blind_reasoning_set": {
+    "suite_sha256": "0c6b28f3411b1cd4b8541453a5f817745d54b8f6346c0120ac10c9a90797281c",
+    "total": 30,
+    "source_bf16_exact_match": 6,
+    "q14_exact_match": 6,
+    "q14_norms_exact_match": 6,
+    "domain_results": {
+      "arithmetic": [0, 5],
+      "factual": [2, 5],
+      "language": [0, 5],
+      "coding": [0, 5],
+      "logic": [2, 5],
+      "instruction": [2, 5]
+    }
+  },
+  "gpt_baseline": "NOT_RUN_requires_OPENAI_API_KEY_or_supplied_completions_for_collect_openai_baseline.py",
+  "limits": [
+    "five development prompts insufficient for general language distribution parity",
+    "unpreserved Q14 fails capital strict gate (rel_l2=0.01995); Q14-norms and Q12-norms resolve this to 5/5 PASS",
+    "LUJ1 codec stores reconstructed BF16 values via EXACT32, not packed sub-16-bit weights at runtime",
+    "270M intrinsic reasoning reaches 10/28 (frozen suite) and 6/30 (fresh blind suite); GPT comparison awaits external completions",
+    "full user model weights excluded from Git repository"
+  ]
+}

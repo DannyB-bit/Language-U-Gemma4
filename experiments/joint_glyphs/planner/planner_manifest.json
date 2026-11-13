@@ -1,0 +1,264 @@
+{
+  "scope": "Narrow arithmetic operator classifier; not a language model or GPT-equivalence proof.",
+  "architecture": [
+    32,
+    32,
+    8
+  ],
+  "parameter_count": 1280,
+  "feature_extractor": "fixed signed word/character hashing",
+  "feature_version": "signed-hash-stopwords-v2",
+  "inference_source_sha256": "b45caaeb16ef0101d870fcdc52694940cb5b2e7862aa04ece417956efef443fb",
+  "training_templates": 80,
+  "validation_templates": 32,
+  "test_accessed": false,
+  "selection": "Validation accuracy, then QAT4 compactness, then validation cross entropy.",
+  "selected": {
+    "seed": 29,
+    "mode": "qat4",
+    "step": 1600,
+    "validation": {
+      "accuracy": 0.96875,
+      "cross_entropy": 0.08459389954805374
+    }
+  },
+  "candidates": [
+    {
+      "seed": 7,
+      "mode": "fp32",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.15337567031383514
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "fp32",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1530935913324356
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "fp32",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1487223505973816
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "fp32",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.14953067898750305
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "fp32",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.15080729126930237
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "fp32",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.13702937960624695
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "fp32",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.12323610484600067
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "fp32",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.11382730305194855
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "fp32",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.11206105351448059
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "fp32",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.10988477617502213
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "fp32",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.10870768874883652
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "fp32",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.10979051887989044
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "qat4",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1645040363073349
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "qat4",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.17755568027496338
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "qat4",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.9375,
+        "cross_entropy": 0.1763734370470047
+      }
+    },
+    {
+      "seed": 7,
+      "mode": "qat4",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.9375,
+        "cross_entropy": 0.21005718410015106
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "qat4",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.15154075622558594
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "qat4",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.13685020804405212
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "qat4",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.11507292091846466
+      }
+    },
+    {
+      "seed": 29,
+      "mode": "qat4",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.08459389954805374
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "qat4",
+      "step": 400,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1029215157032013
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "qat4",
+      "step": 800,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1173657476902008
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "qat4",
+      "step": 1200,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.10870547592639923
+      }
+    },
+    {
+      "seed": 83,
+      "mode": "qat4",
+      "step": 1600,
+      "validation": {
+        "accuracy": 0.96875,
+        "cross_entropy": 0.1092967689037323
+      }
+    }
+  ],
+  "model_bytes": 1269,
+  "model_sha256": "59841ffb1420237ea595a7f0f3645b407917170732b38fd554a4117825f3acac",
+  "decoded_fp32_sha256": "835c7dcd0d25d02ab553d5c8f5377d555b582b3b228322cc5890a10991c6e6c1",
+  "tokenizer_sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+  "tokenizer_bytes_used_for_metadata_encoding": 32169626,
+  "metadata_tokens": 102,
+  "metadata_is_user_question": false,
+  "training_source_sha256": "0dd4487cf5e9d49a8ffa7711d5d5cfc06210d3d7966cb3526d7a6c926b050d82",
+  "data_source_sha256": "04e17874fdf2bfab761d72e5ab76a79e6e25ec16fe9871ac863e839e8e49f81c",
+  "packaging_history": {
+    "model_sha256_before_blueprint_framing": "be13f4224ba07625fda58f10275b23ffc04647498aa009b14c74b87eee080bb7",
+    "model_blueprint": [
+      32,
+      32,
+      8,
+      1,
+      2
+    ],
+    "packaging_change": "After initial held-out run, replaced no-op bank instructions with validated architecture descriptors. No weight, feature, selection or threshold changed."
+  },
+  "reproduction": "Re-ran the fixed training configuration with the final blueprint writer; entire bank matches the already frozen bank byte-for-byte."
+}

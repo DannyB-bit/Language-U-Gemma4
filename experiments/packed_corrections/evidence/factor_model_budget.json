@@ -1,0 +1,59 @@
+{
+  "scope": "Dimension-only budget for a new unbuilt binary-factor model. Q6 embedding is proposed, not built/tested. No quality or physical RAM claim. Per-projection BF16 input/output scales and 64-byte headers included; ranks aligned to 8. Existing companions counted conservatively. 500MB runtime reserve is an assumption, not measurement.",
+  "linear_weights": 29286727680,
+  "projections": 410,
+  "candidates": [
+    {
+      "target_linear_bpw": 0.8,
+      "factor_files_bytes": 2926700160,
+      "actual_linear_bpw": 0.7994611598751342,
+      "rank_range": [
+        1168,
+        3424
+      ],
+      "hypothetical_q6_embedding_bytes": 1067974688,
+      "existing_other_companions_bytes": 3263993,
+      "assumed_runtime_reserve_bytes": 500000000,
+      "projected_total": 4497938841
+    },
+    {
+      "target_linear_bpw": 0.9,
+      "factor_files_bytes": 3289764480,
+      "actual_linear_bpw": 0.8986362739997314,
+      "rank_range": [
+        1312,
+        3848
+      ],
+      "hypothetical_q6_embedding_bytes": 1067974688,
+      "existing_other_companions_bytes": 3263993,
+      "assumed_runtime_reserve_bytes": 500000000,
+      "projected_total": 4861003161
+    },
+    {
+      "target_linear_bpw": 1.0,
+      "factor_files_bytes": 3655949440,
+      "actual_linear_bpw": 0.9986638261390083,
+      "rank_range": [
+        1464,
+        4280
+      ],
+      "hypothetical_q6_embedding_bytes": 1067974688,
+      "existing_other_companions_bytes": 3263993,
+      "assumed_runtime_reserve_bytes": 500000000,
+      "projected_total": 5227188121
+    },
+    {
+      "target_linear_bpw": 1.125,
+      "factor_files_bytes": 4112978560,
+      "actual_linear_bpw": 1.1235064852421233,
+      "rank_range": [
+        1648,
+        4816
+      ],
+      "hypothetical_q6_embedding_bytes": 1067974688,
+      "existing_other_companions_bytes": 3263993,
+      "assumed_runtime_reserve_bytes": 500000000,
+      "projected_total": 5684217241
+    }
+  ]
+}

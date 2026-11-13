@@ -1,0 +1,28 @@
+name: Gemma270 strict logit gate
+on:
+  push:
+    paths:
+      - 'experiments/gemma270_luj/compare_logits.cpp'
+      - 'experiments/gemma270_luj/tests/**'
+      - '.github/workflows/gemma270-parity.yml'
+  pull_request:
+    paths:
+      - 'experiments/gemma270_luj/compare_logits.cpp'
+      - 'experiments/gemma270_luj/tests/**'
+      - '.github/workflows/gemma270-parity.yml'
+permissions:
+  contents: read
+jobs:
+  strict-logits:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and validate fail-closed full-vocab comparison
+        run: bash experiments/gemma270_luj/tests/test_strict_parity.sh
