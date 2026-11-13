@@ -17,6 +17,9 @@ RECORD = struct.Struct("<IBBHIII")
 INSTRUCTION = struct.Struct("<BBhhqq")
 QAT4, OPT5, EXACT16, EXACT32 = 1, 2, 3, 4
 ADD, SUB, MUL, ASSERT_EQ, ASSERT_GE = 1, 2, 3, 4, 5
+DIV_EXACT, MINIMUM, MAXIMUM, POWER, REMAINDER = 6, 7, 8, 9, 10
+OPERATIONS = (ADD, SUB, MUL, ASSERT_EQ, ASSERT_GE, DIV_EXACT,
+              MINIMUM, MAXIMUM, POWER, REMAINDER)
 MAX_RECORDS = 1024
 
 
@@ -161,7 +164,7 @@ class Glyph:
 
 
 def instruction(op, left_ref=-1, right_ref=-1, left=0, right=0):
-    if op not in (ADD, SUB, MUL, ASSERT_EQ, ASSERT_GE):
+    if op not in OPERATIONS:
         raise ValueError("Unknown operation")
     return INSTRUCTION.pack(op, 0, left_ref, right_ref, left, right)
 
@@ -228,7 +231,7 @@ def execute(glyphs):
         if len(glyph.instruction) != INSTRUCTION.size:
             raise ValueError("Invalid instruction length")
         op, flags, ar, br, ai, bi = INSTRUCTION.unpack(glyph.instruction)
-        if flags or op not in (ADD, SUB, MUL, ASSERT_EQ, ASSERT_GE):
+        if flags or op not in OPERATIONS:
             raise ValueError("Invalid operation")
         def operand(ref, immediate):
             if ref == -1:
@@ -243,6 +246,23 @@ def execute(glyphs):
             value = a-b
         elif op == MUL:
             value = a*b
+        elif op == DIV_EXACT:
+            if b == 0 or a % b:
+                raise ValueError("Division requires a nonzero divisor and exact integer result")
+            value = a // b
+        elif op == MINIMUM:
+            value = min(a, b)
+        elif op == MAXIMUM:
+            value = max(a, b)
+        elif op == POWER:
+            # Avoid unbounded allocation before the int64 overflow check.
+            if not 0 <= b <= 63:
+                raise ValueError("Exponent outside bounded integer domain")
+            value = pow(a, b)
+        elif op == REMAINDER:
+            if b == 0:
+                raise ValueError("Remainder requires a nonzero divisor")
+            value = a % b
         else:
             if not (a == b if op == ASSERT_EQ else a >= b):
                 raise ValueError("Reasoning constraint failed")
