@@ -1,0 +1,26 @@
+[run270] cfg d=640 layers=18 ff=2048 heads=4/1 hd=256 window=512 vocab=262144
+[run270] stream 51701776 bytes
+[run270] 126 projections decoded to RAM
+[run270] embed 167772160 f32
+[run270] 109 norms
+[run270] NEON accel loaded
+[run270] prompt 17 tokens
+[run270] prefill 17 tokens in 3.7s
+[STEP 0] id=185675 text="▁clandestine"
+[run270] decode step 0 in 0.36s
+[STEP 1] id=236772 text="-"
+[run270] decode step 1 in 0.35s
+[STEP 2] id=208255 text="▁deposed"
+[run270] decode step 2 in 0.44s
+[STEP 3] id=243000 text="辩"
+[run270] decode step 3 in 0.38s
+[STEP 4] id=18150 text="▁sido"
+[run270] decode step 4 in 0.36s
+[STEP 5] id=211676 text="▁défendre"
+[run270] decode step 5 in 0.31s
+[STEP 6] id=2800 text="kan"
+[run270] decode step 6 in 0.47s
+[STEP 7] id=722 text="ia"
+GEN ids=[185675, 236772, 208255, 243000, 18150, 211676, 2800, 722]
+GEN text="▁clandestine-▁deposed辩▁sido▁défendrekania"
+GEN prefill=3.7s decode=5.9s tokens=8 => 0.73s/tok
