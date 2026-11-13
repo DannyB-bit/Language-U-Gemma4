@@ -23,8 +23,19 @@ No Python. No new dependencies. The 132-byte doctrine container is read, never w
 - **92 B (new high tier):** the 132 B law with its 64 indices packed to 11 bits
   (`4 + 64×11/8 = 92 B`). **Lossless vs 132 B** — the selftest prints
   `132c-vs-92 decode parity on same weights: max|d| = 0.000e+00`.
-- **36 B (new low tier):** `[scale f16][median f16][32 B sign mask]`,
-  `w[i] = median + (bit ? +scale : -scale)` (median of the 256 values, scale = max|centered|).
+- **36 B (new low tier):** `[scale f16][bias f16][32 B sign mask]`,
+  `w[i] = bias + (bit ? +scale : -scale)`. Two variants, same 36 bytes:
+  - *median law* — bias = median, scale = max|centered|;
+  - **2-means law (default)** — bias/scale encode the two k-means centroids
+    (`c0 = bias − scale/2`, `c1 = bias + scale/2`), bits assigned to the nearer
+    centroid. Measured on the real 48 B middle lane (5 projections, 32 rows each):
+
+    | law | mean cosine vs the published decode |
+    |---|---|
+    | median law | **0.660** |
+    | **2-means law** | **0.893** |
+
+    Same byte cost, +0.23 cosine — this is the single biggest Gate 1 win measured so far.
 
 Sign bits are **MSB-first within each byte** in every container, matching the
 existing Opt5 ABI.
@@ -74,6 +85,12 @@ OMP_NUM_THREADS=4 ./reencode31b encode \
 
 # 2) embedding -> glyphs
 ./embed_encode encode $D/gemma4_31b_embed_tokens.bin 262144 5376 $D/embed_glyphs36.bin
+
+# 2b) A/B the two 36B laws (median vs 2-means) on the real middle lane
+./reencode31b cosprobe \
+  $D/gemma4_31b_language_u_sandwich_stream.bin \
+  $D/gemma4_31b_tensor_layout.json \
+  $D/s7_codebook_2048x8.bin 5
 
 # 3) fidelity: cosine of the new stream against the published one
 ./reencode31b verify \

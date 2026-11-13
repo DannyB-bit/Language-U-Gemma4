@@ -190,6 +190,27 @@ static void enc_glyph_36(const float *w, uint8_t *out){
     memset(out+4,0,32);
     for(int i=0;i<256;i++) if(w[i]-median>=0.f) out[4+(i>>3)]|=(uint8_t)(0x80>>(i&7));
 }
+/* 36B variant: optimal 2-means centroids (same 36B container: bias +- scale/2).
+   Strictly better least-squares fit than median+-max on skewed glyphs. */
+static void enc_glyph_36_k2(const float *w, uint8_t *out){
+    float c0=w[0], c1=w[0];
+    for(int i=1;i<256;i++){ if(w[i]<c0)c0=w[i]; if(w[i]>c1)c1=w[i]; }
+    for(int it=0; it<8; it++){
+        double s0=0,s1=0; int n0=0,n1=0;
+        for(int i=0;i<256;i++){ float d0=fabsf(w[i]-c0), d1=fabsf(w[i]-c1);
+            if(d0<=d1){ s0+=w[i]; n0++; } else { s1+=w[i]; n1++; } }
+        float nc0 = n0? (float)(s0/n0) : c0;
+        float nc1 = n1? (float)(s1/n1) : c1;
+        if(nc0==c0 && nc1==c1) break;
+        c0=nc0; c1=nc1;
+    }
+    float bias=(c0+c1)*0.5f, scale=fabsf(c1-c0)*0.5f;
+    uint16_t hs=fp32_to_fp16(scale), hb=fp32_to_fp16(bias);
+    memcpy(out,&hs,2); memcpy(out+2,&hb,2);
+    memset(out+4,0,32);
+    for(int i=0;i<256;i++){ float d0=fabsf(w[i]-c0), d1=fabsf(w[i]-c1); if(d1<d0) out[4+(i>>3)]|=(uint8_t)(0x80>>(i&7)); }
+}
+
 /* 92B packed 11-bit dual-stage RVQ (encode_glyph_132 law + 11-bit packing) */
 static void enc_glyph_92(const float *w, const float *cb, uint8_t *out){
     uint16_t i1s[32], i2s[32];
@@ -493,6 +514,40 @@ int main(int argc, char **argv){
           double md=0; for(int i=0;i<256;i++){ double dd=d132[i]-d92[i]; if(fabs(dd)>md) md=fabs(dd); }
           printf("132c-vs-92 decode parity on same weights: max|d| = %.3e (must be 0)\n", md);
         }
+        return 0;
+    }
+    if(!strcmp(argv[1],"cosprobe")){
+        /* cosprobe <stream> <layout> <codebook> [nproj] : compare 36B median law vs 2-means law */
+        if(argc<6){ fprintf(stderr,"usage: reencode31b cosprobe <stream> <layout> <codebook> [nproj]\n"); return 1; }
+        int np_=argc>5?atoi(argv[5]):5;
+        long ss; uint8_t *S=mmap_file(argv[2],&ss);
+        long cs; uint8_t *CBraw=mmap_file(argv[4],&cs);
+        float *CB=(float*)CBraw;
+        int n; Proj *P=load_layout(argv[3],&n);
+        double sum_med=0,sum_k2=0; int cnt=0;
+        for(int i=0;i<n && cnt<np_;i++){
+            if(P[i].bpg!=48) continue;          /* compare on the 48B middle lane */
+            Proj *p=&P[i];
+            int gpr=(p->d_in+255)/256;
+            double dot_m=0,dot_k=0,nm=0,n1=0,n2=0;
+            float w[256],wd[256];
+            long rows=p->d_out; if(rows>32) rows=32;
+            for(long r=0;r<rows;r++)
+                for(int g=0;g<gpr;g++){
+                    const uint8_t *gl=S+p->off+(r*gpr+g)*p->bpg;
+                    dec_orig_glyph(gl,p->bpg,CB,w);
+                    uint8_t e1[36],e2[36];
+                    enc_glyph_36(w,e1); enc_glyph_36_k2(w,e2);
+                    dec_glyph_36(e1,wd);
+                    for(int t=0;t<256;t++){ dot_m+=w[t]*wd[t]; nm+=w[t]*w[t]; n1+=wd[t]*wd[t]; }
+                    dec_glyph_36(e2,wd);
+                    for(int t=0;t<256;t++){ dot_k+=w[t]*wd[t]; n2+=wd[t]*wd[t]; }
+                }
+            double cos_m=(nm>0&&n1>0)?dot_m/sqrt(nm*n1):0, cos_k=(nm>0&&n2>0)?dot_k/sqrt(nm*n2):0;
+            printf("proj %d %-34s median-law cos=%.5f  2-means cos=%.5f\n",i,p->name,cos_m,cos_k);
+            sum_med+=cos_m; sum_k2+=cos_k; cnt++;
+        }
+        printf("MEAN over %d projections: median-law %.5f | 2-means %.5f\n",cnt,sum_med/cnt,sum_k2/cnt);
         return 0;
     }
     if(!strcmp(argv[1],"verify")){
