@@ -1,0 +1,1 @@
+MEAN over 0 projections: median-law nan | 2-means nan

@@ -1,0 +1,18 @@
+glyph 0: max|d|=9.007e-03 rel=5.156e-01
+glyph 1: max|d|=8.542e-03 rel=4.902e-01
+glyph 2: max|d|=8.633e-03 rel=4.870e-01
+glyph 3: max|d|=8.321e-03 rel=4.766e-01
+glyph 4: max|d|=8.215e-03 rel=4.966e-01
+glyph 5: max|d|=9.128e-03 rel=5.023e-01
+glyph 6: max|d|=8.820e-03 rel=4.931e-01
+glyph 7: max|d|=9.339e-03 rel=4.948e-01
+glyph 8: max|d|=8.195e-03 rel=4.836e-01
+glyph 9: max|d|=9.190e-03 rel=5.032e-01
+glyph 10: max|d|=9.137e-03 rel=5.058e-01
+glyph 11: max|d|=7.690e-03 rel=4.866e-01
+glyph 12: max|d|=7.763e-03 rel=4.828e-01
+glyph 13: max|d|=8.415e-03 rel=4.865e-01
+glyph 14: max|d|=8.561e-03 rel=4.912e-01
+glyph 15: max|d|=9.261e-03 rel=4.984e-01
+92B round-trip vs 132B decode: max RMS diff 9.339e-03
+132c-vs-92 decode parity on same weights: max|d| = 0.000e+00 (must be 0)

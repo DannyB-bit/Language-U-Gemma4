@@ -1,0 +1,26 @@
+[run270] cfg d=640 layers=18 ff=2048 heads=4/1 hd=256 window=512 vocab=262144
+[run270] weight_source=EXACT_SAFETENSORS projections=126 norms=109 embed_f32=167772160
+[run270] compute=rust_std_4t_f64_matvec
+[run270] prompt 17 tokens
+[run270] prefill 17 tokens in 2.77s
+[run270] dumped 262144 logits to /tmp/pr28_verify/exact_arith_log.f32
+[STEP 0] id=236778 text="2"
+[run270] decode step 0 in 0.34s
+[STEP 1] id=900 text=" +"
+[run270] decode step 1 in 0.36s
+[STEP 2] id=236743 text=" "
+[run270] decode step 2 in 0.34s
+[STEP 3] id=236778 text="2"
+[run270] decode step 3 in 0.34s
+[STEP 4] id=578 text=" ="
+[run270] decode step 4 in 0.34s
+[STEP 5] id=236743 text=" "
+[run270] decode step 5 in 0.33s
+[STEP 6] id=236812 text="4"
+[run270] decode step 6 in 0.33s
+[STEP 7] id=107 text="\n"
+[run270] decode step 7 in 0.36s
+[STEP 8] id=106 text="<end_of_turn>"
+GEN ids=[236778, 900, 236743, 236778, 578, 236743, 236812, 107, 106]
+GEN text="2 + 2 = 4\n<end_of_turn>"
+GEN prefill=2.77s decode=2.78s tokens=9 => 0.31s/tok

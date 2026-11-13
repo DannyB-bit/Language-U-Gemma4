@@ -1,0 +1,10 @@
+[package]
+name = "run270_rust"
+version = "0.2.0"
+edition = "2021"
+description = "Standalone native Rust Gemma 3 270M runtime, OPT4 glyph-stream encoder, and parity verifier (zero external dependencies)"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

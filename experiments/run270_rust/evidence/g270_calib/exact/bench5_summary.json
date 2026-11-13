@@ -1,0 +1,23 @@
+{
+  "mode": "exact_emb-f32",
+  "proj_bytes": 401080320,
+  "proj_weights": 100270080,
+  "proj_bpw": 32.000000,
+  "embed_bytes": 671088640,
+  "norm_bytes": 223744,
+  "total_weight_bytes": 1072392704,
+  "eff_bpw": 32.006678,
+  "vm_hwm_kb": 1388968,
+  "vm_rss_kb": 1298576,
+  "total_forwards": 166,
+  "total_seconds": 38.2255,
+  "avg_s_per_fwd": 0.230274,
+  "hamlet_play_text": "The play Hamlet was written by William Shakespeare.\n<end_of_turn>",
+  "prompts": [
+    {"name": "arithmetic", "argmax": 236778, "fwds": 25, "seconds": 5.5690, "generated_ids": [236778, 900, 236743, 236778, 578, 236743, 236812, 107, 106], "text": "2 + 2 = 4\n<end_of_turn>"},
+    {"name": "capital", "argmax": 818, "fwds": 24, "seconds": 5.2839, "generated_ids": [818, 5279, 529, 7001, 563, 9079, 236761, 107, 106], "text": "The capital of France is Paris.\n<end_of_turn>"},
+    {"name": "hamlet", "argmax": 157092, "fwds": 18, "seconds": 3.8121, "generated_ids": [157092, 7971, 124600, 236761, 107, 106], "text": "Shakespeare wrote Hamlet.\n<end_of_turn>"},
+    {"name": "multistep", "argmax": 236770, "fwds": 56, "seconds": 13.1933, "generated_ids": [236770, 236778, 808, 236743, 236828, 753, 236743, 236778, 236832, 578, 236743, 236819, 236825, 753, 236743, 236778, 236832, 578, 236743, 236832, 236819, 107, 106], "text": "12 * 8 - 27 = 96 - 27 = 79\n<end_of_turn>"},
+    {"name": "minimum", "argmax": 818, "fwds": 43, "seconds": 10.3672, "generated_ids": [818, 7100, 529, 236743, 236810, 236812, 236832, 532, 236743, 236770, 236819, 236800, 563, 236743, 236770, 236819, 236800, 236761, 107, 106], "text": "The smaller of 547 and 193 is 193.\n<end_of_turn>"}
+  ]
+}
