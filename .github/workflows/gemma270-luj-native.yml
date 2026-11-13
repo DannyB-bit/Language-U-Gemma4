@@ -26,5 +26,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libzstd-dev zlib1g-dev libssl-dev
       - name: Strict C++17 build
         run: make -C experiments/gemma270_luj -B all inference compare_logits
-      - name: Run exact, Q8 and 102-token layout selftest
+      - name: Run exact, Q8/Q10/Q12/Q14 and 102-token layout selftests
         run: experiments/gemma270_luj/luj_gemma270 selftest
+      - name: Syntax-check validation-only reference and frozen evaluator
+        run: python3 -m py_compile experiments/gemma270_luj/validation/*.py
