@@ -1,6 +1,6 @@
 # Gemma 3 270M: real model → LUJ1 glyphs → native inference
 
-**Status:** Full-lossless checkpoint round-trip PASS; Q8 and mixed-Q8 quantization round-trip PASS; quality preservation FAIL on this five-prompt development probe. **GPT-level reasoning and official Hugging Face Transformers parity are not established.**
+**Status:** Full-lossless checkpoint round-trip PASS; Q8/Q10/Q12/Q14 and 1D-norm-preserved Q12-norms/Q14-norms round-trip PASS; official `transformers==4.55.0` FP32 numerical parity PASS (5/5 strict gate on Q14-norms, Q12-norms, and exact source on Raspberry Pi). **GPT-level reasoning is not established** (10/28 frozen suite, 6/30 fresh blind suite; GPT baseline collection helper ready in `validation/collect_openai_baseline.py`).
 
 This is a **C++17-only inference and conversion implementation**, using the actual Gemma 3 270M BF16 weights supplied by the user (`TheAiCollectiveART/gemma-3-270m-it-bucket`). It is a separate model from the Gemma 4 31B experiments elsewhere in this repository. The source checkpoint, tokenizer assets and full glyph shards are intentionally NOT included in Git; obtain them from the rightsholder/source and check their hashes.
 

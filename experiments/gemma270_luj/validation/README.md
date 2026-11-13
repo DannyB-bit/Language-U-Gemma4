@@ -11,42 +11,33 @@ SHA-256 `700b710a9a99c295ed546647aa81cacf9f81f4c573ea2be613a0e2517a44afab`.
    1,047,259 glyphs / 1,023 shards.
 2. **Model execution (PASS):** C++17 Gemma 3 runs all 18 transformer layers on
    the reconstructed checkpoint; no Python is used for native inference.
-3. **Native-vs-independent PyTorch mathematical parity (PASS on 3 development
-   prompts):** full 262,144-logit relative L2 below 4.6e-6; argmax matches.
-   This separate validation reference is *not* Hugging Face Transformers.
-4. **Official Transformers parity (NOT RUN):** the official 4.55.0 package was
-   not available in this container and outbound Python package downloads failed.
-   A pinned, local-file-only official validation runner is provided.
-5. **General GPT-level reasoning (NOT PROVEN):** 10/28 strict normalized exact
-   matches on a new multi-domain local test; no external GPT comparison ran.
+3. **Native-vs-official Transformers 4.55.0 parity (PASS in FP32; verified on Raspberry Pi aarch64):**
+   `official_transformers_reference.py --dtype fp32` matches native source on all 5 development prompts (`cos >= 0.999999999991`, `relative_l2 <= 4.26e-6`, 5/5 argmax).
+   `quantize-q14-norms` (`--preserve-norms`) and `quantize-q12-norms` fix the 1D norm outlier scaling bug discovered on the capital prompt: Q14-norms passes **5/5** (`max relative_l2 = 0.000393` vs HF FP32, reducing weight error to `1.246e-6`), and Q12-norms also passes **5/5** (`max relative_l2 = 0.001883`).
+4. **General GPT-level reasoning (NOT PROVEN):** 10/28 strict exact match on `frozen_reasoning_set.json` and 6/30 on `fresh_blind_reasoning_set.json` (identical across Source BF16, Q14, and Q14-norms); no external GPT completions executed yet without `OPENAI_API_KEY`.
 
 ## Full-model grouped quantization (native C++)
 
 ```sh
 make -C experiments/gemma270_luj -B all inference compare_logits
 experiments/gemma270_luj/luj_gemma270 selftest
-experiments/gemma270_luj/luj_gemma270 quantize-q12 \
-  /models/gemma270m.gbf /models/tokenizer.json /new/q12
-experiments/gemma270_luj/luj_gemma270 quantize-q14 \
-  /models/gemma270m.gbf /models/tokenizer.json /new/q14
-experiments/gemma270_luj/luj_gemma270 decode /new/q14 /new/q14.safetensors
+experiments/gemma270_luj/luj_gemma270 quantize-q12-norms \
+  /models/gemma270m.gbf /models/tokenizer.json /new/q12_norms
+experiments/gemma270_luj/luj_gemma270 quantize-q14-norms \
+  /models/gemma270m.gbf /models/tokenizer.json /new/q14_norms
+experiments/gemma270_luj/luj_gemma270 decode /new/q14_norms /new/q14_norms.safetensors
 ```
 
-Available modes: `quantize-q10`, `quantize-q12`, `quantize-q14` and
-matching `resume-q*` modes. The old Q8 mode remains the default and unchanged.
-Group size is 32; symmetric signed integer grid per group, with BF16
-round-to-nearest-even reconstruction. The LUJ1 codec still stores these
-**dequantized BF16 bits** via EXACT32, not packed native Q14 codes. This
-experiment thus **does not establish compression**; the original GBF1
-file is smaller. The suffix is a quantization *source precision*, not a
-storage-bit accounting promise.
+Available modes: `quantize-q8`, `quantize-q10`, `quantize-q12`, `quantize-q14`, `-norms` variants (or `--preserve-norms` / `--preserve-embedding`), and matching `resume-*` modes. Group size is 32; `--preserve-norms` parses 1D tensors from the pinned SafeTensors header and preserves all `55,936` norm weights bitwise in BF16 (preventing RMSNorm gain outliers such as 1648 from corrupting neighbor group32 scales). The LUJ1 codec still stores **dequantized BF16 bits** via EXACT32, not packed native Q14 codes.
 
-| Model | Relative weight L2 | Same greedy sequences | LUJ1 bytes |
-|---|---:|---:|---:|
-| Exact BF16 | 0 | 5/5 | 637,454,658 |
-| Group32 Q8 | 0.00531198 | 2/5 | 630,373,072 |
-| Group32 Q12 | 0.000185647 | 4/5 | 637,448,527 |
-| Group32 Q14 | 0.0000278652 | 5/5 | 637,484,603 |
+| Model | Relative weight L2 | Strict gate vs HF FP32 | Same greedy sequences | LUJ1 bytes |
+|---|---:|---:|---:|---:|
+| Exact BF16 | 0 | 5/5 (`rel_l2 <= 4.26e-6`) | 5/5 | 637,454,658 |
+| Group32 Q8 | 0.00531198 | — | 2/5 | 630,373,072 |
+| Group32 Q12 | 0.000185647 | — | 4/5 | 637,448,527 |
+| **Group32 Q12-norms** | **0.00000781547** | **5/5 (`rel_l2 <= 0.001883`)** | **5/5** | **637,448,637** |
+| Group32 Q14 | 0.0000278652 | 4/5 (`capital rel_l2=0.01995`) | 5/5 | 637,484,603 |
+| **Group32 Q14-norms** | **0.00000124623** | **5/5 (`rel_l2 <= 0.000393`)** | **5/5** | **637,484,624** |
 
 Q14 round-trip checkpoint SHA-256:
 `996fa320819d77b8ee1217fa6ef5088373a0f1645c0b3ec04cdf8111a722311e`
@@ -112,8 +103,26 @@ The C++ model receives **only tokenized prompts**—never the expected labels.
 Python/SentencePiece are used for validation-time token IDs and scoring, not
 native inference. An externally collected named GPT baseline can be provided
 via `--external-baseline-json` with provenance fields `model`,
-`timestamp`, `capture_method`, and exactly all 28 `responses`
-(`id`, `answer` pairs). No GPT baseline has been executed here. For any
+`timestamp`, `capture_method`, and all suite `responses`
+(`id`, `answer` pairs). You can generate either a blank template or a real
+OpenAI completion file (fail-closed on missing `OPENAI_API_KEY`) using:
+
+```sh
+python3 validation/collect_openai_baseline.py \
+  --suite validation/fresh_blind_reasoning_set.json \
+  --model gpt-4o \
+  --out /new/gpt_baseline.json
+python3 validation/run_unseen_eval.py \
+  --suite validation/fresh_blind_reasoning_set.json \
+  --tokenizer /models/tokenizer.model \
+  --model /new/q14_norms.safetensors \
+  --native ./gemma3_native \
+  --sha 2b64ad286431271106f87e7f94fb41269a8c890f2ec16aaf38a5f8ba3ece2986 \
+  --external-baseline-json /new/gpt_baseline.json \
+  --out /new/fresh_with_gpt.json
+```
+
+No GPT baseline has been executed here (`6/30` strict exact match on `fresh_blind_reasoning_set.json` for source BF16, Q14, and Q14-norms). For any
 new training/tuning decisions, design a **new untouched test set** and repeat
 the GPT comparison under identical prompt/decoding conditions.
 

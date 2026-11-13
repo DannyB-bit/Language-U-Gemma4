@@ -1,0 +1,41 @@
+{
+  "name": "fresh_blind_reasoning_set_v1",
+  "purpose": "Freshly authored held-out multi-domain exact-match prompt suite for native Gemma 3 270M and optional external GPT baseline comparison",
+  "tasks": [
+    {"id": "arith_01", "domain": "arithmetic", "question": "What is 14 + 29? Reply with only the number.", "gold": "43"},
+    {"id": "arith_02", "domain": "arithmetic", "question": "Compute 84 divided by 7. Reply with only the number.", "gold": "12"},
+    {"id": "arith_03", "domain": "arithmetic", "question": "What is 9 multiplied by 16? Reply with only the number.", "gold": "144"},
+    {"id": "arith_04", "domain": "arithmetic", "question": "If a train travels 60 miles per hour for 3 hours, how many miles does it travel? Reply with only the number.", "gold": "180"},
+    {"id": "arith_05", "domain": "arithmetic", "question": "What is 25 percent of 200? Reply with only the number.", "gold": "50"},
+
+    {"id": "fact_01", "domain": "factual", "question": "What is the capital city of Japan? Reply with only the city name.", "gold": "Tokyo"},
+    {"id": "fact_02", "domain": "factual", "question": "Which planet in our solar system is closest to the Sun? Reply with only the planet name.", "gold": "Mercury"},
+    {"id": "fact_03", "domain": "factual", "question": "What is the chemical symbol for gold? Reply with only the symbol.", "gold": "Au"},
+    {"id": "fact_04", "domain": "factual", "question": "How many degrees are in a right angle? Reply with only the number.", "gold": "90"},
+    {"id": "fact_05", "domain": "factual", "question": "Who wrote the novel Pride and Prejudice? Reply with only the author's full name.", "gold": "Jane Austen"},
+
+    {"id": "lang_01", "domain": "language", "question": "Translate the English word 'water' into Spanish. Reply with only one word.", "gold": "agua"},
+    {"id": "lang_02", "domain": "language", "question": "What is the past tense of the English verb 'go'? Reply with only one word.", "gold": "went"},
+    {"id": "lang_03", "domain": "language", "question": "What is the plural form of 'child' in English? Reply with only one word.", "gold": "children"},
+    {"id": "lang_04", "domain": "language", "question": "Give the antonym of the word 'ancient'. Reply with only one word.", "gold": "modern"},
+    {"id": "lang_05", "domain": "language", "question": "Translate 'bonjour' from French to English. Reply with only one word.", "gold": "hello"},
+
+    {"id": "code_01", "domain": "coding", "question": "In Python, what does len([10, 20, 30, 40]) evaluate to? Reply with only the number.", "gold": "4"},
+    {"id": "code_02", "domain": "coding", "question": "In Python, what is the value of 2 ** 5? Reply with only the number.", "gold": "32"},
+    {"id": "code_03", "domain": "coding", "question": "In Python, what does 'hello'.upper() return? Reply with only the exact text.", "gold": "HELLO"},
+    {"id": "code_04", "domain": "coding", "question": "In C, which keyword terminates the current loop immediately? Reply with only one word.", "gold": "break"},
+    {"id": "code_05", "domain": "coding", "question": "In Python, what does sum([3, 5, 7]) evaluate to? Reply with only the number.", "gold": "15"},
+
+    {"id": "logic_01", "domain": "logic", "question": "All squares are rectangles. Shape A is a square. Is Shape A a rectangle? Reply only Yes or No.", "gold": "Yes"},
+    {"id": "logic_02", "domain": "logic", "question": "Mia is taller than Leo, and Leo is taller than Sam. Who is the shortest? Reply with only the name.", "gold": "Sam"},
+    {"id": "logic_03", "domain": "logic", "question": "What comes next in the sequence: 3, 6, 9, 12, ? Reply with only the number.", "gold": "15"},
+    {"id": "logic_04", "domain": "logic", "question": "If all bloops are razzies and some razzies are lazzies, must all bloops be lazzies? Reply only Yes or No.", "gold": "No"},
+    {"id": "logic_05", "domain": "logic", "question": "Which day comes two days after Friday? Reply with only the day name.", "gold": "Sunday"},
+
+    {"id": "inst_01", "domain": "instruction", "question": "Output the exact uppercase string OK and nothing else.", "gold": "OK"},
+    {"id": "inst_02", "domain": "instruction", "question": "Repeat the single word BLUE in all uppercase letters.", "gold": "BLUE"},
+    {"id": "inst_03", "domain": "instruction", "question": "Reply with only the third month of the year.", "gold": "March"},
+    {"id": "inst_04", "domain": "instruction", "question": "Reply with the first three letters of the English alphabet in uppercase with no spaces.", "gold": "ABC"},
+    {"id": "inst_05", "domain": "instruction", "question": "Output only the integer 404 and nothing else.", "gold": "404"}
+  ]
+}

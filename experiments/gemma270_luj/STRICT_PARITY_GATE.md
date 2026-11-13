@@ -16,4 +16,6 @@ The tolerances are deliberately illustrative strict experimental gates, **not** 
 
 **Real checkpoint negative control:** The existing original-vs-INT8 Q8 arithmetic first-position logits have cosine 0.991237867877 and relative L2 0.177260801991. The gate fails even though both runs share the same first greedy token. Thus greedy agreement on one question cannot mask poor logit parity.
 
-This gate checks quantization fidelity within the native implementation. Full equivalence with Hugging Face Transformers still needs independently generated official model outputs using the same source checkpoint, input IDs, chat template, attention implementation, dtype and decoding rules. GPT-level reasoning requires a separate named GPT baseline and fresh multi-domain tests, not mere encoding.
+**Verified Pi update (`quantize-q14-norms` / `quantize-q12-norms`):** Preserving 1D RMSNorm gain weights (`55,936` parameters) in exact BF16 resolves the outlier-induced scaling error in group32 quantization and passes the strict gate across all five development prompts against both the native source checkpoint and official `transformers==4.55.0` (FP32): Q14-norms reaches 5/5 PASS (max relative L2 `0.000393`, min cosine `0.999999940`) and Q12-norms reaches 5/5 PASS (max relative L2 `0.001883`).
+
+This gate checks quantization fidelity against the reference binaries. GPT-level reasoning requires a separate named GPT baseline and fresh multi-domain tests (`validation/collect_openai_baseline.py` + `validation/run_unseen_eval.py --external-baseline-json`).

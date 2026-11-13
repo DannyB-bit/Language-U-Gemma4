@@ -7,6 +7,7 @@
 #include <zlib.h>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cmath>
 #include <cstring>
@@ -129,7 +130,155 @@ static uint16_t to_bf16_rne(float x){
  return uint16_t(u>>16);
 }
 struct QuantStats{long double sqref=0,sqdiff=0;uint64_t exactly=0,count=0;float maxdiff=0;};
-static B quantize_qbits_32(const B& raw,size_t valid,QuantStats& stats,int bits){
+struct WeightSpan{uint64_t begin=0,end=0;};
+
+class SafetensorsJsonReader{
+ const char* p=nullptr;
+ const char* end=nullptr;
+ void skip_ws(){while(p<end&&(*p==' '||*p=='\t'||*p=='\n'||*p=='\r'))++p;}
+ char peek(){skip_ws();check(p<end,"unexpected end of safetensors JSON");return *p;}
+ char get(){skip_ws();check(p<end,"unexpected end of safetensors JSON");return *p++;}
+ void expect(char c){const char got=get();check(got==c,std::string("expected JSON char '")+c+"'");}
+ std::string parse_string(){
+  expect('"');
+  std::string out;
+  while(p<end){
+   char c=*p++;
+   if(c=='"')return out;
+   if(c=='\\'){
+    check(p<end,"unterminated escape in safetensors JSON");
+    char e=*p++;
+    if(e=='u'){
+     check(end-p>=4,"incomplete unicode escape in safetensors JSON");
+     for(int i=0;i<4;i++)check(std::isxdigit(static_cast<unsigned char>(p[i]))!=0,"bad unicode escape");
+     p+=4;
+     out.push_back('?');
+    }else if(e=='"'||e=='\\'||e=='/'||e=='b'||e=='f'||e=='n'||e=='r'||e=='t'){
+     out.push_back(e);
+    }else throw std::runtime_error("unsupported escape in safetensors JSON");
+   }else{
+    check(static_cast<unsigned char>(c)>=0x20,"unescaped control char in safetensors JSON");
+    out.push_back(c);
+   }
+  }
+  throw std::runtime_error("unterminated string in safetensors JSON");
+ }
+ uint64_t parse_u64(){
+  skip_ws();
+  check(p<end&&std::isdigit(static_cast<unsigned char>(*p)),"expected unsigned int in safetensors JSON");
+  if(*p=='0'){++p;check(p>=end||!std::isdigit(static_cast<unsigned char>(*p)),"leading zero int in safetensors JSON");return 0;}
+  uint64_t v=0;
+  while(p<end&&std::isdigit(static_cast<unsigned char>(*p))){
+   const uint64_t d=uint64_t(*p++-'0');
+   check(v<=(std::numeric_limits<uint64_t>::max()-d)/10,"integer overflow in safetensors JSON");
+   v=v*10+d;
+  }
+  return v;
+ }
+ void skip_value(int depth=0){
+  check(depth<64,"safetensors JSON nesting too deep");
+  const char c=peek();
+  if(c=='"'){(void)parse_string();return;}
+  if(c=='{'){
+   get();
+   if(peek()=='}'){get();return;}
+   for(;;){(void)parse_string();expect(':');skip_value(depth+1);const char sep=get();if(sep=='}')return;check(sep==',',"expected ',' or '}' in safetensors JSON");}
+  }
+  if(c=='['){
+   get();
+   if(peek()==']'){get();return;}
+   for(;;){skip_value(depth+1);const char sep=get();if(sep==']')return;check(sep==',',"expected ',' or ']' in safetensors JSON");}
+  }
+  if(c=='t'){for(const char ch:"true")if(ch)expect(ch);return;}
+  if(c=='f'){for(const char ch:"false")if(ch)expect(ch);return;}
+  if(c=='n'){for(const char ch:"null")if(ch)expect(ch);return;}
+  if(c=='-'||std::isdigit(static_cast<unsigned char>(c))){
+   if(*p=='-')++p;
+   check(p<end&&std::isdigit(static_cast<unsigned char>(*p)),"invalid number in safetensors JSON");
+   while(p<end&&std::isdigit(static_cast<unsigned char>(*p)))++p;
+   if(p<end&&*p=='.'){++p;check(p<end&&std::isdigit(static_cast<unsigned char>(*p)),"invalid fraction");while(p<end&&std::isdigit(static_cast<unsigned char>(*p)))++p;}
+   if(p<end&&(*p=='e'||*p=='E')){++p;if(p<end&&(*p=='+'||*p=='-'))++p;check(p<end&&std::isdigit(static_cast<unsigned char>(*p)),"invalid exponent");while(p<end&&std::isdigit(static_cast<unsigned char>(*p)))++p;}
+   return;
+  }
+  throw std::runtime_error("unexpected token in safetensors JSON");
+ }
+public:
+ SafetensorsJsonReader(const char* data,size_t n):p(data),end(data+n){}
+ std::vector<WeightSpan> parse_1d_bf16_spans(uint64_t expected_weights){
+  std::vector<WeightSpan> spans;
+  expect('{');
+  if(peek()!='}'){
+   for(;;){
+    const std::string key=parse_string();
+    expect(':');
+    if(key=="__metadata__"){
+     skip_value();
+    }else{
+     expect('{');
+     bool has_dtype=false,has_shape=false,has_offsets=false;
+     std::string dtype;
+     std::vector<uint64_t> shape;
+     uint64_t off0=0,off1=0;
+     if(peek()!='}'){
+      for(;;){
+       const std::string field=parse_string();
+       expect(':');
+       if(field=="dtype"){dtype=parse_string();has_dtype=true;}
+       else if(field=="shape"){
+        expect('[');shape.clear();
+        if(peek()!=']'){for(;;){shape.push_back(parse_u64());const char s=get();if(s==']')break;check(s==',',"bad shape array");}}else get();
+        has_shape=true;
+       }else if(field=="data_offsets"){
+        expect('[');off0=parse_u64();expect(',');off1=parse_u64();expect(']');
+        has_offsets=true;
+       }else skip_value();
+       const char sep=get();
+       if(sep=='}')break;
+       check(sep==',',"expected ',' or '}' in tensor descriptor");
+      }
+     }else get();
+     check(has_dtype&&has_shape&&has_offsets,"incomplete tensor descriptor in safetensors JSON");
+     check(dtype=="BF16","expected BF16 tensor dtype in safetensors header");
+     check(off0<=off1&&(off0%2)==0&&(off1%2)==0,"unaligned or inverted tensor offsets");
+     check(off1<=expected_weights*2ULL,"tensor offset exceeds expected model payload");
+     uint64_t nelem=1;
+     for(uint64_t d:shape){
+      check(d==0||nelem<=expected_weights/d,"tensor element count overflow");
+      nelem*=d;
+     }
+     check(nelem*2ULL==off1-off0,"tensor shape/offset size mismatch");
+     if(shape.size()==1&&off1>off0)spans.push_back(WeightSpan{off0/2ULL,off1/2ULL});
+    }
+    const char sep=get();
+    if(sep=='}')break;
+    check(sep==',',"expected ',' or '}' in safetensors top-level object");
+   }
+  }else get();
+  skip_ws();
+  check(p==end,"trailing bytes in safetensors JSON header");
+  std::sort(spans.begin(),spans.end(),[](const WeightSpan& a,const WeightSpan& b){
+   return a.begin<b.begin||(a.begin==b.begin&&a.end<b.end);
+  });
+  std::vector<WeightSpan> merged;
+  for(const WeightSpan& s:spans){
+   if(merged.empty()){merged.push_back(s);continue;}
+   check(s.begin>=merged.back().end,"overlapping 1D tensor spans in safetensors header");
+   if(s.begin==merged.back().end)merged.back().end=s.end;
+   else merged.push_back(s);
+  }
+  return merged;
+ }
+};
+
+static std::vector<WeightSpan> parse_1d_norm_weight_spans(const B& header,uint64_t expected_weights){
+ check(header.size()>=8,"safetensors header too short");
+ const uint64_t json_len=u64(header.data());
+ check(json_len==header.size()-8,"safetensors JSON length mismatch");
+ SafetensorsJsonReader reader(reinterpret_cast<const char*>(header.data()+8),size_t(json_len));
+ return reader.parse_1d_bf16_spans(expected_weights);
+}
+
+static B quantize_qbits_32(const B& raw,size_t valid,QuantStats& stats,int bits,const std::array<bool,256>* exact_mask=nullptr){
  check(bits==8||bits==10||bits==12||bits==14,"unsupported group32 bit width");
  const int qmax=(1<<(bits-1))-1;
  check(raw.size()==valid*2&&valid>0&&valid<=256,"bad Q8 group input");
@@ -140,18 +289,25 @@ static B quantize_qbits_32(const B& raw,size_t valid,QuantStats& stats,int bits)
   for(size_t i=base;i<stop;i++){
    const float f=from_bf16(u16(raw.data()+2*i));
    check(std::isfinite(f),"source BF16 nonfinite");
-   maxabs=std::max(maxabs,std::fabs(f));
+   if(!(exact_mask&&(*exact_mask)[i]))maxabs=std::max(maxabs,std::fabs(f));
   }
   const float scale=maxabs>0?maxabs/float(qmax):1.0f;
   for(size_t i=base;i<stop;i++){
-   const float src=from_bf16(u16(raw.data()+2*i));
+   const uint16_t raw_bits=u16(raw.data()+2*i);
+   const float src=from_bf16(raw_bits);
+   if(exact_mask&&(*exact_mask)[i]){
+    output[2*i]=raw[2*i];output[2*i+1]=raw[2*i+1];
+    stats.sqref+=static_cast<long double>(src)*src;
+    stats.exactly++;stats.count++;
+    continue;
+   }
    const int q=std::clamp(int(std::nearbyint(src/scale)),-qmax,qmax);
-   const uint16_t bits=to_bf16_rne(float(q)*scale);
-   const float decoded=from_bf16(bits),e=decoded-src;
-   output[2*i]=U8(bits);output[2*i+1]=U8(bits>>8);
+   const uint16_t bits_out=to_bf16_rne(float(q)*scale);
+   const float decoded=from_bf16(bits_out),e=decoded-src;
+   output[2*i]=U8(bits_out);output[2*i+1]=U8(bits_out>>8);
    stats.sqref+=static_cast<long double>(src)*src;
    stats.sqdiff+=static_cast<long double>(e)*e;
-   stats.exactly+=(bits==u16(raw.data()+2*i));
+   stats.exactly+=(bits_out==raw_bits);
    stats.count++;
    stats.maxdiff=std::max(stats.maxdiff,std::fabs(e));
   }
@@ -160,7 +316,7 @@ static B quantize_qbits_32(const B& raw,size_t valid,QuantStats& stats,int bits)
 }
 static B quantize_q8_32(const B& raw,size_t valid,QuantStats& stats){return quantize_qbits_32(raw,valid,stats,8);}
 static std::string trim(std::string s){while(!s.empty()&&(s.back()=='\n'||s.back()=='\r'||s.back()==' '))s.pop_back();return s;}
-static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const fs::path& outdir,bool resume=false,bool preserve_embedding=false,int bits=8){
+static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const fs::path& outdir,bool resume=false,bool preserve_embedding=false,int bits=8,bool preserve_norms=false){
  check(bits==8||bits==10||bits==12||bits==14,"invalid quantization bits");
  if(!resume){check(!fs::exists(outdir),"refuse to overwrite Q8 output directory");fs::create_directories(outdir);}
  else check(fs::is_directory(outdir),"resume Q8 output directory missing");
@@ -179,6 +335,10 @@ static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const f
  else {check(read_file(outdir/"safetensors.header")==header,"Q8 resume header changed");
  B previous_tok=read_file(outdir/"tokenizer.sha256");check(trim(std::string(previous_tok.begin(),previous_tok.end()))==hex(toksha),"Q8 tokenizer changed");}
  QuantStats stats;uint32_t shard=0,records=0;uint64_t glyphid=0,total_weights=0,total_bytes=header.size();
+ const std::vector<WeightSpan> norm_spans=preserve_norms?parse_1d_norm_weight_spans(header,EXPECTED_WEIGHTS):std::vector<WeightSpan>{};
+ uint64_t preserved_1d_weights=0;for(const WeightSpan& s:norm_spans)preserved_1d_weights+=(s.end-s.begin);
+ uint64_t preserved_exact_weights=0;
+ size_t norm_span_idx=0;
  B body,fp32;body.reserve(850000);fp32.reserve(1024*1024);
  const uint64_t allglyphs=(EXPECTED_WEIGHTS+255)/256;
  uint64_t resume_glyphs=0;
@@ -203,11 +363,26 @@ static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const f
   B original(n);for(size_t i=0;i<valid;i++){original[2*i]=raw[i];original[2*i+1]=raw[valid+i];}
   source.add(original);
   B q8;
-  if(preserve_embedding && glyphid*512ull<335544320ull){
+  const uint64_t glyph_start=glyphid*256ULL;
+  while(norm_span_idx<norm_spans.size()&&norm_spans[norm_span_idx].end<=glyph_start)++norm_span_idx;
+  std::array<bool,256> exact_mask{};
+  bool any_exact=false,all_exact=true;
+  for(size_t i=0;i<valid;i++){
+   const uint64_t widx=glyph_start+i;
+   bool exact=(preserve_embedding&&widx<167772160ULL);
+   if(!exact&&preserve_norms){
+    for(size_t s=norm_span_idx;s<norm_spans.size()&&norm_spans[s].begin<=widx;++s){
+     if(widx<norm_spans[s].end){exact=true;break;}
+    }
+   }
+   exact_mask[i]=exact;if(exact)++preserved_exact_weights;any_exact|=exact;all_exact&=exact;
+  }
+  if(all_exact){
    q8=original;
    for(size_t i=0;i<valid;i++){float src=from_bf16(u16(original.data()+2*i));
     stats.sqref+=static_cast<long double>(src)*src;stats.exactly++;stats.count++;}
-  }else q8=quantize_qbits_32(original,valid,stats,bits);
+  }else if(any_exact)q8=quantize_qbits_32(original,valid,stats,bits,&exact_mask);
+  else q8=quantize_qbits_32(original,valid,stats,bits);
   quant.add(q8);
   if(glyphid<resume_glyphs){total_weights+=valid;continue;}
   B weightlane=pack_exact32_bf16(q8.data(),valid),checkfp;
@@ -233,13 +408,19 @@ static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const f
  write_new_text(outdir/"original.sha256",hex(quantactual)+"\n");
  const long double relative=std::sqrt(stats.sqdiff/stats.sqref);
  std::ostringstream proof;
+ const char* qmode=(preserve_embedding&&preserve_norms)?"MIXED_EMBED_AND_1D_NORMS_BF16_PLUS_GROUP32_QBITS"
+  :preserve_norms?"MIXED_1D_NORMS_BF16_PLUS_GROUP32_QBITS"
+  :preserve_embedding?"MIXED_EMBED_BF16_PLUS_Q8_GROUP32"
+  :"SIGNED_INT_PER_GROUP32_SCALE_FP32_RECONSTRUCT_BF16";
  proof<<std::setprecision(16)
   <<"Q8_GLYPH_ENCODING=PASS\nSOURCE_CHECKPOINT_SHA256="<<hex(sourceactual)
   <<"\nQUANTIZED_CHECKPOINT_SHA256="<<hex(quantactual)
   <<"\nSOURCE_WEIGHTS="<<EXPECTED_WEIGHTS<<"\nGLYPHS="<<glyphid<<"\nSHARDS="<<shard
   <<"\nMETA_TOKENS_EVERY_FIVE=102\nINSTRUCTIONS_PER_FIVE=5"
-  <<"\nQUANTIZATION="<<(preserve_embedding?"MIXED_EMBED_BF16_PLUS_Q8_GROUP32":"SIGNED_INT_PER_GROUP32_SCALE_FP32_RECONSTRUCT_BF16")
+  <<"\nQUANTIZATION="<<qmode
   <<"\nQUANTIZATION_BITS="<<bits
+  <<"\nPRESERVED_1D_NORM_WEIGHTS="<<preserved_1d_weights
+  <<"\nQUANTIZED_WEIGHTS="<<(EXPECTED_WEIGHTS-preserved_exact_weights)
   <<"\nSTORAGE_CODEC=LUJ1_EXACT32_FOR_DEQUANTIZED_BF16_VALUES"
   <<"\nWEIGHT_RELATIVE_L2_ERROR="<<relative<<"\nWEIGHT_MAX_ABSOLUTE_ERROR="<<stats.maxdiff
   <<"\nBITWISE_PRESERVED_WEIGHTS="<<stats.exactly
@@ -451,29 +632,64 @@ static void selftest(){
   check(exact32_to_bf16(quant_lane.data(),quant_lane.size(),256,&quant_fp32)==quantized,"Q8 glyph decode failed");
   check(stats.count==256&&stats.sqref>0&&stats.sqdiff>=0,"Q8 statistics invalid");
  for(int bits:{10,12,14}){QuantStats ss;B higher=quantize_qbits_32(raw,256,ss,bits);B lane=pack_exact32_bf16(higher.data(),256),fp32tmp;check(exact32_to_bf16(lane.data(),lane.size(),256,&fp32tmp)==higher,"extended bit quant decode mismatch");check(ss.count==256,"extended bit stats invalid");}
+ // Self-test header-driven 1D norm parser + partial-glyph masked quantization
+ {
+  const std::string fake_json="{\"__metadata__\":{\"format\":\"pt\"},\"a.norm.weight\":{\"dtype\":\"BF16\",\"shape\":[4],\"data_offsets\":[0,8]},\"b.proj.weight\":{\"dtype\":\"BF16\",\"shape\":[2,8],\"data_offsets\":[8,40]},\"c.norm.weight\":{\"dtype\":\"BF16\",\"shape\":[3],\"data_offsets\":[40,46]}}";
+  B hdr;add64(hdr,uint64_t(fake_json.size()));hdr.insert(hdr.end(),fake_json.begin(),fake_json.end());
+  const auto spans=parse_1d_norm_weight_spans(hdr,23);
+  check(spans.size()==2&&spans[0].begin==0&&spans[0].end==4&&spans[1].begin==20&&spans[1].end==23,"1D norm span parser mismatch");
+  bool bad_json_rejected=false;
+  try{
+   const std::string bad="{\"x\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,3]}}";
+   B bhdr;add64(bhdr,uint64_t(bad.size()));bhdr.insert(bhdr.end(),bad.begin(),bad.end());
+   (void)parse_1d_norm_weight_spans(bhdr,10);
+  }catch(const std::exception&){bad_json_rejected=true;}
+  check(bad_json_rejected,"invalid unaligned 1D norm span accepted");
+  // Verify a huge outlier norm element (1648.0f) in exact_mask does not corrupt neighbor 2D weights in same group32
+  B mixed=raw;
+  const uint16_t outlier_bf16=to_bf16_rne(1648.0f);
+  mixed[0]=U8(outlier_bf16);mixed[1]=U8(outlier_bf16>>8);
+  std::array<bool,256> mask{};mask[0]=true;
+  QuantStats ms;B qm=quantize_qbits_32(mixed,256,ms,14,&mask);
+  check(qm[0]==mixed[0]&&qm[1]==mixed[1],"preserved 1D norm outlier modified");
+  check(ms.maxdiff<0.01f,"1D norm outlier leaked into neighbor group32 scale");
+ }
   unsigned tokens=0;for(uint64_t i=0;i<5;i++){
    unsigned n=i%5>=3?21:20;B t=pack_meta(i,n);check(t.size()==(18*n+7)/8,"token lane size mismatch");
    verify_meta(t.data(),i,n);tokens+=n;
   }
   check(tokens==102,"five-glyph token count mismatch");
-  std::cout<<"LUJ_EXACT32_BF16_SELFTEST=PASS\nLUJ_Q8_GROUP32_SELFTEST=PASS\nTOKEN_DISTRIBUTION_FIVE=20,20,20,21,21\nWEIGHTS_PER_GLYPH=256\n";
+  std::cout<<"LUJ_EXACT32_BF16_SELFTEST=PASS\nLUJ_Q8_GROUP32_SELFTEST=PASS\nLUJ_NORM1D_MASK_SELFTEST=PASS\nTOKEN_DISTRIBUTION_FIVE=20,20,20,21,21\nWEIGHTS_PER_GLYPH=256\n";
 }
+struct QuantCommand{const char* name;int bits;bool resume;bool norms;bool embed;};
 int main(int argc,char** argv){try{
- if(argc<2)throw std::runtime_error("usage: luj_gemma270 encode <model.gbf> <tokenizer.json> <new-dir> | decode <dir> <model.safetensors> | verify <dir> | sample <gbf> <tokenizer.json> <new-dir> <glyphcount>");
+ if(argc<2)throw std::runtime_error("usage: luj_gemma270 encode <model.gbf> <tokenizer.json> <new-dir> | decode <dir> <model.safetensors> | verify <dir> | quantize-q14[-norms] <gbf> <tokenizer.json> <new-dir> [--preserve-norms] [--preserve-embedding] | sample <gbf> <tokenizer.json> <new-dir> <glyphcount>");
  std::string cmd=argv[1];
- if(cmd=="selftest"&&argc==2)selftest();
+ static const QuantCommand kQuantCmds[]={
+  {"quantize-q8",8,false,false,false},{"resume-q8",8,true,false,false},
+  {"quantize-q8-norms",8,false,true,false},{"resume-q8-norms",8,true,true,false},
+  {"quantize-q10",10,false,false,false},{"resume-q10",10,true,false,false},
+  {"quantize-q10-norms",10,false,true,false},{"resume-q10-norms",10,true,true,false},
+  {"quantize-q12",12,false,false,false},{"resume-q12",12,true,false,false},
+  {"quantize-q12-norms",12,false,true,false},{"resume-q12-norms",12,true,true,false},
+  {"quantize-q14",14,false,false,false},{"resume-q14",14,true,false,false},
+  {"quantize-q14-norms",14,false,true,false},{"resume-q14-norms",14,true,true,false},
+  {"mixed-q8",8,false,false,true},{"resume-mixed-q8",8,true,false,true},
+ };
+ const QuantCommand* qcmd=nullptr;
+ for(const auto& entry:kQuantCmds){if(cmd==entry.name){qcmd=&entry;break;}}
+ if(qcmd&&argc>=5){
+  bool norms=qcmd->norms,embed=qcmd->embed;
+  for(int i=5;i<argc;i++){
+   const std::string opt=argv[i];
+   if(opt=="--preserve-norms")norms=true;
+   else if(opt=="--preserve-embedding")embed=true;
+   else throw std::runtime_error("unknown option: "+opt);
+  }
+  quantize_model(argv[2],argv[3],argv[4],qcmd->resume,embed,qcmd->bits,norms);
+ }else if(cmd=="selftest"&&argc==2)selftest();
  else if(cmd=="encode"&&argc==5)encode(argv[2],argv[3],argv[4],false,0);
- else if(cmd=="quantize-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4]);
- else if(cmd=="resume-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true);
- else if(cmd=="quantize-q10"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,10);
- else if(cmd=="resume-q10"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,10);
- else if(cmd=="quantize-q12"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,12);
- else if(cmd=="resume-q12"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,12);
- else if(cmd=="quantize-q14"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,14);
- else if(cmd=="resume-q14"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,14);
  else if(cmd=="upgrade102"&&argc==4)upgrade102(argv[2],argv[3]);
- else if(cmd=="mixed-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,true);
- else if(cmd=="resume-mixed-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,true);
  else if(cmd=="sample"&&argc==6)encode(argv[2],argv[3],argv[4],true,std::stoull(argv[5]));
  else if(cmd=="resume"&&argc==5)encode(argv[2],argv[3],argv[4],false,0,true);
  else if(cmd=="decode"&&argc==4)decode(argv[2],argv[3],false);
