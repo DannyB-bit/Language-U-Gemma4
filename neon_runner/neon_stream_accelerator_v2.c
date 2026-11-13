@@ -2591,7 +2591,6 @@ NEON_API int paged_bf16_attention_gqa_c(
     const size_t slot_stride = (size_t)n_kv_heads * (size_t)head_dim;
 
     int job;
-    int alloc_failed = 0;
 #if HAS_OMP
     if (total_jobs > 1 && num_threads != 1) {
         if (num_threads > 0) omp_set_num_threads(num_threads);
