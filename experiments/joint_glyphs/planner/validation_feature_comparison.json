@@ -1,0 +1,22 @@
+{
+  "scope": "Both feature variants selected using validation before the first held-out evaluation.",
+  "v1_unfiltered_hash": {
+    "seed": 7,
+    "mode": "qat4",
+    "step": 1200,
+    "validation": {
+      "accuracy": 0.71875,
+      "cross_entropy": 1.8425732851028442
+    }
+  },
+  "v2_stopwords_hash": {
+    "seed": 29,
+    "mode": "qat4",
+    "step": 1600,
+    "validation": {
+      "accuracy": 0.96875,
+      "cross_entropy": 0.08459389954805374
+    }
+  },
+  "test_used_for_feature_choice": false
+}

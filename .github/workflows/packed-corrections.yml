@@ -7,6 +7,7 @@ on:
       - 'tests/test_packed_corrections.py'
       - 'experiments/joint_glyphs/**'
       - 'tests/test_joint_glyphs.py'
+      - 'tests/test_neural_glyph_planner.py'
       - '.github/workflows/packed-corrections.yml'
   pull_request:
     paths:
@@ -14,6 +15,7 @@ on:
       - 'tests/test_packed_corrections.py'
       - 'experiments/joint_glyphs/**'
       - 'tests/test_joint_glyphs.py'
+      - 'tests/test_neural_glyph_planner.py'
       - '.github/workflows/packed-corrections.yml'
 
 permissions:
@@ -41,3 +43,4 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_packed_corrections.py -v
           python -m unittest discover -s tests -p test_joint_glyphs.py -v
+          python -m unittest discover -s tests -p test_neural_glyph_planner.py -v

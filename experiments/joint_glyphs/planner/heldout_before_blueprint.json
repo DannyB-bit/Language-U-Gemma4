@@ -1,0 +1,119 @@
+{
+  "scope": "Eight arithmetic operations with explicit semicolon grammar; not GPT-level or unrestricted-language reasoning.",
+  "model_sha256": "be13f4224ba07625fda58f10275b23ffc04647498aa009b14c74b87eee080bb7",
+  "model_bytes": 1269,
+  "split_counts": {
+    "train": 80,
+    "validation": 32,
+    "test": 48
+  },
+  "selection_frozen_before_test": true,
+  "trained_parameters": 1280,
+  "heldout_operator_correct": 44,
+  "heldout_operator_total": 48,
+  "heldout_operator_accuracy": 0.9166666666666666,
+  "confusion_true_rows_predicted_columns": [
+    [
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      6,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      4,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      0,
+      5,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      6,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      5
+    ]
+  ],
+  "weight_controls": {
+    "zero": {
+      "heldout_operator_accuracy": 0.125
+    },
+    "shuffled": {
+      "heldout_operator_accuracy": 0.10416666666666667
+    }
+  },
+  "composition_cases": 256,
+  "answered": 212,
+  "rejected": 44,
+  "correct_answers": 186,
+  "correct_programs": 166,
+  "accuracy_all_cases": 0.7265625,
+  "accuracy_when_answered": 0.8773584905660378,
+  "unsupported_rejected": 13,
+  "unsupported_total": 13,
+  "semantic_verifier": "Structural and arithmetic checks only; valid wrong programs can pass.",
+  "gpt_comparison_run": false,
+  "corpus_sha256": "8b14166f517702383f0343aa0d9fa3da32c2b0342556a41dc3b2515f6cbf3c70",
+  "evaluation_source_sha256": "5e669a996a672ac055c28649f69d17d7236ef5d352bbb2d44badd8f51d171723",
+  "record_kind": "Compact receipt from original held-out run before blueprint packaging; full current cases are in heldout_results.json."
+}

@@ -1,5 +1,9 @@
 # Joint token/weight glyph round-trip proof
 
+The follow-up [learned planner](NEURAL_PLANNER.md) uses an entire 1,280-weight
+trained network decoded from five glyphs to propose operations. Its measured
+limitations and failure cases are separate from this storage-only proof.
+
 The fixed target is **256 weights per glyph** and **20.4 tokens per glyph on
 average**. This experiment carries 102 actual Gemma tokenizer IDs in five
 records containing 20, 20, 20, 21 and 21 tokens, plus 1,280 actual source weights.
@@ -124,6 +128,8 @@ reference source hash as metadata, without claiming to match it.
 Instructions are `<BBhhqq`: opcode, zero flags, two signed reference indices,
 two signed 64-bit immediates. Reference -1 selects an immediate; other references
 must point backward and have a zero unused immediate. Opcodes are ADD, SUB,
-MUL, ASSERT_EQ and ASSERT_GE. Overflow, failed constraints, malformed lengths,
+MUL, ASSERT_EQ and ASSERT_GE. The learned-planner extension adds exact DIV,
+MINIMUM, MAXIMUM, bounded integer POWER and REMAINDER (opcodes 6..10); older
+readers reject these unknown opcodes. Overflow, failed constraints, malformed lengths,
 unknown formats, bad padding, corrupted bodies and lossy requested output
 casts are rejected. This is a small executable extension, not native codegen.
