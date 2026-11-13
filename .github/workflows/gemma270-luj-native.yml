@@ -1,0 +1,30 @@
+name: Gemma3 270M LUJ native codec and runtime build
+on:
+  push:
+    paths:
+      - 'experiments/gemma270_luj/**'
+      - '.github/workflows/gemma270-luj-native.yml'
+  pull_request:
+    paths:
+      - 'experiments/gemma270_luj/**'
+      - '.github/workflows/gemma270-luj-native.yml'
+permissions:
+  contents: read
+jobs:
+  native-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native codec dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libzstd-dev zlib1g-dev libssl-dev
+      - name: Strict C++17 build
+        run: make -C experiments/gemma270_luj -B all inference compare_logits
+      - name: Run exact, Q8 and 102-token layout selftest
+        run: experiments/gemma270_luj/luj_gemma270 selftest
