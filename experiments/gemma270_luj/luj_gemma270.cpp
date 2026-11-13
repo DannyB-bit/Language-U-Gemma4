@@ -129,7 +129,9 @@ static uint16_t to_bf16_rne(float x){
  return uint16_t(u>>16);
 }
 struct QuantStats{long double sqref=0,sqdiff=0;uint64_t exactly=0,count=0;float maxdiff=0;};
-static B quantize_q8_32(const B& raw,size_t valid,QuantStats& stats){
+static B quantize_qbits_32(const B& raw,size_t valid,QuantStats& stats,int bits){
+ check(bits==8||bits==10||bits==12||bits==14,"unsupported group32 bit width");
+ const int qmax=(1<<(bits-1))-1;
  check(raw.size()==valid*2&&valid>0&&valid<=256,"bad Q8 group input");
  B output(raw.size());
  for(size_t base=0;base<valid;base+=32){
@@ -140,10 +142,10 @@ static B quantize_q8_32(const B& raw,size_t valid,QuantStats& stats){
    check(std::isfinite(f),"source BF16 nonfinite");
    maxabs=std::max(maxabs,std::fabs(f));
   }
-  const float scale=maxabs>0?maxabs/127.0f:1.0f;
+  const float scale=maxabs>0?maxabs/float(qmax):1.0f;
   for(size_t i=base;i<stop;i++){
    const float src=from_bf16(u16(raw.data()+2*i));
-   const int q=std::clamp(int(std::nearbyint(src/scale)),-127,127);
+   const int q=std::clamp(int(std::nearbyint(src/scale)),-qmax,qmax);
    const uint16_t bits=to_bf16_rne(float(q)*scale);
    const float decoded=from_bf16(bits),e=decoded-src;
    output[2*i]=U8(bits);output[2*i+1]=U8(bits>>8);
@@ -156,8 +158,10 @@ static B quantize_q8_32(const B& raw,size_t valid,QuantStats& stats){
  }
  return output;
 }
+static B quantize_q8_32(const B& raw,size_t valid,QuantStats& stats){return quantize_qbits_32(raw,valid,stats,8);}
 static std::string trim(std::string s){while(!s.empty()&&(s.back()=='\n'||s.back()=='\r'||s.back()==' '))s.pop_back();return s;}
-static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const fs::path& outdir,bool resume=false,bool preserve_embedding=false){
+static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const fs::path& outdir,bool resume=false,bool preserve_embedding=false,int bits=8){
+ check(bits==8||bits==10||bits==12||bits==14,"invalid quantization bits");
  if(!resume){check(!fs::exists(outdir),"refuse to overwrite Q8 output directory");fs::create_directories(outdir);}
  else check(fs::is_directory(outdir),"resume Q8 output directory missing");
  std::ifstream f(gbf,std::ios::binary);check(bool(f),"GBF source not found");
@@ -203,7 +207,7 @@ static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const f
    q8=original;
    for(size_t i=0;i<valid;i++){float src=from_bf16(u16(original.data()+2*i));
     stats.sqref+=static_cast<long double>(src)*src;stats.exactly++;stats.count++;}
-  }else q8=quantize_q8_32(original,valid,stats);
+  }else q8=quantize_qbits_32(original,valid,stats,bits);
   quant.add(q8);
   if(glyphid<resume_glyphs){total_weights+=valid;continue;}
   B weightlane=pack_exact32_bf16(q8.data(),valid),checkfp;
@@ -234,7 +238,8 @@ static void quantize_model(const fs::path& gbf,const fs::path& tokenizer,const f
   <<"\nQUANTIZED_CHECKPOINT_SHA256="<<hex(quantactual)
   <<"\nSOURCE_WEIGHTS="<<EXPECTED_WEIGHTS<<"\nGLYPHS="<<glyphid<<"\nSHARDS="<<shard
   <<"\nMETA_TOKENS_EVERY_FIVE=102\nINSTRUCTIONS_PER_FIVE=5"
-  <<"\nQUANTIZATION="<<(preserve_embedding?"MIXED_EMBED_BF16_PLUS_Q8_GROUP32":"SIGNED_INT8_PER_GROUP32_SCALE_FP32_RECONSTRUCT_BF16")
+  <<"\nQUANTIZATION="<<(preserve_embedding?"MIXED_EMBED_BF16_PLUS_Q8_GROUP32":"SIGNED_INT_PER_GROUP32_SCALE_FP32_RECONSTRUCT_BF16")
+  <<"\nQUANTIZATION_BITS="<<bits
   <<"\nSTORAGE_CODEC=LUJ1_EXACT32_FOR_DEQUANTIZED_BF16_VALUES"
   <<"\nWEIGHT_RELATIVE_L2_ERROR="<<relative<<"\nWEIGHT_MAX_ABSOLUTE_ERROR="<<stats.maxdiff
   <<"\nBITWISE_PRESERVED_WEIGHTS="<<stats.exactly
@@ -445,6 +450,7 @@ static void selftest(){
   QuantStats stats;B quantized=quantize_q8_32(raw,256,stats);B quant_lane=pack_exact32_bf16(quantized.data(),256),quant_fp32;
   check(exact32_to_bf16(quant_lane.data(),quant_lane.size(),256,&quant_fp32)==quantized,"Q8 glyph decode failed");
   check(stats.count==256&&stats.sqref>0&&stats.sqdiff>=0,"Q8 statistics invalid");
+ for(int bits:{10,12,14}){QuantStats ss;B higher=quantize_qbits_32(raw,256,ss,bits);B lane=pack_exact32_bf16(higher.data(),256),fp32tmp;check(exact32_to_bf16(lane.data(),lane.size(),256,&fp32tmp)==higher,"extended bit quant decode mismatch");check(ss.count==256,"extended bit stats invalid");}
   unsigned tokens=0;for(uint64_t i=0;i<5;i++){
    unsigned n=i%5>=3?21:20;B t=pack_meta(i,n);check(t.size()==(18*n+7)/8,"token lane size mismatch");
    verify_meta(t.data(),i,n);tokens+=n;
@@ -459,6 +465,12 @@ int main(int argc,char** argv){try{
  else if(cmd=="encode"&&argc==5)encode(argv[2],argv[3],argv[4],false,0);
  else if(cmd=="quantize-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4]);
  else if(cmd=="resume-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true);
+ else if(cmd=="quantize-q10"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,10);
+ else if(cmd=="resume-q10"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,10);
+ else if(cmd=="quantize-q12"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,12);
+ else if(cmd=="resume-q12"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,12);
+ else if(cmd=="quantize-q14"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,false,14);
+ else if(cmd=="resume-q14"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,false,14);
  else if(cmd=="upgrade102"&&argc==4)upgrade102(argv[2],argv[3]);
  else if(cmd=="mixed-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],false,true);
  else if(cmd=="resume-mixed-q8"&&argc==5)quantize_model(argv[2],argv[3],argv[4],true,true);
