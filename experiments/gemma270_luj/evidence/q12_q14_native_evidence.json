@@ -1,0 +1,191 @@
+{
+  "model": "TheAiCollectiveART/gemma-3-270m-it-bucket",
+  "original_checkpoint_sha256": "700b710a9a99c295ed546647aa81cacf9f81f4c573ea2be613a0e2517a44afab",
+  "tokenizer_sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c",
+  "model_weights": 268098176,
+  "glyphs": 1047259,
+  "shards": 1023,
+  "token_ids_per_five": [
+    20,
+    20,
+    20,
+    21,
+    21
+  ],
+  "codec": "LUJ1 EXACT32 storage of BF16-reconstructed group32 integer-quantized weights; not packed Q14 inference",
+  "development_prompts": [
+    "arithmetic",
+    "capital",
+    "hamlet",
+    "multistep",
+    "minimum"
+  ],
+  "exact102": {
+    "checkpoint_hash": "700b710a9a99c295ed546647aa81cacf9f81f4c573ea2be613a0e2517a44afab",
+    "stored_luj_bytes": 637454658,
+    "weight_relative_l2": 0,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5
+  },
+  "q8": {
+    "checkpoint_hash": "98290a484bec5501444a3e966521062ca53cb13f55143d3bfc7883a1d7a4cb14",
+    "weight_relative_l2": 0.005311979890787278,
+    "same_complete_greedy": 2,
+    "tested_complete_greedy": 5,
+    "shard_bytes": 630373072
+  },
+  "q12": {
+    "checkpoint_hash": "96cc57d6f501b88bc506fc7e46516230ea78ccadbe753c1b0da177535da539cc",
+    "weight_relative_l2": 0.0001856466118924923,
+    "bitwise_preserved_weights": 240072975,
+    "max_abs_weight_error": 0.5,
+    "stored_luj_bytes": 637448527,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 4,
+    "tested_complete_greedy": 5,
+    "prompt_metrics": {
+      "arithmetic": {
+        "cosine": 0.999967449429,
+        "relative_l2": 0.00812126070291,
+        "same_tokens": true
+      },
+      "capital": {
+        "cosine": 0.999346635929,
+        "relative_l2": 0.0362958650776,
+        "same_tokens": true
+      },
+      "hamlet": {
+        "cosine": 0.999892043066,
+        "relative_l2": 0.0192498335942,
+        "same_tokens": false
+      },
+      "multistep": {
+        "cosine": 0.999985378902,
+        "relative_l2": 0.0121990474182,
+        "same_tokens": true
+      },
+      "minimum": {
+        "cosine": 0.999932652191,
+        "relative_l2": 0.0201642714242,
+        "same_tokens": true
+      }
+    }
+  },
+  "q14": {
+    "checkpoint_hash": "996fa320819d77b8ee1217fa6ef5088373a0f1645c0b3ec04cdf8111a722311e",
+    "weight_relative_l2": 0.00002786524625339871,
+    "bitwise_preserved_weights": 260898499,
+    "max_abs_weight_error": 0.125,
+    "stored_luj_bytes": 637484603,
+    "shards": 1023,
+    "restore_sha256_verified": true,
+    "same_complete_greedy": 5,
+    "tested_complete_greedy": 5,
+    "strict_gate": {
+      "min_cosine": 0.999,
+      "max_relative_l2": 0.01,
+      "require_argmax": true,
+      "passed": 4,
+      "total": 5
+    },
+    "prompt_metrics": {
+      "arithmetic": {
+        "cosine": 0.999998357816,
+        "relative_l2": 0.00302162381548,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "capital": {
+        "cosine": 0.999847930822,
+        "relative_l2": 0.0199436078519,
+        "same_tokens": true,
+        "strict_gate": false
+      },
+      "hamlet": {
+        "cosine": 0.999995268805,
+        "relative_l2": 0.00307636191764,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "multistep": {
+        "cosine": 0.999998352742,
+        "relative_l2": 0.00691719174162,
+        "same_tokens": true,
+        "strict_gate": true
+      },
+      "minimum": {
+        "cosine": 0.999997254421,
+        "relative_l2": 0.0032983001374,
+        "same_tokens": true,
+        "strict_gate": true
+      }
+    }
+  },
+  "independent_fp32_torch_reference": {
+    "reference_kind": "Independent PyTorch implementation of Gemma3 text math (not official Transformers)",
+    "prompts": [
+      "arithmetic",
+      "capital",
+      "hamlet"
+    ],
+    "results": {
+      "arithmetic": {
+        "cosine": 0.999999999999,
+        "relative_l2": 0.0000040176655088,
+        "same_argmax": true
+      },
+      "capital": {
+        "cosine": 0.999999999995,
+        "relative_l2": 0.00000328215484954,
+        "same_argmax": true
+      },
+      "hamlet": {
+        "cosine": 0.999999999995,
+        "relative_l2": 0.00000455171077736,
+        "same_argmax": true
+      }
+    }
+  },
+  "independent_language_benchmark": {
+    "suite_sha256": "5bc26faf9f100080ea561b20b9f437dc197a13931aab3cf3ce578ca9d11a4256",
+    "strict_exact_match": 10,
+    "total": 28,
+    "domain_results": {
+      "arithmetic": [
+        1,
+        8
+      ],
+      "factual": [
+        2,
+        4
+      ],
+      "language": [
+        1,
+        4
+      ],
+      "coding": [
+        1,
+        4
+      ],
+      "logic": [
+        3,
+        6
+      ],
+      "instruction": [
+        2,
+        2
+      ]
+    },
+    "reasoning_scope": "Locally authored, newly frozen before evaluation; not a standardized benchmark and now development data."
+  },
+  "official_transformers_parity": "NOT_RUN_no_pinned_transformers_package_in_local_environment",
+  "gpt_baseline": "NOT_RUN_no_independent_baseline_completions",
+  "limits": [
+    "five development prompts insufficient for distributional generation fidelity",
+    "Q14 still fails one declared strict numerical gate",
+    "Q14 codec stores reconstructed BF16, not native packed 14-bit weights",
+    "zero evidence of GPT-class reasoning",
+    "full user model weights excluded from Git repository"
+  ]
+}
