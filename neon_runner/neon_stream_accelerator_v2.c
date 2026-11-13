@@ -1814,6 +1814,7 @@ NEON_API int flash_glyph_attention_gqa_c(
     }
 
     int job;
+    int alloc_failed = 0;
 #if HAS_OMP
     if (total_jobs > 1 && num_threads != 1) {
         if (num_threads > 0) omp_set_num_threads(num_threads);
@@ -1834,7 +1835,6 @@ NEON_API int flash_glyph_attention_gqa_c(
         float stack_scores[16];
         float stack_m[16];
         float stack_l[16];
-        float stack_local_acc[8 * (512 + 16)]; /* L1-private coprime-stride (33 cache lines) accumulator */
         float* stack_acc_ptrs[16];
 
         const size_t acc_stride = (size_t)head_dim + 16u;
@@ -1843,13 +1843,18 @@ NEON_API int flash_glyph_attention_gqa_c(
         float* scores = (gqa_group <= 16) ? stack_scores : (float*)neon_alloc((size_t)gqa_group * sizeof(float));
         float* loc_m  = (gqa_group <= 16) ? stack_m : (float*)neon_alloc((size_t)gqa_group * sizeof(float));
         float* loc_l  = (gqa_group <= 16) ? stack_l : (float*)neon_alloc((size_t)gqa_group * sizeof(float));
-        float* local_acc_buf = (gqa_group <= 8 && head_dim <= 512)
-            ? stack_local_acc
-            : (float*)neon_alloc((size_t)gqa_group * acc_stride * sizeof(float));
+        /* Heap-allocate L1-private accumulator (~17 KB+) rather than risking OpenMP worker stack guard overflow */
+        float* local_acc_buf = (float*)neon_alloc((size_t)gqa_group * acc_stride * sizeof(float));
         float** acc_ptrs = (gqa_group <= 16)
             ? stack_acc_ptrs
             : (float**)neon_alloc((size_t)gqa_group * sizeof(float*));
 
+        if (!k_rot || !v_rot || !scores || !loc_m || !loc_l || !local_acc_buf || !acc_ptrs) {
+#if HAS_OMP
+            #pragma omp critical
+#endif
+            { alloc_failed = 1; }
+        } else {
         for (int g = 0; g < gqa_group; g++) {
             loc_m[g] = -1e30f;
             loc_l[g] = 0.0f;
@@ -2401,14 +2406,20 @@ NEON_API int flash_glyph_attention_gqa_c(
             tile_l[slot] = loc_l[g];
             memcpy(tile_acc + slot * (size_t)head_dim, acc_ptrs[g], (size_t)head_dim * sizeof(float));
         }
+        }
 
-        if (k_rot != stack_k) neon_free(k_rot);
-        if (v_rot != stack_v) neon_free(v_rot);
-        if (scores != stack_scores) neon_free(scores);
-        if (loc_m != stack_m) neon_free(loc_m);
-        if (loc_l != stack_l) neon_free(loc_l);
-        if (local_acc_buf != stack_local_acc) neon_free(local_acc_buf);
-        if (acc_ptrs != stack_acc_ptrs) neon_free(acc_ptrs);
+        if (k_rot && k_rot != stack_k) neon_free(k_rot);
+        if (v_rot && v_rot != stack_v) neon_free(v_rot);
+        if (scores && scores != stack_scores) neon_free(scores);
+        if (loc_m && loc_m != stack_m) neon_free(loc_m);
+        if (loc_l && loc_l != stack_l) neon_free(loc_l);
+        if (local_acc_buf) neon_free(local_acc_buf);
+        if (acc_ptrs && acc_ptrs != stack_acc_ptrs) neon_free(acc_ptrs);
+    }
+
+    if (alloc_failed) {
+        neon_free(slab);
+        return -5;
     }
 
     /* 3. Associative Log-Sum-Exp Reduction across Split-K Tiles + Single Output FWHT-8 */
@@ -2512,6 +2523,7 @@ NEON_API int paged_bf16_attention_gqa_c(
     const size_t slot_stride = (size_t)n_kv_heads * (size_t)head_dim;
 
     int job;
+    int alloc_failed = 0;
 #if HAS_OMP
     if (total_jobs > 1 && num_threads != 1) {
         if (num_threads > 0) omp_set_num_threads(num_threads);

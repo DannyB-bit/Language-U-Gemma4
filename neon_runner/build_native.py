@@ -107,23 +107,27 @@ def build_shared_library(src_dir: Path = None) -> Path:
                     env=env,
                     check=True,
                 )
-                subprocess.run(
-                    [
-                        str(cl_exe), "/nologo", "/O2", "/arch:AVX2", "/openmp", "/GS-", "/Gs1048576", "/Zl",
-                        f"/I{inc_dir}", f"/I{tmp_path}", f"/I{base}",
-                        "/DNEON_BUILDING_DLL", "/DNEON_SHARED_LIB_ONLY",
-                        "/DNEON_MSVC_FREESTANDING_DLL",
-                        "/c", str(c_src), f"/Fo{obj_file}",
-                    ],
-                    env=env,
-                    check=True,
-                )
+                chkstk_obj = lib_dir / "chkstk.obj"
+                cl_flags = [
+                    str(cl_exe), "/nologo", "/O2", "/arch:AVX2", "/openmp", "/GS-", "/Zl",
+                    f"/I{inc_dir}", f"/I{tmp_path}", f"/I{base}",
+                    "/DNEON_BUILDING_DLL", "/DNEON_SHARED_LIB_ONLY",
+                    "/DNEON_MSVC_FREESTANDING_DLL",
+                    "/c", str(c_src), f"/Fo{obj_file}",
+                ]
+                if not chkstk_obj.exists():
+                    cl_flags.insert(6, "/Gs1048576")
+                subprocess.run(cl_flags, env=env, check=True)
                 link_exe = bin_dir / "link.exe"
+                link_inputs = [str(obj_file), str(k32_lib)]
+                if chkstk_obj.exists():
+                    link_inputs.append(str(chkstk_obj))
+                link_inputs.extend(["vcruntime.lib", "vcomp.lib"])
                 subprocess.run(
                     [
                         str(link_exe), "/NOLOGO", "/DLL", "/NOENTRY", "/NODEFAULTLIB",
                         f"/LIBPATH:{lib_dir}",
-                        str(obj_file), str(k32_lib), "vcruntime.lib", "vcomp.lib",
+                        *link_inputs,
                         f"/OUT:{out_dll}",
                         f"/IMPLIB:{tmp_path / 'neon.lib'}",
                     ],
