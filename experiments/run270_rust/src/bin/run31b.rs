@@ -16,6 +16,8 @@ use run270_rust::tokenizer::Tokenizer;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
 
 struct Gemma4Cfg {
     d: usize,
@@ -85,6 +87,7 @@ fn load_gemma4_cfg(path: &Path) -> Result<Gemma4Cfg, String> {
     })
 }
 
+#[cfg(any(not(target_arch = "aarch64"), test))]
 #[inline]
 fn round_bf16_f32(v: f32) -> f32 {
     let bits = v.to_bits();
@@ -119,6 +122,106 @@ fn load_qat_proj(sf: &SafeTensors, base: &str) -> Result<(QatProj, u64), String>
     let scales = sf.read_raw_bytes(sc_meta)?;
     let nbytes = (packed.len() + scales.len()) as u64;
     Ok((QatProj { d_out, d_in, packed, scales }, nbytes))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn round_bf16_neon(v: float32x4_t) -> float32x4_t {
+    let bits = vreinterpretq_u32_f32(v);
+    let one = vdupq_n_u32(1);
+    let half = vdupq_n_u32(0x7FFF);
+    let mask = vdupq_n_u32(0xFFFF_0000);
+    let lsb = vandq_u32(vshrq_n_u32::<16>(bits), one);
+    let rounded = vandq_u32(vaddq_u32(vaddq_u32(bits, half), lsb), mask);
+    vreinterpretq_f32_u32(rounded)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_qat_group32_dot(gp: &[u8], sc: f32, x: &[f32]) -> f32 {
+    let v = vld1q_u8(gp.as_ptr());
+    let mask = vdupq_n_u8(0x0F);
+    let off = vdupq_n_s8(8);
+    let qlo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(v, mask)), off);
+    let qhi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8::<4>(v)), off);
+    let w0_15 = vzip1q_s8(qlo, qhi);
+    let w16_31 = vzip2q_s8(qlo, qhi);
+    let vsc = vdupq_n_f32(sc);
+
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    for (half_idx, &w16) in [w0_15, w16_31].iter().enumerate() {
+        let base = half_idx * 16;
+        let lo = vmovl_s8(vget_low_s8(w16));
+        let hi = vmovl_s8(vget_high_s8(w16));
+        let f0 = round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))), vsc));
+        let f1 = round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))), vsc));
+        let f2 = round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))), vsc));
+        let f3 = round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))), vsc));
+        acc0 = vfmaq_f32(acc0, f0, vld1q_f32(x.as_ptr().add(base)));
+        acc1 = vfmaq_f32(acc1, f1, vld1q_f32(x.as_ptr().add(base + 4)));
+        acc0 = vfmaq_f32(acc0, f2, vld1q_f32(x.as_ptr().add(base + 8)));
+        acc1 = vfmaq_f32(acc1, f3, vld1q_f32(x.as_ptr().add(base + 12)));
+    }
+    vaddvq_f32(vaddq_f32(acc0, acc1))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_qat_group32_unpack(gp: &[u8], sc: f32, wtile: &mut [f32; 32]) {
+    let v = vld1q_u8(gp.as_ptr());
+    let mask = vdupq_n_u8(0x0F);
+    let off = vdupq_n_s8(8);
+    let qlo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(v, mask)), off);
+    let qhi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8::<4>(v)), off);
+    let w0_15 = vzip1q_s8(qlo, qhi);
+    let w16_31 = vzip2q_s8(qlo, qhi);
+    let vsc = vdupq_n_f32(sc);
+
+    for (half_idx, &w16) in [w0_15, w16_31].iter().enumerate() {
+        let base = half_idx * 16;
+        let lo = vmovl_s8(vget_low_s8(w16));
+        let hi = vmovl_s8(vget_high_s8(w16));
+        vst1q_f32(wtile.as_mut_ptr().add(base), round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo))), vsc)));
+        vst1q_f32(wtile.as_mut_ptr().add(base + 4), round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo))), vsc)));
+        vst1q_f32(wtile.as_mut_ptr().add(base + 8), round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi))), vsc)));
+        vst1q_f32(wtile.as_mut_ptr().add(base + 12), round_bf16_neon(vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi))), vsc)));
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_dot32_f32(wtile: &[f32; 32], x: &[f32]) -> f32 {
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    let w = wtile.as_ptr();
+    let xp = x.as_ptr();
+    acc0 = vfmaq_f32(acc0, vld1q_f32(w), vld1q_f32(xp));
+    acc1 = vfmaq_f32(acc1, vld1q_f32(w.add(4)), vld1q_f32(xp.add(4)));
+    acc0 = vfmaq_f32(acc0, vld1q_f32(w.add(8)), vld1q_f32(xp.add(8)));
+    acc1 = vfmaq_f32(acc1, vld1q_f32(w.add(12)), vld1q_f32(xp.add(12)));
+    acc0 = vfmaq_f32(acc0, vld1q_f32(w.add(16)), vld1q_f32(xp.add(16)));
+    acc1 = vfmaq_f32(acc1, vld1q_f32(w.add(20)), vld1q_f32(xp.add(20)));
+    acc0 = vfmaq_f32(acc0, vld1q_f32(w.add(24)), vld1q_f32(xp.add(24)));
+    acc1 = vfmaq_f32(acc1, vld1q_f32(w.add(28)), vld1q_f32(xp.add(28)));
+    vaddvq_f32(vaddq_f32(acc0, acc1))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_dot32_bf16(row: &[u16], x: &[f32]) -> f32 {
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    for chunk in 0..4 {
+        let base = chunk * 8;
+        let u = vld1q_u16(row.as_ptr().add(base));
+        let lo = vreinterpretq_f32_u32(vshlq_n_u32::<16>(vmovl_u16(vget_low_u16(u))));
+        let hi = vreinterpretq_f32_u32(vshlq_n_u32::<16>(vmovl_u16(vget_high_u16(u))));
+        acc0 = vfmaq_f32(acc0, lo, vld1q_f32(x.as_ptr().add(base)));
+        acc1 = vfmaq_f32(acc1, hi, vld1q_f32(x.as_ptr().add(base + 4)));
+    }
+    vaddvq_f32(vaddq_f32(acc0, acc1))
 }
 
 /// Batched matrix multiply `Y[T, d_out] = W_qat[d_out, d_in] * X[T, d_in]^T`.
@@ -163,9 +266,41 @@ fn qat_project_batch(proj: &QatProj, x_batch: &[f32], seq_len: usize, threads: u
                     acc.fill(0.0);
                     let rp = &packed[r * row_pack_bytes..(r + 1) * row_pack_bytes];
                     let rs = &scales[r * row_scale_bytes..(r + 1) * row_scale_bytes];
+                    if seq_len == 1 {
+                        let mut acc0 = 0f64;
+                        for g in 0..ngroups {
+                            let sc = bf16_to_f32(u16::from_le_bytes([rs[g * 2], rs[g * 2 + 1]]));
+                            let gp = &rp[g * 16..(g + 1) * 16];
+                            let col0 = g * 32;
+                            let xt = &x_batch[col0..col0 + 32];
+                            #[cfg(target_arch = "aarch64")]
+                            let sub = unsafe { neon_qat_group32_dot(gp, sc, xt) };
+                            #[cfg(not(target_arch = "aarch64"))]
+                            let sub = {
+                                let mut s0 = 0f32;
+                                for j in 0..16 {
+                                    let b = gp[j];
+                                    let q0 = ((b & 0x0F) as i32 - 8) as f32;
+                                    let q1 = ((b >> 4) as i32 - 8) as f32;
+                                    s0 += round_bf16_f32(q0 * sc) * xt[2 * j] + round_bf16_f32(q1 * sc) * xt[2 * j + 1];
+                                }
+                                s0
+                            };
+                            acc0 += sub as f64;
+                        }
+                        unsafe {
+                            *out_base.add(r) = acc0 as f32;
+                        }
+                        continue;
+                    }
                     for g in 0..ngroups {
                         let sc = bf16_to_f32(u16::from_le_bytes([rs[g * 2], rs[g * 2 + 1]]));
                         let gp = &rp[g * 16..(g + 1) * 16];
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            neon_qat_group32_unpack(gp, sc, &mut wtile);
+                        }
+                        #[cfg(not(target_arch = "aarch64"))]
                         for j in 0..16 {
                             let b = gp[j];
                             let q0 = ((b & 0x0F) as i32 - 8) as f32;
@@ -176,10 +311,16 @@ fn qat_project_batch(proj: &QatProj, x_batch: &[f32], seq_len: usize, threads: u
                         let col0 = g * 32;
                         for (tok, a_slot) in acc.iter_mut().enumerate() {
                             let xt = &x_batch[tok * d_in + col0..tok * d_in + col0 + 32];
-                            let mut sub = 0f32;
-                            for j in 0..32 {
-                                sub += wtile[j] * xt[j];
-                            }
+                            #[cfg(target_arch = "aarch64")]
+                            let sub = unsafe { neon_dot32_f32(&wtile, xt) };
+                            #[cfg(not(target_arch = "aarch64"))]
+                            let sub = {
+                                let mut s0 = 0f32;
+                                for j in 0..32 {
+                                    s0 += wtile[j] * xt[j];
+                                }
+                                s0
+                            };
                             *a_slot += sub as f64;
                         }
                     }
@@ -254,10 +395,16 @@ fn dot_bf16_rows(slab: &[u16], d: usize, n_rows: usize, x: &[f32], threads: usiz
                     let mut acc = 0f64;
                     let mut off = 0usize;
                     while off + 32 <= d {
-                        let mut sub = 0f32;
-                        for i in 0..32 {
-                            sub += bf16_to_f32(row[off + i]) * x[off + i];
-                        }
+                        #[cfg(target_arch = "aarch64")]
+                        let sub = unsafe { neon_dot32_bf16(&row[off..off + 32], &x[off..off + 32]) };
+                        #[cfg(not(target_arch = "aarch64"))]
+                        let sub = {
+                            let mut s0 = 0f32;
+                            for i in 0..32 {
+                                s0 += bf16_to_f32(row[off + i]) * x[off + i];
+                            }
+                            s0
+                        };
                         acc += sub as f64;
                         off += 32;
                     }
@@ -357,33 +504,6 @@ impl Runtime31B {
         Ok(out)
     }
 
-    fn project_layer_op(
-        &mut self,
-        layer: usize,
-        proj_suffix: &str,
-        x_batch: &[f32],
-        seq_len: usize,
-    ) -> Result<Vec<f32>, String> {
-        if layer < self.pinned.len() {
-            let pl = &self.pinned[layer];
-            let p = match proj_suffix {
-                "self_attn.q_proj" => &pl.q,
-                "self_attn.k_proj" => &pl.k,
-                "self_attn.v_proj" => pl.v.as_ref().ok_or("unexpected v_proj lookup on k_eq_v layer")?,
-                "self_attn.o_proj" => &pl.o,
-                "mlp.gate_proj" => &pl.gate,
-                "mlp.up_proj" => &pl.up,
-                "mlp.down_proj" => &pl.down,
-                other => return Err(format!("unknown proj suffix {other}")),
-            };
-            return qat_project_batch(p, x_batch, seq_len, self.threads);
-        }
-        let full_base = format!("model.language_model.layers.{layer}.{proj_suffix}");
-        let (qp, nbytes) = load_qat_proj(&self.sf, &full_base)?;
-        self.ssd_bytes_read += nbytes;
-        qat_project_batch(&qp, x_batch, seq_len, self.threads)
-    }
-
     fn forward_batch(&mut self, ids: &[u32], start_pos: usize, verbose_layers: bool) -> Result<Vec<f32>, String> {
         let seq_len = ids.len();
         if seq_len == 0 {
@@ -394,114 +514,189 @@ impl Runtime31B {
         let n_heads = self.cfg.n_heads;
         let mut states = self.embed_batch(ids)?;
 
-        for l in 0..self.cfg.n_layers {
-            let tl = std::time::Instant::now();
-            let pfx = format!("model.language_model.layers.{l}");
-            let is_full = self.cfg.layer_full[l];
-            let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
-            let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
-            let theta = if is_full { self.cfg.theta_global } else { self.cfg.theta_local };
-            let partial = if is_full { self.cfg.partial_global } else { self.cfg.partial_local };
-            let rotary_dims = ((hd as f32) * partial) as usize;
-            let sw = if is_full { None } else { Some(self.cfg.window) };
+        let cfg = &self.cfg;
+        let sf = &self.sf;
+        let norms = &self.norms;
+        let scalars = &self.scalars;
+        let pinned = &self.pinned;
+        let kv = &mut self.kv;
+        let threads = self.threads;
+        let mut read_bytes = 0u64;
 
-            let mut inp = Vec::with_capacity(seq_len * d);
-            {
-                let g_in = self.norm(&format!("{pfx}.input_layernorm.weight"))?;
-                for t in 0..seq_len {
-                    inp.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_in), eps));
-                }
+        let get_norm = |key: &str| -> Result<&[f32], String> {
+            norms.get(key).map(|v| v.as_slice()).ok_or_else(|| format!("missing norm {key}"))
+        };
+
+        let mut schedule: Vec<(usize, &'static str)> = Vec::new();
+        for ul in pinned.len()..cfg.n_layers {
+            schedule.push((ul, "self_attn.q_proj"));
+            schedule.push((ul, "self_attn.k_proj"));
+            if !(cfg.layer_full[ul] && cfg.attention_k_eq_v) {
+                schedule.push((ul, "self_attn.v_proj"));
             }
-
-            let mut q_batch = self.project_layer_op(l, "self_attn.q_proj", &inp, seq_len)?;
-            let k_raw = self.project_layer_op(l, "self_attn.k_proj", &inp, seq_len)?;
-            let mut v_batch = if is_full && self.cfg.attention_k_eq_v {
-                k_raw.clone()
-            } else {
-                self.project_layer_op(l, "self_attn.v_proj", &inp, seq_len)?
-            };
-            drop(inp);
-
-            let mut k_batch = k_raw;
-            {
-                let qn = self.norm(&format!("{pfx}.self_attn.q_norm.weight"))?;
-                let kn = self.norm(&format!("{pfx}.self_attn.k_norm.weight"))?;
-                for t in 0..seq_len {
-                    let pos = (start_pos + t) as u32;
-                    let qs = &mut q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                    let qnormed = qk_norm_raw(qs, n_heads, hd, Some(qn), eps);
-                    qs.copy_from_slice(&qnormed);
-                    for h in 0..n_heads {
-                        rope_head(&mut qs[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
-                    }
-
-                    let ks = &mut k_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                    let knormed = qk_norm_raw(ks, n_kv, hd, Some(kn), eps);
-                    ks.copy_from_slice(&knormed);
-                    for h in 0..n_kv {
-                        rope_head(&mut ks[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
-                    }
-
-                    let vs = &mut v_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                    let vnormed = qk_norm_raw(vs, n_kv, hd, None, eps);
-                    vs.copy_from_slice(&vnormed);
-                }
-            }
-
-            let base_t = self.kv[l].k.len() / (n_kv * hd);
-            self.kv[l].k.extend_from_slice(&k_batch);
-            self.kv[l].v.extend_from_slice(&v_batch);
-            let mut ctx_batch = Vec::with_capacity(seq_len * n_heads * hd);
-            for t in 0..seq_len {
-                let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                let c_t = attn_decode(q_t, &self.kv[l].k, &self.kv[l].v, base_t + t, start_pos + t, n_heads, n_kv, hd, sw);
-                ctx_batch.extend_from_slice(&c_t);
-            }
-            drop(q_batch);
-            drop(k_batch);
-            drop(v_batch);
-
-            let attn_o = self.project_layer_op(l, "self_attn.o_proj", &ctx_batch, seq_len)?;
-            drop(ctx_batch);
-            {
-                let g_pa = self.norm(&format!("{pfx}.post_attention_layernorm.weight"))?;
-                for t in 0..seq_len {
-                    let norm_a = rmsn_raw(&attn_o[t * d..(t + 1) * d], Some(g_pa), eps);
-                    for i in 0..d {
-                        states[t * d + i] += norm_a[i];
-                    }
-                }
-            }
-            drop(attn_o);
-
-            let mut inp2 = Vec::with_capacity(seq_len * d);
-            {
-                let g_pf = self.norm(&format!("{pfx}.pre_feedforward_layernorm.weight"))?;
-                for t in 0..seq_len {
-                    inp2.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_pf), eps));
-                }
-            }
-            let gate = self.project_layer_op(l, "mlp.gate_proj", &inp2, seq_len)?;
-            let up = self.project_layer_op(l, "mlp.up_proj", &inp2, seq_len)?;
-            drop(inp2);
-            let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_scalar(a) * b).collect();
-            drop(gate);
-            drop(up);
-            let down = self.project_layer_op(l, "mlp.down_proj", &act, seq_len)?;
-            drop(act);
-
-            let g_pff = self.norm(&format!("{pfx}.post_feedforward_layernorm.weight"))?;
-            let ls = self.scalars[l];
-            for t in 0..seq_len {
-                let norm_d = rmsn_raw(&down[t * d..(t + 1) * d], Some(g_pff), eps);
-                for i in 0..d {
-                    states[t * d + i] = (states[t * d + i] + norm_d[i]) * ls;
-                }
-            }
-            if verbose_layers && (l == 0 || l == 5 || l % 15 == 14 || l + 1 == self.cfg.n_layers) {
-                eprintln!("[run31b] layer {l:02}/{} done in {:.2}s (pinned={})", self.cfg.n_layers, tl.elapsed().as_secs_f64(), l < self.pinned.len());
-            }
+            schedule.push((ul, "self_attn.o_proj"));
+            schedule.push((ul, "mlp.gate_proj"));
+            schedule.push((ul, "mlp.up_proj"));
+            schedule.push((ul, "mlp.down_proj"));
         }
+
+        std::thread::scope(|io_scope| -> Result<(), String> {
+            let mut sched_idx = 0usize;
+            let mut pending: Option<std::thread::ScopedJoinHandle<'_, Result<(QatProj, u64), String>>> =
+                if !schedule.is_empty() {
+                    let (nl, nsuf) = schedule[0];
+                    Some(io_scope.spawn(move || {
+                        load_qat_proj(sf, &format!("model.language_model.layers.{nl}.{nsuf}"))
+                    }))
+                } else {
+                    None
+                };
+
+            let mut run_proj = |layer: usize, proj_suffix: &'static str, x_batch: &[f32]| -> Result<Vec<f32>, String> {
+                if layer < pinned.len() {
+                    let pl = &pinned[layer];
+                    let p = match proj_suffix {
+                        "self_attn.q_proj" => &pl.q,
+                        "self_attn.k_proj" => &pl.k,
+                        "self_attn.v_proj" => pl.v.as_ref().ok_or("unexpected v_proj lookup on k_eq_v layer")?,
+                        "self_attn.o_proj" => &pl.o,
+                        "mlp.gate_proj" => &pl.gate,
+                        "mlp.up_proj" => &pl.up,
+                        "mlp.down_proj" => &pl.down,
+                        other => return Err(format!("unknown proj suffix {other}")),
+                    };
+                    return qat_project_batch(p, x_batch, seq_len, threads);
+                }
+
+                if sched_idx >= schedule.len() || schedule[sched_idx] != (layer, proj_suffix) {
+                    return Err(format!("prefetch schedule mismatch at layer {layer} {proj_suffix}"));
+                }
+                let (qp, nbytes) = match pending.take() {
+                    Some(h) => h.join().map_err(|_| "prefetch worker panicked".to_string())??,
+                    None => load_qat_proj(sf, &format!("model.language_model.layers.{layer}.{proj_suffix}"))?,
+                };
+                read_bytes += nbytes;
+                sched_idx += 1;
+                if sched_idx < schedule.len() {
+                    let (nl, nsuf) = schedule[sched_idx];
+                    pending = Some(io_scope.spawn(move || {
+                        load_qat_proj(sf, &format!("model.language_model.layers.{nl}.{nsuf}"))
+                    }));
+                }
+                qat_project_batch(&qp, x_batch, seq_len, threads)
+            };
+
+            for l in 0..cfg.n_layers {
+                let tl = std::time::Instant::now();
+                let pfx = format!("model.language_model.layers.{l}");
+                let is_full = cfg.layer_full[l];
+                let hd = if is_full { cfg.global_hd } else { cfg.hd };
+                let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
+                let theta = if is_full { cfg.theta_global } else { cfg.theta_local };
+                let partial = if is_full { cfg.partial_global } else { cfg.partial_local };
+                let rotary_dims = ((hd as f32) * partial) as usize;
+                let sw = if is_full { None } else { Some(cfg.window) };
+
+                let mut inp = Vec::with_capacity(seq_len * d);
+                {
+                    let g_in = get_norm(&format!("{pfx}.input_layernorm.weight"))?;
+                    for t in 0..seq_len {
+                        inp.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_in), eps));
+                    }
+                }
+
+                let mut q_batch = run_proj(l, "self_attn.q_proj", &inp)?;
+                let k_raw = run_proj(l, "self_attn.k_proj", &inp)?;
+                let mut v_batch = if is_full && cfg.attention_k_eq_v {
+                    k_raw.clone()
+                } else {
+                    run_proj(l, "self_attn.v_proj", &inp)?
+                };
+                drop(inp);
+
+                let mut k_batch = k_raw;
+                {
+                    let qn = get_norm(&format!("{pfx}.self_attn.q_norm.weight"))?;
+                    let kn = get_norm(&format!("{pfx}.self_attn.k_norm.weight"))?;
+                    for t in 0..seq_len {
+                        let pos = (start_pos + t) as u32;
+                        let qs = &mut q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
+                        let qnormed = qk_norm_raw(qs, n_heads, hd, Some(qn), eps);
+                        qs.copy_from_slice(&qnormed);
+                        for h in 0..n_heads {
+                            rope_head(&mut qs[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
+                        }
+
+                        let ks = &mut k_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
+                        let knormed = qk_norm_raw(ks, n_kv, hd, Some(kn), eps);
+                        ks.copy_from_slice(&knormed);
+                        for h in 0..n_kv {
+                            rope_head(&mut ks[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
+                        }
+
+                        let vs = &mut v_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
+                        let vnormed = qk_norm_raw(vs, n_kv, hd, None, eps);
+                        vs.copy_from_slice(&vnormed);
+                    }
+                }
+
+                let base_t = kv[l].k.len() / (n_kv * hd);
+                kv[l].k.extend_from_slice(&k_batch);
+                kv[l].v.extend_from_slice(&v_batch);
+                let mut ctx_batch = Vec::with_capacity(seq_len * n_heads * hd);
+                for t in 0..seq_len {
+                    let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
+                    let c_t = attn_decode(q_t, &kv[l].k, &kv[l].v, base_t + t, start_pos + t, n_heads, n_kv, hd, sw);
+                    ctx_batch.extend_from_slice(&c_t);
+                }
+                drop(q_batch);
+                drop(k_batch);
+                drop(v_batch);
+
+                let attn_o = run_proj(l, "self_attn.o_proj", &ctx_batch)?;
+                drop(ctx_batch);
+                {
+                    let g_pa = get_norm(&format!("{pfx}.post_attention_layernorm.weight"))?;
+                    for t in 0..seq_len {
+                        let norm_a = rmsn_raw(&attn_o[t * d..(t + 1) * d], Some(g_pa), eps);
+                        for i in 0..d {
+                            states[t * d + i] += norm_a[i];
+                        }
+                    }
+                }
+                drop(attn_o);
+
+                let mut inp2 = Vec::with_capacity(seq_len * d);
+                {
+                    let g_pf = get_norm(&format!("{pfx}.pre_feedforward_layernorm.weight"))?;
+                    for t in 0..seq_len {
+                        inp2.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_pf), eps));
+                    }
+                }
+                let gate = run_proj(l, "mlp.gate_proj", &inp2)?;
+                let up = run_proj(l, "mlp.up_proj", &inp2)?;
+                drop(inp2);
+                let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_scalar(a) * b).collect();
+                drop(gate);
+                drop(up);
+                let down = run_proj(l, "mlp.down_proj", &act)?;
+                drop(act);
+
+                let g_pff = get_norm(&format!("{pfx}.post_feedforward_layernorm.weight"))?;
+                let ls = scalars[l];
+                for t in 0..seq_len {
+                    let norm_d = rmsn_raw(&down[t * d..(t + 1) * d], Some(g_pff), eps);
+                    for i in 0..d {
+                        states[t * d + i] = (states[t * d + i] + norm_d[i]) * ls;
+                    }
+                }
+                if verbose_layers && (l == 0 || l == 5 || l % 15 == 14 || l + 1 == cfg.n_layers) {
+                    eprintln!("[run31b] layer {l:02}/{} done in {:.2}s (pinned={})", cfg.n_layers, tl.elapsed().as_secs_f64(), l < pinned.len());
+                }
+            }
+            Ok(())
+        })?;
+        self.ssd_bytes_read += read_bytes;
 
         let last_state = &states[(seq_len - 1) * d..seq_len * d];
         let fn_gain = self.norm("model.language_model.norm.weight")?;
@@ -800,14 +995,17 @@ mod tests {
             *slot = ((i as f32 * 0.17).sin() - 0.25) * 1.4;
         }
         let qp = QatProj { d_out, d_in, packed, scales };
-        let got = qat_project_batch(&qp, &x, seq, 2).unwrap();
-        for t in 0..seq {
-            for r in 0..d_out {
-                let mut want = 0f64;
-                for c in 0..d_in {
-                    want += dense[r * d_in + c] as f64 * x[t * d_in + c] as f64;
+        for check_seq in [1usize, seq] {
+            let x_sub = &x[..check_seq * d_in];
+            let got = qat_project_batch(&qp, x_sub, check_seq, 2).unwrap();
+            for t in 0..check_seq {
+                for r in 0..d_out {
+                    let mut want = 0f64;
+                    for c in 0..d_in {
+                        want += dense[r * d_in + c] as f64 * x_sub[t * d_in + c] as f64;
+                    }
+                    assert!((got[t * d_out + r] as f64 - want).abs() < 1e-4);
                 }
-                assert!((got[t * d_out + r] as f64 - want).abs() < 1e-4);
             }
         }
     }

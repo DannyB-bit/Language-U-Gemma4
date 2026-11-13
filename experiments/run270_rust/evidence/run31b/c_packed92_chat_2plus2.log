@@ -1,0 +1,20 @@
+[langut-infer] loading artifacts (Rust native, NEON kernel via FFI)...
+[langut-infer] stream mmap'd at 0x400000000 (10524917776 bytes) | 410 projections | kernel OK
+[STEP 0] next token id=236778 decoded="2"
+  [gen forward] 58.4s
+[STEP 1] next token id=900 decoded=" +"
+  [gen forward] 56.6s
+[STEP 2] next token id=236743 decoded=" "
+  [gen forward] 56.8s
+[STEP 3] next token id=236778 decoded="2"
+  [gen forward] 60.7s
+[STEP 4] next token id=578 decoded=" ="
+  [gen forward] 61.4s
+[STEP 5] next token id=236743 decoded=" "
+  [gen forward] 59.0s
+[STEP 6] next token id=236812 decoded="4"
+  [gen forward] 58.2s
+[STEP 7] next token id=106 decoded="<turn|>"
+Generated ids:     [236778, 900, 236743, 236778, 578, 236743, 236812, 106]
+Generated text:    "2 + 2 = 4<turn|>"
+Prefill: 426.85s | Decode: 573.73s (8 tokens)

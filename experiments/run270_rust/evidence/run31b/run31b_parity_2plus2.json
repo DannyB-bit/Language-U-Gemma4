@@ -1,0 +1,29 @@
+{
+  "prompt": "What is 2 + 2? Answer with only the number.",
+  "reference_mode": "stream --pin-layers 0 (BF16 exact)",
+  "candidate_mode": "q8 --pin-layers 10",
+  "vocab_size": 262144,
+  "cosine": 0.9999949932098389,
+  "rel_l2": 0.003402160247787833,
+  "max_abs": 0.09994029998779297,
+  "top1_ref": 236812,
+  "top1_cand": 236812,
+  "top1_match": true,
+  "top5_ref": [
+    236812,
+    236819,
+    236832,
+    236825,
+    236810
+  ],
+  "top5_cand": [
+    236812,
+    236819,
+    236832,
+    236825,
+    236810
+  ],
+  "top5_exact_match": true,
+  "pass_rel_l2_lt_0_01": true,
+  "pass_cos_gt_0_999": true
+}

@@ -1,0 +1,100 @@
+{
+  "host": {
+    "platform": "win32",
+    "machine": "AMD64",
+    "cpu_count": 4,
+    "native_library": "C:\\Users\\freed\\.gemini\\antigravity\\brain\\e7e01712-e5c4-460f-add5-fd14987d6065\\scratch\\reconcile_worktree\\neon_runner\\neon_stream_accelerator.dll",
+    "native_library_bytes": 63488
+  },
+  "source_slice": {
+    "model": "google/gemma-4-31B-it-qat-w4a16-ct",
+    "tensor": "model.language_model.layers.0.self_attn.q_proj",
+    "rows": 128,
+    "cols": 5376,
+    "weights_per_glyph": 256,
+    "total_weights": 688128,
+    "total_glyphs": 2688,
+    "bf16_equivalent_bytes": 1376256,
+    "mean_tokens_per_glyph": 20.399554,
+    "exact_5glyph_multiple_count": 2685,
+    "exact_5glyph_tokens": 54774,
+    "total_tokens_across_2688_glyphs": 54834
+  },
+  "luj1_canonical_5glyph_roundtrip": {
+    "qat_exact": {
+      "bytes": 1269,
+      "source_fp32_bit_exact": true,
+      "tokens_recovered": 102,
+      "mean_tokens_per_glyph": 20.4,
+      "dag_result": 84
+    },
+    "opt5_approximate": {
+      "bytes": 729,
+      "source_fp32_bit_exact": false,
+      "tokens_recovered": 102,
+      "mean_tokens_per_glyph": 20.4,
+      "dag_result": 84
+    },
+    "opt5_repair_fp16": {
+      "bytes": 2520,
+      "source_fp32_bit_exact": true,
+      "tokens_recovered": 102,
+      "mean_tokens_per_glyph": 20.4,
+      "dag_result": 84
+    }
+  },
+  "shrinkage_summary_2688_glyphs": {
+    "bf16_bytes": 1376256,
+    "opt5_36b_bytes": 96768,
+    "opt5_shrink_vs_bf16": 14.22,
+    "opt5_cosine": 0.801582,
+    "opt4_packed_92b_bytes": 247296,
+    "opt4_packed_shrink_vs_bf16": 5.57,
+    "opt4_132b_bytes": 354816,
+    "opt4_cosine": 0.9356,
+    "qat4_bytes": 387072,
+    "qat4_shrink_vs_bf16": 3.56,
+    "token_payload_bytes": 124182,
+    "token_count_packed": 54834
+  },
+  "parity_checks": {
+    "opt5_native_vs_decoded_max_abs_err": 9.5367431640625e-07,
+    "opt4_132b_native_vs_decoded_max_abs_err": 1.0132789611816406e-06,
+    "opt4_92b_vs_132b_decode_max_abs_err": 0.0,
+    "opt4_92b_native_vs_decoded_max_abs_err": 1.3113021850585938e-06,
+    "qat4_msvc_dll_vs_numpy_max_abs_err": 1.6689300537109375e-06
+  },
+  "windows_native_throughput": {
+    "opt5_36b_avx2_gemv": {
+      "ms_per_pass": 0.24753,
+      "glyphs_per_sec": 10859289.8,
+      "m_weights_per_sec": 2779.98,
+      "m_equiv_tokens_per_sec_at_20_4": 221.52
+    },
+    "opt5_joint_plus_token_unpack": {
+      "ms_per_pass": 1.21704,
+      "glyphs_per_sec": 2208637.3,
+      "m_weights_per_sec": 565.41,
+      "m_equiv_tokens_per_sec_at_20_4": 45.06
+    },
+    "opt4_packed_92b_avx2_gemv": {
+      "ms_per_pass": 1.6081,
+      "glyphs_per_sec": 1671537.8,
+      "m_weights_per_sec": 427.91,
+      "m_equiv_tokens_per_sec_at_20_4": 34.1
+    },
+    "opt4_132b_fwht8_avx2_gemv": {
+      "ms_per_pass": 0.2872,
+      "glyphs_per_sec": 9359331.5,
+      "m_weights_per_sec": 2395.99,
+      "m_equiv_tokens_per_sec_at_20_4": 190.93
+    },
+    "qat4_msvc_openmp_dll_gemv": {
+      "ms_per_pass": 1.69232,
+      "glyphs_per_sec": 1588352.1,
+      "m_weights_per_sec": 406.62,
+      "m_equiv_tokens_per_sec_at_20_4": 32.4
+    },
+    "luj1_5glyph_python_full_verify_ms": 2.35853
+  }
+}

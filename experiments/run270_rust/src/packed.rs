@@ -5,6 +5,8 @@
 //! on the stack during dot-product accumulation.
 
 use crate::codec::{fp16_to_f32, fp32_to_fp16};
+#[cfg(target_arch = "aarch64")]
+use std::arch::aarch64::*;
 
 /// Normalized 8x8 Sylvester-Hadamard orthogonal transform (`H8^T = H8`, `H8 * H8 = I8`).
 #[inline]
@@ -306,6 +308,58 @@ fn dot_2means_256(block: &[u8], x: &[f32]) -> f64 {
     bias * sum_x + scale * signed_x
 }
 
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_dot_q4_g32(pbytes: &[u8], x: &[f32]) -> f32 {
+    let v = vld1q_u8(pbytes.as_ptr());
+    let mask = vdupq_n_u8(0x0F);
+    let off = vdupq_n_s8(7);
+    let qlo = vsubq_s8(vreinterpretq_s8_u8(vandq_u8(v, mask)), off);
+    let qhi = vsubq_s8(vreinterpretq_s8_u8(vshrq_n_u8::<4>(v)), off);
+    let w0_15 = vzip1q_s8(qlo, qhi);
+    let w16_31 = vzip2q_s8(qlo, qhi);
+
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    for (half_idx, &w16) in [w0_15, w16_31].iter().enumerate() {
+        let base = half_idx * 16;
+        let lo = vmovl_s8(vget_low_s8(w16));
+        let hi = vmovl_s8(vget_high_s8(w16));
+        let q0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo)));
+        let q1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo)));
+        let q2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi)));
+        let q3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi)));
+        acc0 = vfmaq_f32(acc0, q0, vld1q_f32(x.as_ptr().add(base)));
+        acc1 = vfmaq_f32(acc1, q1, vld1q_f32(x.as_ptr().add(base + 4)));
+        acc0 = vfmaq_f32(acc0, q2, vld1q_f32(x.as_ptr().add(base + 8)));
+        acc1 = vfmaq_f32(acc1, q3, vld1q_f32(x.as_ptr().add(base + 12)));
+    }
+    vaddvq_f32(vaddq_f32(acc0, acc1))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn neon_dot_q8_g32(pbytes: &[u8], x: &[f32]) -> f32 {
+    let bias = vdupq_n_s16(127);
+    let mut acc0 = vdupq_n_f32(0.0);
+    let mut acc1 = vdupq_n_f32(0.0);
+    for chunk in 0..2 {
+        let v = vld1q_u8(pbytes.as_ptr().add(chunk * 16));
+        let lo16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(v))), bias);
+        let hi16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(v))), bias);
+        let base = chunk * 16;
+        let q0 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo16)));
+        let q1 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo16)));
+        let q2 = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi16)));
+        let q3 = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi16)));
+        acc0 = vfmaq_f32(acc0, q0, vld1q_f32(x.as_ptr().add(base)));
+        acc1 = vfmaq_f32(acc1, q1, vld1q_f32(x.as_ptr().add(base + 4)));
+        acc0 = vfmaq_f32(acc0, q2, vld1q_f32(x.as_ptr().add(base + 8)));
+        acc1 = vfmaq_f32(acc1, q3, vld1q_f32(x.as_ptr().add(base + 12)));
+    }
+    vaddvq_f32(vaddq_f32(acc0, acc1))
+}
+
 #[inline]
 fn dot_group32(block: &[u8], x: &[f32], scheme: QuantScheme) -> f64 {
     let (delta, pbytes) = if scheme.scale_is_f32() {
@@ -320,43 +374,63 @@ fn dot_group32(block: &[u8], x: &[f32], scheme: QuantScheme) -> f64 {
     let n = x.len().min(32);
 
     if bits == 4 {
-        let mut sub = 0f32;
-        if n == 32 {
-            for pair in 0..16 {
-                let b = pbytes[pair];
-                let q0 = ((b & 0x0F) as i32 - 7) as f32;
-                let q1 = ((b >> 4) as i32 - 7) as f32;
-                sub += q0 * x[pair * 2] + q1 * x[pair * 2 + 1];
+        let sub = if n == 32 {
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                neon_dot_q4_g32(pbytes, x)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let mut acc = 0f32;
+                for pair in 0..16 {
+                    let b = pbytes[pair];
+                    let q0 = ((b & 0x0F) as i32 - 7) as f32;
+                    let q1 = ((b >> 4) as i32 - 7) as f32;
+                    acc += q0 * x[pair * 2] + q1 * x[pair * 2 + 1];
+                }
+                acc
             }
         } else {
+            let mut acc = 0f32;
             for pair in 0..16 {
                 let b = pbytes[pair];
                 let j0 = pair * 2;
                 if j0 < n {
-                    sub += ((b & 0x0F) as i32 - 7) as f32 * x[j0];
+                    acc += ((b & 0x0F) as i32 - 7) as f32 * x[j0];
                 }
                 let j1 = j0 + 1;
                 if j1 < n {
-                    sub += ((b >> 4) as i32 - 7) as f32 * x[j1];
+                    acc += ((b >> 4) as i32 - 7) as f32 * x[j1];
                 }
             }
-        }
+            acc
+        };
         return delta * (sub as f64);
     }
 
     if bits == 8 {
-        let mut sub = 0f32;
-        if n == 32 {
-            for j in 0..32 {
-                let q = (pbytes[j] as i32 - 127) as f32;
-                sub += q * x[j];
+        let sub = if n == 32 {
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                neon_dot_q8_g32(pbytes, x)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let mut acc = 0f32;
+                for j in 0..32 {
+                    let q = (pbytes[j] as i32 - 127) as f32;
+                    acc += q * x[j];
+                }
+                acc
             }
         } else {
+            let mut acc = 0f32;
             for j in 0..n {
                 let q = (pbytes[j] as i32 - 127) as f32;
-                sub += q * x[j];
+                acc += q * x[j];
             }
-        }
+            acc
+        };
         return delta * (sub as f64);
     }
 

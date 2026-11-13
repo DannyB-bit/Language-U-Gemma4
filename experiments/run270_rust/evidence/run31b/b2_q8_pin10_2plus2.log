@@ -1,0 +1,15 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
+[run31b] loaded in 42.09s pinned_layers=10/60 pinned_bytes=2730312704 embed_bytes=1497366528 vm=(Some(4238360), Some(4132416))
+[run31b] prompt 27 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 25685, 607, 1186, 506, 1548, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 6.37s (pinned=true)
+[run31b] layer 05/60 done in 7.54s (pinned=true)
+[run31b] layer 14/60 done in 6.12s (pinned=false)
+[run31b] layer 29/60 done in 6.79s (pinned=false)
+[run31b] layer 44/60 done in 5.41s (pinned=false)
+[run31b] layer 59/60 done in 6.46s (pinned=false)
+[run31b] prefill done in 368.80s ssd_read_mb=13748.8 vm=(Some(4609548), Some(4496652))
+PREFILL_TOP5 [236812:"4"(26.483), 236819:"9"(14.978), 236832:"7"(14.246), 236825:"6"(14.170), 236810:"5"(13.837)]
+[STEP 0] id=236812 text="4"
+GEN31B ids=[236812]
+GEN31B text="4"
+MEM31B pinned_bytes=2730312704 embed_bytes=1497366528 ssd_read_bytes=13748797440 prefill_s=368.80 decode_s=0.00 vm_hwm_kb=Some(4609548) vm_rss_kb=Some(4496652)

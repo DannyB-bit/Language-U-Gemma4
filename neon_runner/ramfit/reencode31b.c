@@ -19,6 +19,7 @@
  *        reencode31b verify <orig_stream> <orig_layout> <new_stream> <new_layout> [max_proj]
  */
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>

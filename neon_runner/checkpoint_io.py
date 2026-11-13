@@ -11,9 +11,12 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 
 import numpy as np
+
+from .build_native import build_c_shared_library
 
 
 def bf16_to_float32(values):
@@ -197,25 +200,33 @@ class NativeQATInt4Projections(QATInt4Projections):
     """
     def __init__(self, path, threads=4, library=None):
         super().__init__(path)
-        if threads <= 0:
-            raise ValueError("Invalid reference thread count")
-        source = Path(__file__).with_name("qat_reference.c")
-        selected = library or os.environ.get("LANGU_QAT_SO")
-        if selected is None:
-            key = hashlib.sha256(source.read_bytes()).hexdigest()[:20]
-            directory = Path(tempfile.gettempdir())/("language-u-qat-"+key)
-            directory.mkdir(exist_ok=True)
-            selected = directory/"reference.so"
-            if not selected.exists():
-                temporary = directory/(f"reference-{os.getpid()}.so")
-                subprocess.run([os.environ.get("CC", "cc"), "-O3", "-std=c11", "-shared", "-fPIC", "-fopenmp",
-                                str(source), "-o", str(temporary)], check=True, capture_output=True)
-                temporary.replace(selected)
-        self.library = ctypes.CDLL(str(selected))
-        self.function = self.library.qat_group32_project
-        self.function.argtypes = [ctypes.c_void_p]*4+[ctypes.c_int]*4
-        self.function.restype = ctypes.c_int
-        self.threads = threads
+        try:
+            if threads <= 0:
+                raise ValueError("Invalid reference thread count")
+            source = Path(__file__).with_name("qat_reference.c")
+            selected = library or os.environ.get("LANGU_QAT_SO")
+            if selected is None:
+                key = hashlib.sha256(source.read_bytes()).hexdigest()[:20]
+                directory = Path(tempfile.gettempdir())/("language-u-qat-"+key)
+                directory.mkdir(exist_ok=True)
+                ext = ".dll" if sys.platform == "win32" else ".so"
+                selected = directory/("reference"+ext)
+                if not selected.exists():
+                    temporary = directory/(f"reference-{os.getpid()}{ext}")
+                    if sys.platform == "win32":
+                        build_c_shared_library(source, temporary, use_avx2=False)
+                    else:
+                        subprocess.run([os.environ.get("CC", "cc"), "-O3", "-std=c11", "-shared", "-fPIC", "-fopenmp",
+                                        str(source), "-o", str(temporary)], check=True, capture_output=True)
+                    temporary.replace(selected)
+            self.library = ctypes.CDLL(str(selected))
+            self.function = self.library.qat_group32_project
+            self.function.argtypes = [ctypes.c_void_p]*4+[ctypes.c_int]*4
+            self.function.restype = ctypes.c_int
+            self.threads = threads
+        except Exception:
+            self.close()
+            raise
 
     def project(self, metadata, inputs):
         # The independent row decoder performs the shape/dtype checks first.

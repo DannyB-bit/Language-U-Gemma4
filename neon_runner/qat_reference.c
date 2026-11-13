@@ -8,6 +8,10 @@
 #include <string.h>
 #include <limits.h>
 
+#if defined(_WIN32) && defined(NEON_MSVC_FREESTANDING_DLL)
+int _fltused = 0;
+#endif
+
 static float from_bf16(uint16_t bits) {
     uint32_t word = (uint32_t)bits << 16;
     float value;
@@ -23,6 +27,9 @@ static float rounded_bf16(float value) {
     return value;
 }
 
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
 int qat_group32_project(const uint8_t *packed, const uint8_t *scales,
                         const float *inputs, float *output,
                         int rows, int columns, int count, int threads) {
@@ -53,7 +60,7 @@ int qat_group32_project(const uint8_t *packed, const uint8_t *scales,
             for (token = 0; token < count; token++) {
                 const float *x = inputs + (size_t)token * (size_t)columns + (size_t)group * 32;
                 float part = 0;
-#ifdef _OPENMP
+#if defined(_OPENMP) && _OPENMP >= 201307
 #pragma omp simd reduction(+:part)
 #endif
                 for (j = 0; j < 32; j++) part += weights[j] * x[j];

@@ -1,0 +1,31 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
+[run31b] loaded in 35.92s pinned_layers=10/60 pinned_bytes=2730312704 embed_bytes=1497366528 vm=(Some(4238240), Some(4132416))
+[run31b] prompt 19 tokens ids=[2, 105, 2364, 107, 15938, 7971, 506, 1441, 124600, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 4.39s (pinned=true)
+[run31b] layer 05/60 done in 5.24s (pinned=true)
+[run31b] layer 14/60 done in 4.25s (pinned=false)
+[run31b] layer 29/60 done in 6.47s (pinned=false)
+[run31b] layer 44/60 done in 4.95s (pinned=false)
+[run31b] layer 59/60 done in 6.35s (pinned=false)
+[run31b] prefill done in 290.12s ssd_read_mb=13748.8 vm=(Some(4609344), Some(4496652))
+PREFILL_TOP5 [34848:"William"(28.013), 818:"The"(21.836), 1018:"**"(21.649), 8966:" William"(19.445), 246061:"윌"(17.434)]
+[STEP 0] id=34848 text="William"
+[run31b] decode step 0 in 53.45s vm=(Some(4712780), Some(4609548))
+[STEP 1] id=36951 text=" Shakespeare"
+[run31b] decode step 1 in 54.19s vm=(Some(4712780), Some(4617612))
+[STEP 2] id=7971 text=" wrote"
+[run31b] decode step 2 in 53.37s vm=(Some(4725968), Some(4617612))
+[STEP 3] id=506 text=" the"
+[run31b] decode step 3 in 54.18s vm=(Some(4725968), Some(4617612))
+[STEP 4] id=1441 text=" play"
+[run31b] decode step 4 in 53.86s vm=(Some(4725968), Some(4617612))
+[STEP 5] id=808 text=" *"
+[run31b] decode step 5 in 54.38s vm=(Some(4725968), Some(4617612))
+[STEP 6] id=201313 text="Hamlet"
+[run31b] decode step 6 in 53.44s vm=(Some(4725968), Some(4617612))
+[STEP 7] id=22429 text="*."
+[run31b] decode step 7 in 55.02s vm=(Some(4725968), Some(4617612))
+[STEP 8] id=106 text="<turn|>"
+GEN31B ids=[34848, 36951, 7971, 506, 1441, 808, 201313, 22429, 106]
+GEN31B text="William Shakespeare wrote the play *Hamlet*.<turn|>"
+MEM31B pinned_bytes=2730312704 embed_bytes=1497366528 ssd_read_bytes=123739176960 prefill_s=290.12 decode_s=431.90 vm_hwm_kb=Some(4725968) vm_rss_kb=Some(4617612)

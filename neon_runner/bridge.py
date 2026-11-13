@@ -301,20 +301,25 @@ class NeonStreamAccelerator:
         neon_env = os.environ.get("NEON_RUNNER_DIR")
         so_env = os.environ.get("LANGU_GEMV_SO")
 
+        lib_names = (
+            ["neon_stream_accelerator.dll"]
+            if sys.platform == "win32"
+            else (
+                ["libneon_stream_accelerator.dylib", "libneon_stream_accelerator.so"]
+                if sys.platform == "darwin"
+                else ["libneon_stream_accelerator.so"]
+            )
+        )
         candidates: List[Path] = []
         if so_env:
             candidates.append(Path(so_env))
         if neon_env:
-            candidates.extend([
-                Path(neon_env) / "libneon_stream_accelerator.so",
-                Path(neon_env) / "neon_stream_accelerator.dll",
-            ])
-        candidates.extend([
-            here / "neon_stream_accelerator.dll",
-            here / "libneon_stream_accelerator.so",
-            here / "libneon_stream_accelerator.dylib",
-            Path("/home/astronautshe/libneon_stream_accelerator.so"),
-        ])
+            for lname in lib_names:
+                candidates.append(Path(neon_env) / lname)
+        for lname in lib_names:
+            candidates.append(here / lname)
+        if sys.platform != "win32":
+            candidates.append(Path("/home/astronautshe/libneon_stream_accelerator.so"))
 
         for cand in candidates:
             if cand.is_file():
