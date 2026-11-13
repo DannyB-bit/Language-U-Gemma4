@@ -12,12 +12,39 @@ pub fn rmsn_gemma(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
     x.iter().zip(w.iter()).map(|(&a, &b)| (a / rms) * (1.0 + b)).collect()
 }
 
+#[inline]
+pub fn rmsn_raw(x: &[f32], w: Option<&[f32]>, eps: f32) -> Vec<f32> {
+    let n = x.len();
+    let mut s = 0f64;
+    for &v in x {
+        s += (v as f64) * (v as f64);
+    }
+    let inv_rms = 1.0f32 / ((s / n as f64) + eps as f64).sqrt() as f32;
+    match w {
+        Some(gain) => {
+            debug_assert_eq!(x.len(), gain.len());
+            x.iter().zip(gain.iter()).map(|(&a, &b)| a * inv_rms * b).collect()
+        }
+        None => x.iter().map(|&a| a * inv_rms).collect(),
+    }
+}
+
 pub fn qk_norm_gemma(x: &[f32], n_heads: usize, head_dim: usize, w: &[f32], eps: f32) -> Vec<f32> {
     let mut out = vec![0f32; x.len()];
     for h in 0..n_heads {
         let s = &x[h * head_dim..(h + 1) * head_dim];
         let o = &mut out[h * head_dim..(h + 1) * head_dim];
         o.copy_from_slice(&rmsn_gemma(s, w, eps));
+    }
+    out
+}
+
+pub fn qk_norm_raw(x: &[f32], n_heads: usize, head_dim: usize, w: Option<&[f32]>, eps: f32) -> Vec<f32> {
+    let mut out = vec![0f32; x.len()];
+    for h in 0..n_heads {
+        let s = &x[h * head_dim..(h + 1) * head_dim];
+        let o = &mut out[h * head_dim..(h + 1) * head_dim];
+        o.copy_from_slice(&rmsn_raw(s, w, eps));
     }
     out
 }
@@ -228,6 +255,12 @@ mod tests {
         let rms = (12.5f32).sqrt();
         assert!((out[0] - (3.0 / rms) * 1.5).abs() < 1e-6);
         assert!((out[1] - (4.0 / rms) * 0.5).abs() < 1e-6);
+
+        let raw = rmsn_raw(&[3.0, 4.0], Some(&[0.5, -0.5]), 0.0);
+        assert!((raw[0] - (3.0 / rms) * 0.5).abs() < 1e-6);
+        assert!((raw[1] - (4.0 / rms) * -0.5).abs() < 1e-6);
+        let nogain = rmsn_raw(&[3.0, 4.0], None, 0.0);
+        assert!((nogain[0] - (3.0 / rms)).abs() < 1e-6);
     }
 
     #[test]

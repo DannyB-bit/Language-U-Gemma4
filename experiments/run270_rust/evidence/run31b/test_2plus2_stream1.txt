@@ -1,0 +1,5 @@
+PREFILL_TOP5 [236812:"4"(26.483), 236819:"9"(14.989), 236832:"7"(14.259), 236825:"6"(14.164), 236810:"5"(13.849)]
+[STEP 0] id=236812 text="4"
+GEN31B ids=[236812]
+GEN31B text="4"
+MEM31B pinned_bytes=5325824 embed_bytes=0 ssd_read_bytes=19292646912 prefill_s=511.13 decode_s=0.00 vm_hwm_kb=Some(344600) vm_rss_kb=Some(258784)

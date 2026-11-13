@@ -1,0 +1,13 @@
+PREFILL_TOP5 [34848:"William"(28.013), 818:"The"(21.836), 1018:"**"(21.649), 8966:" William"(19.445), 246061:"윌"(17.434)]
+[STEP 0] id=34848 text="William"
+[STEP 1] id=36951 text=" Shakespeare"
+[STEP 2] id=7971 text=" wrote"
+[STEP 3] id=506 text=" the"
+[STEP 4] id=1441 text=" play"
+[STEP 5] id=808 text=" *"
+[STEP 6] id=201313 text="Hamlet"
+[STEP 7] id=22429 text="*."
+[STEP 8] id=106 text="<turn|>"
+GEN31B ids=[34848, 36951, 7971, 506, 1441, 808, 201313, 22429, 106]
+GEN31B text="William Shakespeare wrote the play *Hamlet*.<turn|>"
+MEM31B pinned_bytes=2730312704 embed_bytes=1497366528 ssd_read_bytes=123739176960 prefill_s=431.36 decode_s=614.32 vm_hwm_kb=Some(4436992) vm_rss_kb=Some(4344084)

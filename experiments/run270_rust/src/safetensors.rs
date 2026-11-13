@@ -1,6 +1,6 @@
 //! Cross-platform SafeTensors reader with strict bounds checks.
 
-use crate::codec::{bf16_to_f32, fp16_to_f32};
+use crate::codec::{bf16_to_f32, f32_to_bf16, fp16_to_f32};
 use crate::json;
 use std::collections::HashMap;
 use std::fs::File;
@@ -102,6 +102,72 @@ impl SafeTensors {
         read_exact_at_file(&self.file, &mut buf, meta.start)
             .map_err(|e| format!("read tensor bytes at {}: {e}", meta.start))?;
         Ok(buf)
+    }
+
+    pub fn read_raw_slice(&self, meta: &TensorMeta, rel_offset: usize, len: usize) -> Result<Vec<u8>, String> {
+        let end = rel_offset
+            .checked_add(len)
+            .ok_or_else(|| "safetensors slice overflow".to_string())?;
+        if end > meta.size {
+            return Err(format!("safetensors slice [{rel_offset}..{end}] exceeds tensor size {}", meta.size));
+        }
+        let mut buf = vec![0u8; len];
+        read_exact_at_file(&self.file, &mut buf, meta.start + rel_offset as u64)
+            .map_err(|e| format!("read tensor slice at {}: {e}", meta.start + rel_offset as u64))?;
+        Ok(buf)
+    }
+
+    pub fn read_tensor_bf16_u16(&self, name: &str) -> Result<Vec<u16>, String> {
+        let meta = self.tensors.get(name).ok_or_else(|| format!("tensor {name} not found"))?;
+        match meta.dtype.as_str() {
+            "BF16" => {
+                if meta.size % 2 != 0 {
+                    return Err(format!("{name}: odd BF16 byte count"));
+                }
+                let n = meta.size / 2;
+                let mut out = Vec::with_capacity(n);
+                let mut scratch = vec![0u8; 65536];
+                let mut done = 0usize;
+                while done < meta.size {
+                    let take = (meta.size - done).min(scratch.len());
+                    read_exact_at_file(&self.file, &mut scratch[..take], meta.start + done as u64)
+                        .map_err(|e| format!("read bf16 {name}: {e}"))?;
+                    for c in scratch[..take].chunks_exact(2) {
+                        out.push(u16::from_le_bytes([c[0], c[1]]));
+                    }
+                    done += take;
+                }
+                Ok(out)
+            }
+            "F16" | "F32" => Ok(self.read_tensor_f32(name)?.into_iter().map(f32_to_bf16).collect()),
+            other => Err(format!("{name}: unsupported dtype {other} for bf16")),
+        }
+    }
+
+    pub fn read_tensor_rows_f32(&self, name: &str, row0: usize, n_rows: usize) -> Result<Vec<f32>, String> {
+        let meta = self.tensors.get(name).ok_or_else(|| format!("tensor {name} not found"))?;
+        if meta.shape.len() != 2 {
+            return Err(format!("{name}: expected rank-2 tensor, got {:?}", meta.shape));
+        }
+        let d_out = meta.shape[0];
+        let d_in = meta.shape[1];
+        if row0 + n_rows > d_out {
+            return Err(format!("{name}: row range [{row0}..{}) exceeds d_out {d_out}", row0 + n_rows));
+        }
+        let elems = n_rows.checked_mul(d_in).ok_or_else(|| format!("{name}: element count overflow"))?;
+        let elem_bytes = match meta.dtype.as_str() {
+            "BF16" | "F16" => 2usize,
+            "F32" => 4usize,
+            other => return Err(format!("{name}: unsupported dtype {other}")),
+        };
+        let byte_off = row0 * d_in * elem_bytes;
+        let raw = self.read_raw_slice(meta, byte_off, elems * elem_bytes)?;
+        match meta.dtype.as_str() {
+            "BF16" => Ok(raw.chunks_exact(2).map(|c| bf16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
+            "F16" => Ok(raw.chunks_exact(2).map(|c| fp16_to_f32(u16::from_le_bytes([c[0], c[1]]))).collect()),
+            "F32" => Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()),
+            _ => unreachable!(),
+        }
     }
 
     pub fn read_tensor_f32(&self, name: &str) -> Result<Vec<f32>, String> {

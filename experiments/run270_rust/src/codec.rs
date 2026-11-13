@@ -25,6 +25,16 @@ pub fn bf16_to_f32(b: u16) -> f32 {
 }
 
 #[inline]
+pub fn f32_to_bf16(v: f32) -> u16 {
+    let bits = v.to_bits();
+    if (bits & 0x7FFF_FFFF) > 0x7F80_0000 {
+        return ((bits >> 16) as u16) | 0x0040;
+    }
+    let lsb = (bits >> 16) & 1;
+    (bits.wrapping_add(0x7FFF).wrapping_add(lsb) >> 16) as u16
+}
+
+#[inline]
 pub fn fp16_to_f32(h: u16) -> f32 {
     let sign = ((h >> 15) & 1) as u32;
     let exp = ((h >> 10) & 0x1f) as u32;
@@ -276,6 +286,9 @@ mod tests {
         // 1.0f32 in BF16 is 0x3F80; in FP16 0x3F80 is 1.875.
         assert_eq!(bf16_to_f32(0x3F80), 1.0f32);
         assert_eq!(bf16_to_f32(0xBF80), -1.0f32);
+        assert_eq!(f32_to_bf16(1.0f32), 0x3F80);
+        assert_eq!(f32_to_bf16(-1.0f32), 0xBF80);
+        assert_eq!(f32_to_bf16(f32::INFINITY), 0x7F80);
         assert_eq!(fp16_to_f32(0x3C00), 1.0f32);
         assert_eq!(fp16_to_f32(0x3F80), 1.875f32);
     }

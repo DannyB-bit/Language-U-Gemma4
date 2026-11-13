@@ -1,0 +1,10 @@
+row 0/262144 (0.0%)
+row 32768/262144 (12.5%)
+row 65536/262144 (25.0%)
+row 98304/262144 (37.5%)
+row 131072/262144 (50.0%)
+row 163840/262144 (62.5%)
+row 196608/262144 (75.0%)
+row 229376/262144 (87.5%)
+DONE: 5505024 glyphs, 198.2 MB -> /tmp/frontier_work/ramfit_logs/embed36.bin
+-rw-rw-r-- 1 astronautshe astronautshe 198180864 Nov 13 05:34 /tmp/frontier_work/ramfit_logs/embed36.bin

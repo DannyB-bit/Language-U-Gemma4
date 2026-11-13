@@ -1,0 +1,1 @@
+verify 512 rows: SNR = 3.49 dB (36B binary vs fp16 embed)
