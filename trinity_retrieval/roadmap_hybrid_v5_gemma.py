@@ -24,7 +24,7 @@ import socket
 import sqlite3
 import sys
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 
 # Import physical neural embedding engine and Language-U S^7 Compass.
@@ -33,16 +33,32 @@ import numpy as np
 # store still powers document-side scoring; construct with load_gemma=False and the
 # engine degrades loudly to the 4-channel law (BM25+symbolic+char+LSA) instead of
 # dying at import. Mirrors the Consider-Trinity engines/__init__ MiMo guard.
-if os.environ.get("LUC_NO_GEMMA", "").strip().lower() in ("1", "true", "yes"):
-    Gemma2EmbeddingModel = None
-    _GEMMA_IMPORT_OK = False
-else:
+# Lazily import the physical neural embedding engine only when needed (`load_gemma=True`
+# or explicit CLI usage), so torchless or non-Gemma callers never pay PyTorch import cost.
+Gemma2EmbeddingModel = None
+_GEMMA_IMPORT_OK = False
+_GEMMA_IMPORT_CHECKED = False
+
+
+def _ensure_gemma_model():
+    """Import Gemma2EmbeddingModel on demand unless disabled via LUC_NO_GEMMA."""
+    global Gemma2EmbeddingModel, _GEMMA_IMPORT_OK, _GEMMA_IMPORT_CHECKED
+    if os.environ.get("LUC_NO_GEMMA", "").strip().lower() in ("1", "true", "yes"):
+        Gemma2EmbeddingModel = None
+        _GEMMA_IMPORT_OK = False
+        _GEMMA_IMPORT_CHECKED = True
+        return None
+    if _GEMMA_IMPORT_CHECKED:
+        return Gemma2EmbeddingModel
+    _GEMMA_IMPORT_CHECKED = True
     try:
-        from .gemma2_embedding import Gemma2EmbeddingModel
+        from .gemma2_embedding import Gemma2EmbeddingModel as _GemmaCls
+        Gemma2EmbeddingModel = _GemmaCls
         _GEMMA_IMPORT_OK = True
     except ImportError:
         try:
-            from gemma2_embedding import Gemma2EmbeddingModel
+            from gemma2_embedding import Gemma2EmbeddingModel as _GemmaCls
+            Gemma2EmbeddingModel = _GemmaCls
             _GEMMA_IMPORT_OK = True
         except ImportError as _gemma_exc:
             import warnings as _warnings
@@ -55,6 +71,7 @@ else:
                 "Use HybridEngineV5(load_gemma=False).",
                 stacklevel=2,
             )
+    return Gemma2EmbeddingModel
 try:
     from .language_u_octonion import project_mrl_to_s7, project_batch_to_s7, batch_geodesic_resonance, _self_test as s7_self_test
 except ImportError:
@@ -83,6 +100,44 @@ META = resolve_store_path("roadmap_v2_meta.json")
 GEMMA_EMB = resolve_store_path("roadmap_gemma_emb.npz")
 S7_EMB = resolve_store_path("roadmap_s7_emb.npz")
 SOCK = "/tmp/roadmap_hybrid_v5.sock"
+
+_ENGINE_CACHE: Dict[str, Any] = {}
+
+
+def store_revision() -> Tuple[Tuple[str, ...], ...]:
+    """Return a stat tuple across SQLite/WAL and index artifacts to invalidate stale caches."""
+    paths = [DB, DB + "-wal", ART, META, GEMMA_EMB, S7_EMB]
+    rev = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            rev.append((os.path.abspath(path), str(st.st_ino), str(st.st_size), str(st.st_mtime_ns)))
+        except FileNotFoundError:
+            rev.append((os.path.abspath(path), "missing"))
+    return tuple(rev)
+
+
+def clear_engine_cache() -> None:
+    """Close and evict any cached HybridEngineV5 instance."""
+    eng = _ENGINE_CACHE.pop("engine", None)
+    if eng is not None and hasattr(eng, "close"):
+        eng.close()
+    _ENGINE_CACHE.clear()
+
+
+def get_engine(load_gemma: bool = True) -> "HybridEngineV5":
+    """Return a cached HybridEngineV5 instance unless on-disk store artifacts changed."""
+    rev = store_revision()
+    if (
+        _ENGINE_CACHE.get("engine") is not None
+        and _ENGINE_CACHE.get("revision") == rev
+        and _ENGINE_CACHE.get("load_gemma") == load_gemma
+    ):
+        return _ENGINE_CACHE["engine"]
+    clear_engine_cache()
+    eng = HybridEngineV5(load_gemma=load_gemma)
+    _ENGINE_CACHE.update(engine=eng, revision=rev, load_gemma=load_gemma)
+    return eng
 
 STOPWORDS: Set[str] = set(
     "the and for with that this from which what where when how are is was were "
@@ -137,15 +192,14 @@ class HybridEngineV5:
         if not os.path.exists(META):
             raise FileNotFoundError(f"Metadata not found at {META}")
 
-        z = np.load(ART)
+        with np.load(ART) as z:
+            self.Vt_k = z["Vt_k"]
+            self.doc_lsa = z["doc_lsa"]
+            self.doc_char = z["doc_char"]
+            self.gidf = z["gidf"]
+            self.idf = z["idf"]
         with open(META, "r", encoding="utf-8") as mf:
             m = json.load(mf)
-
-        self.Vt_k = z["Vt_k"]
-        self.doc_lsa = z["doc_lsa"]
-        self.doc_char = z["doc_char"]
-        self.gidf = z["gidf"]
-        self.idf = z["idf"]
 
         self.vocab = m["vocab"]
         self.gvocab = m["gvocab"]
@@ -168,8 +222,8 @@ class HybridEngineV5:
         # Channel 6: Language-U S^7 Compass (8D, 61.3 KB footprint)
         self.doc_s7: Optional[np.ndarray] = None
         if os.path.exists(S7_EMB):
-            s = np.load(S7_EMB)
-            self.doc_s7 = s["emb"].astype(np.float32)
+            with np.load(S7_EMB) as s:
+                self.doc_s7 = s["emb"].astype(np.float32)
             print(f"[v5 engine] Loaded {len(self.doc_s7)} Language-U S^7 vectors ({os.path.getsize(S7_EMB)/1024:.1f} KB) from {S7_EMB}", flush=True)
 
         # Channel 5: Google EmbeddingGemma-2
@@ -180,22 +234,23 @@ class HybridEngineV5:
         self._skip_validated: Set[str] = set()
 
         if os.path.exists(GEMMA_EMB):
-            b = np.load(GEMMA_EMB)
-            self.doc_gemma = b["emb"].astype(np.float32)
+            with np.load(GEMMA_EMB) as b:
+                self.doc_gemma = b["emb"].astype(np.float32)
             norms = np.linalg.norm(self.doc_gemma, axis=1, keepdims=True)
             norms[norms < 1e-9] = 1.0
             self.doc_gemma /= norms
             print(f"[v5 engine] Loaded {len(self.doc_gemma)} Gemma-2 embeddings from {GEMMA_EMB}", flush=True)
 
         if self.load_gemma:
-            if not _GEMMA_IMPORT_OK or Gemma2EmbeddingModel is None:
+            gemma_cls = _ensure_gemma_model()
+            if not _GEMMA_IMPORT_OK or gemma_cls is None:
                 raise RuntimeError(
                     "[v5 engine] load_gemma=True requested but EmbeddingGemma-2 is "
                     "unavailable on this host (torch/transformers missing). Construct "
                     "HybridEngineV5(load_gemma=False) for the torchless 4-channel lane."
                 )
             print("[v5 engine] Initializing Google EmbeddingGemma-2 model...", flush=True)
-            self.gemma_model = Gemma2EmbeddingModel(target_dim=768)
+            self.gemma_model = gemma_cls(target_dim=768)
             print(f"[v5 engine] Gemma-2 resident in {self.gemma_model.load_latency_s:.2f}s", flush=True)
 
         dt = time.perf_counter() - t0
@@ -203,8 +258,9 @@ class HybridEngineV5:
 
     def close(self):
         """Clean resource lifecycle per Standard 6."""
-        if hasattr(self, "conn") and self.conn:
+        if hasattr(self, "conn") and self.conn is not None:
             self.conn.close()
+            self.conn = None
 
     def __del__(self):
         self.close()
@@ -476,7 +532,10 @@ def build_embeddings(batch_size: int = 32, max_length: int = 128, out_path: str 
     print(f"Fetched {len(rows)} topics from {DB}", flush=True)
 
     texts = [f"{t}\n{b[:300]}" for _, t, b in rows]
-    model = Gemma2EmbeddingModel(target_dim=768)
+    gemma_cls = _ensure_gemma_model()
+    if gemma_cls is None:
+        raise RuntimeError("EmbeddingGemma-2 unavailable on this host")
+    model = gemma_cls(target_dim=768)
     print(f"Model loaded onto {model.device} in {model.load_latency_s:.2f}s", flush=True)
 
     t0 = time.perf_counter()
@@ -526,8 +585,9 @@ def main():
         # Torch-optional (Agent 07): on torchless hosts the Gemma-2 half of the
         # self-test cannot run — report it explicitly instead of crashing, and
         # still exercise the S^7 compass self-test (numpy-only, always available).
-        if _GEMMA_IMPORT_OK and Gemma2EmbeddingModel is not None:
-            s1 = Gemma2EmbeddingModel._self_test()
+        gemma_cls = _ensure_gemma_model()
+        if _GEMMA_IMPORT_OK and gemma_cls is not None:
+            s1 = gemma_cls._self_test()
         else:
             print("[v5 engine] SKIP: EmbeddingGemma-2 self-test unavailable (torch/transformers missing on this host)")
             s1 = None
@@ -545,7 +605,8 @@ def main():
         # Torch-optional (Agent 07 / Julian PR #3): fall back to the fingerprint-store lane when
         # Gemma-2 cannot import or when --no-gemma / LUC_NO_GEMMA is set.
         _lg = not a.no_gemma
-        if not _GEMMA_IMPORT_OK or Gemma2EmbeddingModel is None:
+        gemma_cls = _ensure_gemma_model() if _lg else None
+        if _lg and (not _GEMMA_IMPORT_OK or gemma_cls is None):
             print("[v5 engine] torchless host: running battery on the 4-channel fingerprint lane", flush=True)
             _lg = False
         elif a.no_gemma:
@@ -558,7 +619,8 @@ def main():
         if not a.query:
             sys.exit("Error: search command requires a query string.")
         _lg = not a.no_gemma
-        if not _GEMMA_IMPORT_OK or Gemma2EmbeddingModel is None:
+        gemma_cls = _ensure_gemma_model() if _lg else None
+        if _lg and (not _GEMMA_IMPORT_OK or gemma_cls is None):
             _lg = False
         eng = HybridEngineV5(load_gemma=_lg)
         t0 = time.perf_counter()

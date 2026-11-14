@@ -1,0 +1,31 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5413632000 norm_bytes=5326064 embed_bytes=715653120
+[run31b] loaded in 36.03s pinned_layers=60/60 pinned_bytes=5418958064 embed_bytes=715653120 vm=(Some(5580836), Some(4748048))
+[run31b] prompt 27 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 25685, 607, 1186, 506, 1548, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.56s (pinned=false)
+[run31b] layer 05/60 done in 0.62s (pinned=false)
+[run31b] layer 14/60 done in 0.53s (pinned=false)
+[run31b] layer 29/60 done in 0.68s (pinned=false)
+[run31b] layer 44/60 done in 0.52s (pinned=false)
+[run31b] layer 59/60 done in 0.62s (pinned=false)
+[run31b] prefill done in 33.78s ssd_read_mb=0.0 vm=(Some(6238800), Some(6238800))
+PREFILL_TOP5 [715:"//"(28.403), 100:"<|channel>"(27.074), 818:"The"(26.235), 1638:" same"(25.700), 1852:" own"(25.537)]
+[STEP 0] id=715 text="//"
+[run31b] decode step 0 in 2.13s vm=(Some(6238800), Some(6238800))
+[STEP 1] id=715 text="//"
+[run31b] decode step 1 in 2.09s vm=(Some(6238800), Some(6238800))
+[STEP 2] id=715 text="//"
+[run31b] decode step 2 in 2.08s vm=(Some(6238800), Some(6238800))
+[STEP 3] id=715 text="//"
+[run31b] decode step 3 in 2.10s vm=(Some(6238800), Some(6238800))
+[STEP 4] id=715 text="//"
+[run31b] decode step 4 in 2.08s vm=(Some(6238800), Some(6238800))
+[STEP 5] id=715 text="//"
+[run31b] decode step 5 in 2.08s vm=(Some(6238800), Some(6238800))
+[STEP 6] id=715 text="//"
+[run31b] decode step 6 in 2.09s vm=(Some(6238800), Some(6238800))
+[STEP 7] id=715 text="//"
+BATCH_K k=4 body_s=4.810 head_s=0.355 total_s=5.165 s_per_tok=1.291 head_ms_per_tok=88.8 top1s=[715, 715, 715, 715]
+GEN31B ids=[715, 715, 715, 715, 715, 715, 715, 715]
+GEN31B text="////////////////"
+MEM31B pinned_bytes=5418958064 embed_bytes=715653120 ssd_read_bytes=0 prefill_s=33.78 decode_s=14.65 vm_hwm_kb=Some(6238800) vm_rss_kb=Some(6238800)

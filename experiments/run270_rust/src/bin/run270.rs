@@ -71,6 +71,10 @@ enum ProjBackend {
         w: Vec<f32>,
     },
     Packed(PackedMatrix),
+    T16C {
+        mat: run270_rust::t16c::T16CMat,
+        native: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
+    },
 }
 
 impl ProjBackend {
@@ -78,6 +82,7 @@ impl ProjBackend {
         match self {
             Self::ExactF32 { d_out, d_in, .. } => (*d_out, *d_in),
             Self::Packed(pm) => (pm.d_out, pm.d_in),
+            Self::T16C { mat, .. } => (mat.d_out, mat.d_in),
         }
     }
 
@@ -85,6 +90,7 @@ impl ProjBackend {
         match self {
             Self::ExactF32 { w, .. } => w.len() * 4,
             Self::Packed(pm) => pm.bytes.len(),
+            Self::T16C { mat, .. } => mat.total_bytes(),
         }
     }
 
@@ -119,6 +125,7 @@ impl ProjBackend {
                 Ok(y)
             }
             Self::Packed(pm) => pm.matvec(x, threads),
+            Self::T16C { mat, native } => mat.project_batch(x, 1, native.as_deref(), threads),
         }
     }
 }
@@ -171,6 +178,10 @@ enum EmbedBackend {
     ExactF32(Vec<f32>),
     PackedBf16(Vec<u16>),
     Packed(PackedMatrix),
+    T16C {
+        mat: run270_rust::t16c::T16CMat,
+        native: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
+    },
 }
 
 impl EmbedBackend {
@@ -179,6 +190,7 @@ impl EmbedBackend {
             Self::ExactF32(v) => v.len() * 4,
             Self::PackedBf16(v) => v.len() * 2,
             Self::Packed(pm) => pm.bytes.len(),
+            Self::T16C { mat, .. } => mat.total_bytes(),
         }
     }
 
@@ -201,6 +213,16 @@ impl EmbedBackend {
             }
             Self::Packed(pm) => {
                 let mut row = pm.decode_row(ti)?;
+                for v in &mut row {
+                    *v *= escale;
+                }
+                Ok(row)
+            }
+            Self::T16C { mat, .. } => {
+                let mut row = mat.decode_row(ti)?;
+                if row.len() != d {
+                    return Err(format!("T16C embed decode_row len {} != d {d}", row.len()));
+                }
                 for v in &mut row {
                     *v *= escale;
                 }
@@ -275,6 +297,7 @@ impl EmbedBackend {
                 Ok(logits)
             }
             Self::Packed(pm) => pm.matvec(x, threads),
+            Self::T16C { mat, native } => mat.project_batch(x, 1, native.as_deref(), threads),
         }
     }
 }
@@ -545,6 +568,43 @@ fn load_safetensors_artifacts(
         embed.byte_len()
     );
     Ok(Art { projs, embed, norms, threads })
+}
+
+fn load_t16c_artifacts(
+    t16c_path: &Path,
+    native_lib: Option<&Path>,
+    disable_native: bool,
+    fallback_model: Option<&Path>,
+    fallback_embed_mode: EmbedMode,
+    threads: usize,
+) -> Result<Art, String> {
+    let mut t16c = run270_rust::t16c::T16CModel::load(t16c_path, native_lib, disable_native)?;
+    let native = t16c.native.take().map(std::sync::Arc::new);
+    let embed = if let Some(mat) = t16c.mats.remove("model.embed_tokens.weight") {
+        EmbedBackend::T16C { mat, native: native.clone() }
+    } else if let Some(mp) = fallback_model {
+        let sf = SafeTensors::open(mp)?;
+        load_embed_from_safetensors(&sf, fallback_embed_mode, threads)?
+    } else {
+        return Err("T16C missing model.embed_tokens.weight and no --model fallback provided".into());
+    };
+    let mut projs = HashMap::with_capacity(t16c.mats.len());
+    for (k, mat) in t16c.mats {
+        projs.insert(k, ProjBackend::T16C { mat, native: native.clone() });
+    }
+    eprintln!(
+        "[run270] weight_source=T16C native_ffi={} projections={} norms={} embed_bytes={}",
+        native.as_ref().map_or("disabled", |n| n.path.as_str()),
+        projs.len(),
+        t16c.norms.len(),
+        embed.byte_len()
+    );
+    Ok(Art {
+        projs,
+        embed,
+        norms: t16c.norms,
+        threads,
+    })
 }
 
 fn load_glyph_artifacts(
@@ -856,6 +916,9 @@ fn run() -> Result<(), String> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
     };
     let exact = args.iter().any(|a| a == "--exact");
+    let t16c_arg = get("--t16c");
+    let so_arg = get("--so");
+    let disable_native = args.iter().any(|a| a == "--no-native-ffi");
     let quant_arg = get("--quantize");
     let use_h8 = args.iter().any(|a| a == "--h8");
     let embed_h8 = args.iter().any(|a| a == "--embed-h8");
@@ -897,28 +960,35 @@ fn run() -> Result<(), String> {
     if exact && proj_quant.is_some() {
         return Err("--exact and --quantize cannot be used together".into());
     }
+    if t16c_arg.is_some() && (exact || proj_quant.is_some()) {
+        return Err("--t16c cannot be used together with --exact or --quantize".into());
+    }
     let embed_mode = match get("--embed-mode") {
         Some(s) => EmbedMode::parse(&s, embed_h8)?,
         None => {
             if embed_h8 {
                 return Err("--embed-h8 requires --embed-mode <scheme>".into());
             }
-            if proj_quant.is_some() {
+            if proj_quant.is_some() || t16c_arg.is_some() {
                 EmbedMode::Bf16
             } else {
                 EmbedMode::F32
             }
         }
     };
-    let mode_tag = match proj_quant {
-        Some((s, h8)) => format!(
-            "{}{}_emb-{}",
-            s.name(),
-            if h8 { "+h8" } else { "" },
-            embed_mode.label()
-        ),
-        None if exact => format!("exact_emb-{}", embed_mode.label()),
-        None => format!("opt4_emb-{}", embed_mode.label()),
+    let mode_tag = if t16c_arg.is_some() {
+        format!("t16c_emb-{}", embed_mode.label())
+    } else {
+        match proj_quant {
+            Some((s, h8)) => format!(
+                "{}{}_emb-{}",
+                s.name(),
+                if h8 { "+h8" } else { "" },
+                embed_mode.label()
+            ),
+            None if exact => format!("exact_emb-{}", embed_mode.label()),
+            None => format!("opt4_emb-{}", embed_mode.label()),
+        }
     };
 
     let cfg = load_cfg(Path::new(&cfgp))?;
@@ -927,11 +997,21 @@ fn run() -> Result<(), String> {
         cfg.d, cfg.n_layers, cfg.ff, cfg.n_heads, cfg.n_kv, cfg.hd, cfg.window, cfg.vocab
     );
 
-    if get("--so").is_some() {
-        eprintln!("[run270] note: ignoring deprecated --so; Gemma3-270M uses pure-Rust FP64-accumulated {threads}-thread matvec");
+    if t16c_arg.is_none() && so_arg.is_some() {
+        eprintln!("[run270] note: ignoring deprecated --so; non-T16C Gemma3-270M uses pure-Rust FP64-accumulated {threads}-thread matvec");
     }
 
-    let art = if exact || proj_quant.is_some() {
+    let art = if let Some(tp) = t16c_arg.as_deref() {
+        let model_fb = get("--model");
+        load_t16c_artifacts(
+            Path::new(tp),
+            so_arg.as_deref().map(Path::new),
+            disable_native,
+            model_fb.as_deref().map(Path::new),
+            embed_mode,
+            threads,
+        )?
+    } else if exact || proj_quant.is_some() {
         let model = get("--model").ok_or("missing --model for --exact/--quantize mode")?;
         load_safetensors_artifacts(Path::new(&model), proj_quant, embed_mode, threads)?
     } else {
@@ -1018,5 +1098,63 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("FAIL: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use run270_rust::t16c::{Int8LowRank, T16CMat};
+
+    #[test]
+    fn t16c_proj_and_embed_roundtrip_and_logits() {
+        let (d_out, d_in, bsize, nb) = (32usize, 128usize, 128usize, 2u8);
+        let sc: Vec<f32> = (0..d_out).map(|r| 0.012 + 0.003 * (r % 4) as f32).collect();
+        let bi: Vec<f32> = (0..d_out).map(|r| -0.005 + 0.002 * (r % 3) as f32).collect();
+        let idx: Vec<u8> = (0..d_out * d_in).map(|i| ((i * 5 + 1) & 3) as u8).collect();
+        let inv_s: Vec<f32> = (0..d_in).map(|j| 0.8 + 0.4 * ((j % 7) as f32 / 6.0)).collect();
+        let make_mat = || {
+            let lr = Int8LowRank {
+                rank: 4,
+                d_out,
+                d_in,
+                su: (0..d_out).map(|r| 0.01 + 0.001 * r as f32).collect(),
+                sv: vec![0.02, 0.015, 0.01, 0.025],
+                u_i8: (0..d_out * 4).map(|i| ((i as isize * 13 % 90) - 45) as i8).collect(),
+                v_i8: (0..4 * d_in).map(|i| ((i as isize * 17 % 100) - 50) as i8).collect(),
+            };
+            T16CMat::pack_from_components(
+                "model.layers.0.self_attn.q_proj.weight".into(),
+                d_out,
+                d_in,
+                bsize,
+                nb,
+                true,
+                true,
+                &sc,
+                Some(&bi),
+                &idx,
+                Some(inv_s.clone()),
+                Some(lr),
+            )
+            .unwrap()
+        };
+        let x: Vec<f32> = (0..d_in).map(|j| ((j as f32) * 0.17).cos()).collect();
+        let proj = ProjBackend::T16C { mat: make_mat(), native: None };
+        let y_proj = proj.matvec(&x, 2).unwrap();
+        assert_eq!(y_proj.len(), d_out);
+
+        let emb = EmbedBackend::T16C { mat: make_mat(), native: None };
+        let escale = (d_in as f32).sqrt();
+        let row3 = emb.lookup_scaled(3, d_in, d_out, escale).unwrap();
+        assert_eq!(row3.len(), d_in);
+        let want_dot: f32 = row3.iter().zip(x.iter()).map(|(w, xv)| (w / escale) * xv).sum();
+        assert!((y_proj[3] - want_dot).abs() < 1e-3, "got {} want {}", y_proj[3], want_dot);
+
+        let logits = emb.compute_logits(&x, d_in, d_out, 2).unwrap();
+        assert_eq!(logits.len(), d_out);
+        for i in 0..d_out {
+            assert!((logits[i] - y_proj[i]).abs() < 1e-4);
+        }
     }
 }

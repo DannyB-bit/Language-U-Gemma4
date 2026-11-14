@@ -336,6 +336,45 @@ NEON_API int paged_bf16_attention_gqa_c(
     int num_threads
 );
 
+/**
+ * Packed Tile-16 Bit-Serial GEMV / GEMM (1..4-bit, symmetric or asymmetric,
+ * block_size in {64, 128, 256}) using zero-spill ARMv8 NEON `vqtbl1q_s8`
+ * (`sub64` L1-budget LUT), x86-64 AVX2 `vpshufb`, or scalar fallback, with
+ * optional bounded Cauchy-Schwarz tile-block skip (`tile_norm_fp16`).
+ *
+ * Returns 0 on success, -1 on invalid arguments or allocation failure.
+ */
+NEON_API int gemm_bitserial_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym,
+    int k_tokens,
+    float cs_skip_thresh,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+);
+
+NEON_API int gemv_bitserial_tile16_mmap(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym,
+    float cs_skip_thresh,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+);
+
 #ifdef __cplusplus
 }
 #endif

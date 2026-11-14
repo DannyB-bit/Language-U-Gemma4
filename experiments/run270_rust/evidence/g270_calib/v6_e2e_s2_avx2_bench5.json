@@ -1,0 +1,23 @@
+{
+  "mode": "t16c_emb-bf16",
+  "proj_bytes": 19349040,
+  "proj_weights": 100270080,
+  "proj_bpw": 1.543754,
+  "embed_bytes": 335544320,
+  "norm_bytes": 223744,
+  "total_weight_bytes": 355117104,
+  "eff_bpw": 10.598840,
+  "vm_hwm_kb": null,
+  "vm_rss_kb": null,
+  "total_forwards": 171,
+  "total_seconds": 15.4753,
+  "avg_s_per_fwd": 0.090499,
+  "hamlet_play_text": "The Hamlet is the play.\n<end_of_turn>",
+  "prompts": [
+    {"name": "arithmetic", "argmax": 6481, "fwds": 32, "seconds": 3.0560, "generated_ids": [6481, 236743, 236778, 900, 236743, 236778, 578, 236743, 236778, 900, 236743, 236778, 578, 236743, 236778, 900], "text": "Let 2 + 2 = 2 + 2 = 2 +"},
+    {"name": "capital", "argmax": 818, "fwds": 28, "seconds": 2.4874, "generated_ids": [818, 5279, 529, 7001, 563, 506, 3558, 529, 236743, 236832, 236828, 236761, 106], "text": "The capital of France is the height of 78.<end_of_turn>"},
+    {"name": "hamlet", "argmax": 818, "fwds": 28, "seconds": 3.7715, "generated_ids": [818, 124600, 563, 506, 5213, 808, 236770, 236828, 236828, 236828, 236819, 236819, 528, 506, 1548, 236761], "text": "The Hamlet is the ** *188899 in the number."},
+    {"name": "multistep", "argmax": 2021, "fwds": 49, "seconds": 3.7654, "generated_ids": [2021, 236743, 236770, 236778, 2782, 236743, 236828, 236764, 30579, 236743, 236778, 236832, 563, 236743, 236778, 236832], "text": "To 12 times 8, subtract 27 is 27"},
+    {"name": "minimum", "argmax": 818, "fwds": 34, "seconds": 2.3951, "generated_ids": [818, 236743, 236770, 236819, 236800, 563, 236743, 236812, 236771, 236761, 106], "text": "The 193 is 40.<end_of_turn>"}
+  ]
+}

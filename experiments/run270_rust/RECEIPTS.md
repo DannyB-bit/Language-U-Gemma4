@@ -50,3 +50,9 @@ RUSTFLAGS="-D warnings" cargo build --manifest-path experiments/run270_rust/Carg
 - **OPT4 glyph-stream fidelity boundary (arithmetic prompt vs `HF 4.55.0 FP32`):** Strict gate **FAIL** (`exit 2`, `gate_pass=false`): `cosine=0.921860172696`, `relative_l2=0.551065110577`, `max_abs_error=41.3553767204`, `kl=16.1745965801`, `source_argmax=236778` vs `candidate_argmax=568` (`argmax_match=false`; generation `" ( up]   and still..."`). Zero-training 2-stage 8D spherical RVQ at `~0.9718` cosine / `~12.7 dB` SNR (~23% per-matrix relative L2) remains too lossy for inference at 270M without higher precision or QAT; see `experiments/gemma270_luj` (`Q14-norms`) for strict-parity glyph storage.
 
 Logs: `run270_exact_gen.log`, `run270_glyph_gen.log`, `ref_gemma3_native_arith.json`.
+
+---
+
+## Sub-Byte Frontier, `T16C` Calibration & `run31b` Pi 4 Receipts
+
+Extended `run270` (`23`-config sub-byte sweep, 28Q/30Q suites, Windows AVX2 `T16C` `v6_e2e_s2`) and `run31b` Gemma 4 31B Raspberry Pi 4 receipts (4.51 GiB QAT `pin10` coherent generation, `packed92` coherent `2+2=4`, and `60/60` RAM-resident `5.71 GiB` `gemma4_31b_cal.t16c` with `VmSwap=0` and NEON FFI acceleration vs pure Rust) are recorded in [FRONTIER_RECEIPTS.md](FRONTIER_RECEIPTS.md) and backed by logs under `evidence/`. Portable calibration scripts live under `calib/`.

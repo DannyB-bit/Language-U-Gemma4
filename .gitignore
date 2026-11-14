@@ -8,5 +8,12 @@ __pycache__/
 *.exp
 *.lib
 *.exe
+*.t16c
+*.safetensors
+*.f32
+.pytest_cache/
 neon_runner/neon_stream_accelerator_v2
 /pi4-runs/
+tests/retrieval/_tmp_octonion_experts/
+experiments/run270_rust/calib/work/
+experiments/run270_rust/calib/31b/state_31b/

@@ -353,6 +353,10 @@ enum Embed31B {
     Streamed,
     ResidentBf16(Vec<u16>),
     Packed(PackedMatrix),
+    T16C {
+        mat: run270_rust::t16c::T16CMat,
+        native: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
+    },
 }
 
 enum EmbedMode31B {
@@ -446,11 +450,13 @@ struct LayerKv {
 
 struct Runtime31B {
     cfg: Gemma4Cfg,
-    sf: SafeTensors,
+    sf: Option<SafeTensors>,
     norms: HashMap<String, Vec<f32>>,
     scalars: Vec<f32>,
     embed: Embed31B,
     pinned: Vec<PinnedLayer>,
+    t16c_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
+    native_t16c: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
     kv: Vec<LayerKv>,
     threads: usize,
     ssd_bytes_read: u64,
@@ -458,7 +464,11 @@ struct Runtime31B {
 
 impl Runtime31B {
     fn norm(&self, key: &str) -> Result<&[f32], String> {
-        self.norms.get(key).map(|v| v.as_slice()).ok_or_else(|| format!("missing norm {key}"))
+        self.norms
+            .get(key)
+            .or_else(|| key.strip_prefix("model.language_model.").and_then(|s| self.norms.get(&format!("model.{s}"))))
+            .map(|v| v.as_slice())
+            .ok_or_else(|| format!("missing norm {key}"))
     }
 
     fn embed_batch(&mut self, ids: &[u32]) -> Result<Vec<f32>, String> {
@@ -468,13 +478,14 @@ impl Runtime31B {
         let em_key = "model.language_model.embed_tokens.weight";
         match &self.embed {
             Embed31B::Streamed => {
-                let meta = self.sf.tensors.get(em_key).ok_or_else(|| format!("missing {em_key}"))?;
+                let sf = self.sf.as_ref().ok_or("streamed embed requires --model")?;
+                let meta = sf.tensors.get(em_key).ok_or_else(|| format!("missing {em_key}"))?;
                 for &tid in ids {
                     let ti = tid as usize;
                     if ti >= self.cfg.vocab {
                         return Err(format!("token {tid} out of bounds"));
                     }
-                    let raw = self.sf.read_raw_slice(meta, ti * d * 2, d * 2)?;
+                    let raw = sf.read_raw_slice(meta, ti * d * 2, d * 2)?;
                     self.ssd_bytes_read += raw.len() as u64;
                     for c in raw.chunks_exact(2) {
                         out.push(bf16_to_f32(u16::from_le_bytes([c[0], c[1]])) * escale);
@@ -500,11 +511,32 @@ impl Runtime31B {
                     }
                 }
             }
+            Embed31B::T16C { mat, .. } => {
+                for &tid in ids {
+                    let row = mat.decode_row(tid as usize)?;
+                    if row.len() != d {
+                        return Err(format!("T16C embed decode_row len {} != d {d}", row.len()));
+                    }
+                    for v in row {
+                        out.push(v * escale);
+                    }
+                }
+            }
         }
         Ok(out)
     }
 
     fn forward_batch(&mut self, ids: &[u32], start_pos: usize, verbose_layers: bool) -> Result<Vec<f32>, String> {
+        self.forward_batch_mode(ids, start_pos, verbose_layers, false)
+    }
+
+    fn forward_batch_mode(
+        &mut self,
+        ids: &[u32],
+        start_pos: usize,
+        verbose_layers: bool,
+        all_final: bool,
+    ) -> Result<Vec<f32>, String> {
         let seq_len = ids.len();
         if seq_len == 0 {
             return Err("empty token slice".into());
@@ -515,35 +547,44 @@ impl Runtime31B {
         let mut states = self.embed_batch(ids)?;
 
         let cfg = &self.cfg;
-        let sf = &self.sf;
+        let sf_opt = &self.sf;
         let norms = &self.norms;
         let scalars = &self.scalars;
         let pinned = &self.pinned;
+        let t16c_mats = &self.t16c_mats;
+        let native_t16c = &self.native_t16c;
         let kv = &mut self.kv;
         let threads = self.threads;
         let mut read_bytes = 0u64;
 
         let get_norm = |key: &str| -> Result<&[f32], String> {
-            norms.get(key).map(|v| v.as_slice()).ok_or_else(|| format!("missing norm {key}"))
+            norms
+                .get(key)
+                .or_else(|| key.strip_prefix("model.language_model.").and_then(|s| norms.get(&format!("model.{s}"))))
+                .map(|v| v.as_slice())
+                .ok_or_else(|| format!("missing norm {key}"))
         };
 
         let mut schedule: Vec<(usize, &'static str)> = Vec::new();
-        for ul in pinned.len()..cfg.n_layers {
-            schedule.push((ul, "self_attn.q_proj"));
-            schedule.push((ul, "self_attn.k_proj"));
-            if !(cfg.layer_full[ul] && cfg.attention_k_eq_v) {
-                schedule.push((ul, "self_attn.v_proj"));
+        if t16c_mats.is_none() {
+            for ul in pinned.len()..cfg.n_layers {
+                schedule.push((ul, "self_attn.q_proj"));
+                schedule.push((ul, "self_attn.k_proj"));
+                if !(cfg.layer_full[ul] && cfg.attention_k_eq_v) {
+                    schedule.push((ul, "self_attn.v_proj"));
+                }
+                schedule.push((ul, "self_attn.o_proj"));
+                schedule.push((ul, "mlp.gate_proj"));
+                schedule.push((ul, "mlp.up_proj"));
+                schedule.push((ul, "mlp.down_proj"));
             }
-            schedule.push((ul, "self_attn.o_proj"));
-            schedule.push((ul, "mlp.gate_proj"));
-            schedule.push((ul, "mlp.up_proj"));
-            schedule.push((ul, "mlp.down_proj"));
         }
 
         std::thread::scope(|io_scope| -> Result<(), String> {
             let mut sched_idx = 0usize;
             let mut pending: Option<std::thread::ScopedJoinHandle<'_, Result<(QatProj, u64), String>>> =
                 if !schedule.is_empty() {
+                    let sf = sf_opt.as_ref().ok_or("streaming unpinned layers requires --model")?;
                     let (nl, nsuf) = schedule[0];
                     Some(io_scope.spawn(move || {
                         load_qat_proj(sf, &format!("model.language_model.layers.{nl}.{nsuf}"))
@@ -553,6 +594,15 @@ impl Runtime31B {
                 };
 
             let mut run_proj = |layer: usize, proj_suffix: &'static str, x_batch: &[f32]| -> Result<Vec<f32>, String> {
+                if let Some(mats) = t16c_mats {
+                    let k1 = format!("model.language_model.layers.{layer}.{proj_suffix}.weight");
+                    let mat = mats
+                        .get(&k1)
+                        .or_else(|| mats.get(&format!("model.layers.{layer}.{proj_suffix}.weight")))
+                        .ok_or_else(|| format!("T16C missing {k1}"))?;
+                    return mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads);
+                }
+
                 if layer < pinned.len() {
                     let pl = &pinned[layer];
                     let p = match proj_suffix {
@@ -571,6 +621,7 @@ impl Runtime31B {
                 if sched_idx >= schedule.len() || schedule[sched_idx] != (layer, proj_suffix) {
                     return Err(format!("prefetch schedule mismatch at layer {layer} {proj_suffix}"));
                 }
+                let sf = sf_opt.as_ref().ok_or("streaming unpinned layers requires --model")?;
                 let (qp, nbytes) = match pending.take() {
                     Some(h) => h.join().map_err(|_| "prefetch worker panicked".to_string())??,
                     None => load_qat_proj(sf, &format!("model.language_model.layers.{layer}.{proj_suffix}"))?,
@@ -698,40 +749,72 @@ impl Runtime31B {
         })?;
         self.ssd_bytes_read += read_bytes;
 
-        let last_state = &states[(seq_len - 1) * d..seq_len * d];
         let fn_gain = self.norm("model.language_model.norm.weight")?;
-        Ok(rmsn_raw(last_state, Some(fn_gain), eps))
+        if all_final {
+            let mut all_out = Vec::with_capacity(seq_len * d);
+            for t in 0..seq_len {
+                all_out.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(fn_gain), eps));
+            }
+            Ok(all_out)
+        } else {
+            let last_state = &states[(seq_len - 1) * d..seq_len * d];
+            Ok(rmsn_raw(last_state, Some(fn_gain), eps))
+        }
     }
 
     fn compute_logits(&mut self, hidden: &[f32]) -> Result<Vec<f32>, String> {
+        self.compute_logits_batch(hidden, 1)
+    }
+
+    fn compute_logits_batch(&mut self, hidden_batch: &[f32], seq_len: usize) -> Result<Vec<f32>, String> {
         let d = self.cfg.d;
         let vocab = self.cfg.vocab;
+        if hidden_batch.len() != seq_len * d {
+            return Err(format!("hidden_batch len {} != {seq_len}*{d}", hidden_batch.len()));
+        }
         let mut logits = match &self.embed {
             Embed31B::Streamed => {
-                let head_key = if self.sf.tensors.contains_key("lm_head.weight") {
+                let sf = self.sf.as_ref().ok_or("streamed logits require --model")?;
+                let head_key = if sf.tensors.contains_key("lm_head.weight") {
                     "lm_head.weight"
                 } else {
                     "model.language_model.embed_tokens.weight"
                 };
-                let meta = self.sf.tensors.get(head_key).ok_or_else(|| format!("missing {head_key}"))?.clone();
+                let meta = sf.tensors.get(head_key).ok_or_else(|| format!("missing {head_key}"))?.clone();
                 if meta.shape != vec![vocab, d] || meta.dtype != "BF16" {
                     return Err(format!("{head_key}: expected BF16 [{vocab}, {d}], got {} {:?}", meta.dtype, meta.shape));
                 }
-                let mut out = Vec::with_capacity(vocab);
+                let mut out = vec![0f32; seq_len * vocab];
                 let chunk_rows = 4096usize;
                 let mut r0 = 0usize;
                 while r0 < vocab {
                     let take = (vocab - r0).min(chunk_rows);
-                    let raw = self.sf.read_raw_slice(&meta, r0 * d * 2, take * d * 2)?;
+                    let raw = sf.read_raw_slice(&meta, r0 * d * 2, take * d * 2)?;
                     self.ssd_bytes_read += raw.len() as u64;
                     let slab: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-                    out.extend_from_slice(&dot_bf16_rows(&slab, d, take, hidden, self.threads));
+                    for tok in 0..seq_len {
+                        let sub = dot_bf16_rows(&slab, d, take, &hidden_batch[tok * d..(tok + 1) * d], self.threads);
+                        out[tok * vocab + r0..tok * vocab + r0 + take].copy_from_slice(&sub);
+                    }
                     r0 += take;
                 }
                 out
             }
-            Embed31B::ResidentBf16(tbl) => dot_bf16_rows(tbl, d, vocab, hidden, self.threads),
-            Embed31B::Packed(pm) => pm.matvec(hidden, self.threads)?,
+            Embed31B::ResidentBf16(tbl) => {
+                let mut out = Vec::with_capacity(seq_len * vocab);
+                for tok in 0..seq_len {
+                    out.extend_from_slice(&dot_bf16_rows(tbl, d, vocab, &hidden_batch[tok * d..(tok + 1) * d], self.threads));
+                }
+                out
+            }
+            Embed31B::Packed(pm) => {
+                let mut out = Vec::with_capacity(seq_len * vocab);
+                for tok in 0..seq_len {
+                    out.extend_from_slice(&pm.matvec(&hidden_batch[tok * d..(tok + 1) * d], self.threads)?);
+                }
+                out
+            }
+            Embed31B::T16C { mat, native } => mat.project_batch(hidden_batch, seq_len, native.as_deref(), self.threads)?,
         };
         if let Some(cap) = self.cfg.final_softcap {
             for v in &mut logits {
@@ -822,11 +905,13 @@ fn load_runtime_31b(
     Ok((
         Runtime31B {
             cfg,
-            sf,
+            sf: Some(sf),
             norms,
             scalars,
             embed,
             pinned,
+            t16c_mats: None,
+            native_t16c: None,
             kv,
             threads,
             ssd_bytes_read: 0,
@@ -836,12 +921,129 @@ fn load_runtime_31b(
     ))
 }
 
+fn load_runtime_31b_t16c(
+    t16c_path: &Path,
+    fallback_model: Option<&Path>,
+    native_lib: Option<&Path>,
+    disable_native: bool,
+    cfg: Gemma4Cfg,
+    embed_mode: EmbedMode31B,
+    threads: usize,
+) -> Result<(Runtime31B, usize, usize), String> {
+    let mut t16c = run270_rust::t16c::T16CModel::load(t16c_path, native_lib, disable_native)?;
+    let native_t16c = t16c.native.take().map(std::sync::Arc::new);
+    let sf_opt = match fallback_model {
+        Some(mp) => Some(SafeTensors::open(mp)?),
+        None => None,
+    };
+
+    let mut scalars = Vec::with_capacity(cfg.n_layers);
+    for l in 0..cfg.n_layers {
+        let sk = format!("model.language_model.layers.{l}.layer_scalar");
+        let sk2 = format!("model.layers.{l}.layer_scalar");
+        if let Some(v) = t16c.norms.get(&sk).or_else(|| t16c.norms.get(&sk2)) {
+            if v.len() != 1 || !v[0].is_finite() {
+                return Err(format!("invalid scalar {sk}: {v:?}"));
+            }
+            scalars.push(v[0]);
+        } else if let Some(ref sf) = sf_opt {
+            let v = sf.read_tensor_f32(&sk)?;
+            if v.len() != 1 || !v[0].is_finite() {
+                return Err(format!("invalid scalar {sk}: {v:?}"));
+            }
+            scalars.push(v[0]);
+        } else {
+            return Err(format!("T16C missing {sk} and no --model fallback"));
+        }
+    }
+    let norm_bytes: usize = t16c.norms.values().map(|v| v.len() * 4).sum();
+
+    let (embed, embed_bytes) = if let Some(mat) = t16c
+        .mats
+        .remove("model.language_model.embed_tokens.weight")
+        .or_else(|| t16c.mats.remove("model.embed_tokens.weight"))
+    {
+        let nb = mat.total_bytes();
+        (Embed31B::T16C { mat, native: native_t16c.clone() }, nb)
+    } else if let Some(ref sf) = sf_opt {
+        let em_key = "model.language_model.embed_tokens.weight";
+        match embed_mode {
+            EmbedMode31B::Stream => (Embed31B::Streamed, 0usize),
+            EmbedMode31B::Bf16 => {
+                let v = sf.read_tensor_bf16_u16(em_key)?;
+                let nb = v.len() * 2;
+                (Embed31B::ResidentBf16(v), nb)
+            }
+            EmbedMode31B::Quant(scheme, h8) => {
+                let meta = sf.tensors.get(em_key).ok_or_else(|| format!("missing {em_key}"))?;
+                let d_out = meta.shape[0];
+                let d_in = meta.shape[1];
+                let mut pm = PackedMatrix::new_empty(d_out, d_in, scheme, h8)?;
+                let mut r0 = 0usize;
+                while r0 < d_out {
+                    let take = (d_out - r0).min(4096);
+                    let chunk = sf.read_tensor_rows_f32(em_key, r0, take)?;
+                    pm.pack_rows_range_f32(r0, take, &chunk, threads)?;
+                    r0 += take;
+                }
+                let nb = pm.bytes.len();
+                (Embed31B::Packed(pm), nb)
+            }
+        }
+    } else {
+        return Err("T16C missing model.language_model.embed_tokens.weight and no --model fallback".into());
+    };
+
+    let body_bytes: usize = t16c.mats.values().map(|m| m.total_bytes()).sum();
+    eprintln!(
+        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} norm_bytes={} embed_bytes={}",
+        native_t16c.as_ref().map_or("disabled", |n| n.path.as_str()),
+        t16c.mats.len(),
+        t16c.norms.len(),
+        body_bytes,
+        norm_bytes,
+        embed_bytes
+    );
+
+    let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
+    Ok((
+        Runtime31B {
+            cfg,
+            sf: sf_opt,
+            norms: t16c.norms,
+            scalars,
+            embed,
+            pinned: Vec::new(),
+            t16c_mats: Some(t16c.mats),
+            native_t16c,
+            kv,
+            threads,
+            ssd_bytes_read: 0,
+        },
+        body_bytes + norm_bytes,
+        embed_bytes,
+    ))
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let get = |name: &str| -> Option<String> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
     };
-    let model = get("--model").ok_or("missing --model")?;
+    let t16c_arg = get("--t16c");
+    let model = get("--model");
+    if t16c_arg.is_none() && model.is_none() {
+        return Err("missing --model (or pass --t16c <path>)".into());
+    }
+    let so_arg = get("--so");
+    let disable_native = args.iter().any(|a| a == "--no-native-ffi");
+    let batch_k: usize = match get("--batch-k") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --batch-k '{s}'"))?,
+        None => 1,
+    };
+    if batch_k == 0 {
+        return Err("--batch-k must be >= 1".into());
+    }
     let cfgp = get("--config").ok_or("missing --config")?;
     let tkp = get("--tokenizer").ok_or("missing --tokenizer")?;
     let threads: usize = match get("--threads") {
@@ -870,11 +1072,24 @@ fn run() -> Result<(), String> {
     );
 
     let t_load = std::time::Instant::now();
-    let (mut rt, pinned_bytes, embed_bytes) = load_runtime_31b(Path::new(&model), cfg, embed_mode, pin_layers, threads)?;
+    let (mut rt, pinned_bytes, embed_bytes) = if let Some(tp) = t16c_arg.as_deref() {
+        load_runtime_31b_t16c(
+            Path::new(tp),
+            model.as_deref().map(Path::new),
+            so_arg.as_deref().map(Path::new),
+            disable_native,
+            cfg,
+            embed_mode,
+            threads,
+        )?
+    } else {
+        load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, threads)?
+    };
+    let active_pinned_layers = if rt.t16c_mats.is_some() { rt.cfg.n_layers } else { rt.pinned.len() };
     eprintln!(
         "[run31b] loaded in {:.2}s pinned_layers={}/{} pinned_bytes={} embed_bytes={} vm={:?}",
         t_load.elapsed().as_secs_f64(),
-        rt.pinned.len(),
+        active_pinned_layers,
         rt.cfg.n_layers,
         pinned_bytes,
         embed_bytes,
@@ -942,6 +1157,31 @@ fn run() -> Result<(), String> {
         }
     }
     let decode_s = t_dec.elapsed().as_secs_f64();
+    if batch_k > 1 {
+        let vocab = rt.cfg.vocab;
+        let batch_ids: Vec<u32> = (0..batch_k).map(|i| generated[i % generated.len().max(1)]).collect();
+        let tb = std::time::Instant::now();
+        let h_batch = rt.forward_batch_mode(&batch_ids, ids.len() + generated.len(), false, true)?;
+        let tb_body = tb.elapsed().as_secs_f64();
+        let th = std::time::Instant::now();
+        let l_batch = rt.compute_logits_batch(&h_batch, batch_k)?;
+        let tb_head = th.elapsed().as_secs_f64();
+        let tb_tot = tb.elapsed().as_secs_f64();
+        let top1s: Vec<u32> = (0..batch_k)
+            .map(|k| {
+                let s = &l_batch[k * vocab..(k + 1) * vocab];
+                s.iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map_or(0, |(i, _)| i) as u32
+            })
+            .collect();
+        println!(
+            "BATCH_K k={batch_k} body_s={tb_body:.3} head_s={tb_head:.3} total_s={tb_tot:.3} s_per_tok={:.3} head_ms_per_tok={:.1} top1s={top1s:?}",
+            tb_tot / batch_k as f64,
+            1000.0 * tb_head / batch_k as f64
+        );
+    }
     let (vm_hwm, vm_rss) = proc_status_kb();
     println!("GEN31B ids={generated:?}");
     println!("GEN31B text={:?}", tk.decode(&generated));
@@ -1006,6 +1246,41 @@ mod tests {
                     }
                     assert!((got[t * d_out + r] as f64 - want).abs() < 1e-4);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn t16c_mat_integrates_with_run31b_batch_k() {
+        use run270_rust::t16c::T16CMat;
+        let (d_out, d_in, bsize, nb) = (32usize, 256usize, 256usize, 1u8);
+        let sc: Vec<f32> = (0..d_out).map(|r| 0.015 + 0.002 * (r as f32 % 5.0)).collect();
+        let bi: Vec<f32> = (0..d_out).map(|r| -0.004 + 0.001 * (r as f32 % 3.0)).collect();
+        let idx: Vec<u8> = (0..d_out * d_in).map(|i| ((i * 7 + 3) & 1) as u8).collect();
+        let mat = T16CMat::pack_from_components(
+            "model.language_model.layers.0.mlp.gate_proj.weight".into(),
+            d_out,
+            d_in,
+            bsize,
+            nb,
+            true,
+            false,
+            &sc,
+            Some(&bi),
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        let k = 4usize;
+        let x: Vec<f32> = (0..k * d_in).map(|i| ((i as f32) * 0.11).sin()).collect();
+        let y = mat.project_batch(&x, k, None, 2).unwrap();
+        assert_eq!(y.len(), k * d_out);
+        for tok in 0..k {
+            for r in 0..d_out {
+                let wrow = mat.decode_row(r).unwrap();
+                let want: f32 = wrow.iter().zip(&x[tok * d_in..(tok + 1) * d_in]).map(|(w, xv)| w * xv).sum();
+                assert!((y[tok * d_out + r] - want).abs() < 1e-3);
             }
         }
     }

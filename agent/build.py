@@ -34,7 +34,7 @@ except ImportError:
     yaml = None  # type: ignore
 
 
-def build() -> bytes:
+def build(check_only: bool = False) -> bytes:
     if yaml is None:
         raise ImportError("PyYAML is required for agent/build.py")
 
@@ -78,6 +78,29 @@ def build() -> bytes:
     ]:
         assert must.lower() in prompt.lower(), f"prompt missing: {must}"
 
+    expected_members = {rel: files[rel] for rel in RUNTIME_FILES}
+    with open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8") as f_lic:
+        expected_members["LICENSE.txt"] = f_lic.read()
+    with open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8") as f_not:
+        expected_members["NOTICE.txt"] = f_not.read()
+
+    if check_only:
+        if not os.path.isfile(OUT):
+            raise FileNotFoundError(f"Missing submission archive: {OUT}")
+        with zipfile.ZipFile(OUT, "r") as zf_read:
+            names = zf_read.namelist()
+            assert names == list(expected_members.keys()), f"member mismatch: {names}"
+            for rel, expected_text in expected_members.items():
+                actual_bytes = zf_read.read(rel)
+                assert actual_bytes == expected_text.encode("utf-8"), f"stale archive member: {rel}"
+        data = open(OUT, "rb").read()
+        print(f"Submission (verified read-only): {OUT}")
+        print(f"SHA-256: {hashlib.sha256(data).hexdigest()}")
+        print(f"Size: {len(data)} bytes")
+        print(f"Members: {list(expected_members.keys())}")
+        print("ALL STRUCTURAL CHECKS PASS")
+        return data
+
     # ── deterministic archive ───────────────────────────────────────────────
     # ZipInfo.date_time is pinned so the container bytes (and therefore the
     # SHA-256) are reproducible: writestr() with a bare name stamps the
@@ -92,12 +115,8 @@ def build() -> bytes:
             zi.external_attr = 0o644 << 16
             z.writestr(zi, content)
 
-        for rel in RUNTIME_FILES:
-            write_member(rel, files[rel])
-        with open(os.path.join(HERE, "LICENSE.txt"), encoding="utf-8") as f_lic:
-            write_member("LICENSE.txt", f_lic.read())
-        with open(os.path.join(HERE, "NOTICE.txt"), encoding="utf-8") as f_not:
-            write_member("NOTICE.txt", f_not.read())
+        for rel, content in expected_members.items():
+            write_member(rel, content)
     data = buf.getvalue()
     with open(OUT, "wb") as f:
         f.write(data)
@@ -111,4 +130,4 @@ def build() -> bytes:
 
 
 if __name__ == "__main__":
-    build()
+    build(check_only="--check" in sys.argv[1:])

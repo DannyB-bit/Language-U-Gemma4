@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Standalone deterministic unit tests for Trinity Retrieval S^7 math and Trust Law."""
 
+import json
+import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 import numpy as np
@@ -77,6 +81,73 @@ class TestTrinityRetrievalMath(unittest.TestCase):
         self.assertEqual(bucket_fp, "fail")
         bucket_miss, _ = assess_case(None, "miss", None, None)
         self.assertEqual(bucket_miss, "miss")
+
+    def test_store_revision_and_engine_cache_invalidation(self):
+        from trinity_retrieval import roadmap_hybrid_v5_gemma as v5
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "roadmap_fts5.sqlite"
+            art = root / "roadmap_v2.npz"
+            meta = root / "roadmap_v2_meta.json"
+            con = sqlite3.connect(str(db))
+            con.execute("CREATE TABLE topics (id INTEGER PRIMARY KEY, slug TEXT, title TEXT, body TEXT)")
+            con.execute("CREATE VIRTUAL TABLE topics_fts USING fts5(title, body, content='topics', content_rowid='id')")
+            con.execute("INSERT INTO topics (id, slug, title, body) VALUES (1, 'kafka', 'Kafka', 'kafka streaming broker')")
+            con.execute("INSERT INTO topics_fts (rowid, title, body) VALUES (1, 'Kafka', 'kafka streaming broker')")
+            con.commit()
+            con.close()
+
+            def write_index(tag: str) -> None:
+                np.savez(
+                    art,
+                    Vt_k=np.eye(2, dtype=np.float32),
+                    doc_lsa=np.array([[1.0, 0.0]], dtype=np.float32),
+                    doc_char=np.array([[1.0]], dtype=np.float32),
+                    gidf=np.array([1.0], dtype=np.float32),
+                    idf=np.array([1.0, 1.0], dtype=np.float32),
+                )
+                meta.write_text(
+                    json.dumps(
+                        {
+                            "vocab": ["kafka", "broker"],
+                            "gvocab": [" kaf"],
+                            "slugs": [tag],
+                            "titles": [f"Title {tag}"],
+                            "bodies": ["kafka streaming broker"],
+                            "links": [""],
+                            "roadmaps": ["backend"],
+                            "categories": ["messaging"],
+                            "ids": [1],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            write_index("kafka-v1")
+            orig = (v5.DB, v5.ART, v5.META, v5.GEMMA_EMB, v5.S7_EMB)
+            try:
+                v5.clear_engine_cache()
+                v5.DB, v5.ART, v5.META = str(db), str(art), str(meta)
+                v5.GEMMA_EMB = str(root / "roadmap_gemma_emb.npz")
+                v5.S7_EMB = str(root / "roadmap_s7_emb.npz")
+
+                rev1 = v5.store_revision()
+                eng1 = v5.get_engine(load_gemma=False)
+                self.assertIs(v5.get_engine(load_gemma=False), eng1)
+                self.assertEqual(eng1.slugs, ["kafka-v1"])
+
+                # Updating index artifacts must change store_revision and evict stale cache.
+                write_index("kafka-v2")
+                os.utime(meta, ns=(meta.stat().st_atime_ns, meta.stat().st_mtime_ns + 1_000_000))
+                rev2 = v5.store_revision()
+                self.assertNotEqual(rev1, rev2)
+                eng2 = v5.get_engine(load_gemma=False)
+                self.assertIsNot(eng2, eng1)
+                self.assertEqual(eng2.slugs, ["kafka-v2"])
+            finally:
+                v5.clear_engine_cache()
+                v5.DB, v5.ART, v5.META, v5.GEMMA_EMB, v5.S7_EMB = orig
 
 
 if __name__ == "__main__":

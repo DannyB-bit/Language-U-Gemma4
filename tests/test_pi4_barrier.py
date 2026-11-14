@@ -295,6 +295,73 @@ class Pi4BarrierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all-36-byte"):
             mixed_budget(sidecar_bytes=2_818_572_288 + 2_990_082)
 
+    def test_tile16_bitserial_gemm_and_cs_skip(self):
+        self.assertTrue(self.acc.has_v2_tile16)
+        self.assertTrue(self.acc.self_test())
+        rng = np.random.default_rng(20261113)
+        for d_out, d_in, bsize, n_bits, is_asym, k_tok in [
+            (37, 256, 128, 1, True, 1),
+            (32, 192, 64, 2, False, 4),
+            (37, 256, 256, 3, True, 5),
+            (16, 128, 128, 4, False, 1),
+        ]:
+            n_tiles = (d_out + 15) // 16
+            n_blks = d_in // bsize
+            hdr = 64 if is_asym else 32
+            plane_b = (bsize // 8) * 16
+            tblk = hdr + n_bits * plane_b
+            packed = np.zeros(n_tiles * n_blks * tblk, dtype=np.uint8)
+            norms = np.zeros(n_tiles * n_blks, dtype=np.uint16)
+            w_ref = np.zeros((d_out, d_in), dtype=np.float32)
+
+            for t in range(n_tiles):
+                for blk in range(n_blks):
+                    off = (t * n_blks + blk) * tblk
+                    max_wn2 = 0.0
+                    for r in range(16):
+                        gr = t * 16 + r
+                        if gr >= d_out:
+                            continue
+                        sc_h = np.float16(0.02 + 0.03 * float(rng.random()))
+                        bi_h = np.float16(0.01 * (2.0 * float(rng.random()) - 1.0)) if is_asym else np.float16(0.0)
+                        packed[off + r * 2 : off + r * 2 + 2] = np.frombuffer(sc_h.tobytes(), dtype=np.uint8)
+                        if is_asym:
+                            packed[off + 32 + r * 2 : off + 32 + r * 2 + 2] = np.frombuffer(bi_h.tobytes(), dtype=np.uint8)
+                        wv = np.full(bsize, float(bi_h) if is_asym else 0.0, dtype=np.float32)
+                        sc_f = float(sc_h)
+                        for p in range(n_bits):
+                            p_off = off + hdr + p * plane_b
+                            b_row = rng.integers(0, 256, size=bsize // 8, dtype=np.uint8)
+                            for bo in range(bsize // 8):
+                                packed[p_off + bo * 16 + r] = b_row[bo]
+                            bits = np.unpackbits(b_row).astype(np.float32) * 2.0 - 1.0
+                            wv += sc_f * float(1 << p) * bits
+                        w_ref[gr, blk * bsize : (blk + 1) * bsize] = wv
+                        max_wn2 = max(max_wn2, float(np.sum(wv * wv)))
+                    norms[t * n_blks + blk] = np.frombuffer(np.float16(np.sqrt(max_wn2)).tobytes(), dtype=np.uint16)[0]
+
+            x = rng.normal(size=(k_tok, d_in)).astype(np.float32)
+            x_arg = x[0] if k_tok == 1 else x
+            y_got, sk0 = self.acc.gemm_bitserial_tile16(packed, x_arg, d_out, d_in, bsize, n_bits, is_asym, norms, 0.0, 2)
+            self.assertEqual(sk0, 0)
+            y_ref = x @ w_ref.T
+            if k_tok == 1:
+                y_mmap = self.acc.gemv_bitserial_tile16(packed.ctypes.data, x_arg, d_out, d_in, bsize, n_bits, is_asym, norms.ctypes.data, 0.0, 2)
+                np.testing.assert_allclose(y_mmap, y_got, rtol=1e-5, atol=1e-5)
+                y_ref_eval = y_ref[0]
+            else:
+                y_ref_eval = y_ref
+            cos = float(np.dot(y_got.ravel(), y_ref_eval.ravel()) / (np.linalg.norm(y_got) * np.linalg.norm(y_ref_eval) + 1e-12))
+            self.assertGreater(cos, 0.999)
+
+            y_skip, sk_all = self.acc.gemm_bitserial_tile16(packed, x_arg, d_out, d_in, bsize, n_bits, is_asym, norms, 1e9, 2)
+            n_k_chunks = (k_tok + 3) // 4
+            self.assertEqual(sk_all, n_k_chunks * n_tiles * n_blks)
+            self.assertEqual(float(np.max(np.abs(y_skip))), 0.0)
+
+        with self.assertRaises(RuntimeError):
+            self.acc.gemm_bitserial_tile16(np.zeros(64, dtype=np.uint8), np.zeros(128, dtype=np.float32), 16, 128, block_size=32)
+
 
 if __name__ == "__main__":
     unittest.main()

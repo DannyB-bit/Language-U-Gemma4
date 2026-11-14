@@ -1,0 +1,9 @@
+# Pi 4 NEON FFI vs Pure-Rust (`--no-native-ffi`) Parity Check on `gemma4_31b_cal.t16c`
+# Host: Raspberry Pi 4 Model B (Cortex-A72 aarch64), --threads 4
+# Model: /mnt/SHE-VAULT/gemma4_31b_cal.t16c (6,134,689,856 B / 5.7134 GiB, sha256 e63a583bc6f8ed28d2429673ddcc6ce3f8e2d54cd7802100d768f16633d7b345)
+# Prompt: 27-token chat `2 + 2`
+
+NEON_FFI_LOG: run31b_cal_v2_2plus2.log (prefill_s=33.78, ssd_read_bytes=0, vm_hwm_kb=6238800, argmax=715)
+NO_NATIVE_FFI_LOG: run31b_cal_v2_2plus2_noffi.log (prefill_s=889.23, ssd_read_bytes=0, vm_hwm_kb=6219076, argmax=715)
+PREFILL_SPEEDUP_NEON_OVER_RUST: 26.32x (889.23s / 33.78s)
+FFI_VS_NOFFI: cos=0.99929892 rel_l2=3.75e-02 max_abs=2.35e+00 top1=(715, 715) match=True

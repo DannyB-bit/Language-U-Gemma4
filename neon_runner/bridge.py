@@ -451,6 +451,23 @@ class NeonStreamAccelerator:
             ]
             self.lib.paged_bf16_attention_gqa_c.restype = ctypes.c_int
 
+        self.has_v2_tile16 = hasattr(self.lib, "gemm_bitserial_tile16_batch") and hasattr(
+            self.lib, "gemv_bitserial_tile16_mmap"
+        )
+        if self.has_v2_tile16:
+            self.lib.gemm_bitserial_tile16_batch.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_void_p,
+            ]
+            self.lib.gemm_bitserial_tile16_batch.restype = ctypes.c_int
+            self.lib.gemv_bitserial_tile16_mmap.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_float, ctypes.c_int, ctypes.c_void_p,
+            ]
+            self.lib.gemv_bitserial_tile16_mmap.restype = ctypes.c_int
+
     def self_test(self) -> bool:
         return bool(self.lib.neon_accelerator_self_test() == 1)
 
@@ -583,6 +600,97 @@ class NeonStreamAccelerator:
             lut.ctypes.data_as(ctypes.c_void_p),
         )
         return lut if ok == 1 else None
+
+    def gemm_bitserial_tile16(
+        self,
+        packed_bytes: np.ndarray,
+        x_f32: np.ndarray,
+        d_out: int,
+        d_in: int,
+        block_size: int = 128,
+        n_bits: int = 3,
+        is_asym: bool = True,
+        tile_norm_fp16: Optional[np.ndarray] = None,
+        cs_skip_thresh: float = 0.0,
+        num_threads: int = 4,
+    ) -> Tuple[np.ndarray, int]:
+        """Executes NEON/AVX2 tile-16 bit-serial GEMM (`[k, d_in] -> [k, d_out]`) with optional CS skip."""
+        if not self.has_v2_tile16:
+            raise RuntimeError("Native library was built without gemm_bitserial_tile16_batch")
+        pk = np.ascontiguousarray(packed_bytes, dtype=np.uint8)
+        xv = np.ascontiguousarray(x_f32, dtype=np.float32)
+        if xv.ndim == 1:
+            if xv.shape[0] != d_in:
+                raise ValueError(f"Expected x len {d_in}, got {xv.shape}")
+            k_tokens = 1
+        elif xv.ndim == 2:
+            if xv.shape[1] != d_in:
+                raise ValueError(f"Expected x shape (k, {d_in}), got {xv.shape}")
+            k_tokens = xv.shape[0]
+        else:
+            raise ValueError(f"Expected 1D or 2D x, got shape {xv.shape}")
+        y_out = np.empty((k_tokens, d_out), dtype=np.float32)
+        norms_ptr = None
+        if tile_norm_fp16 is not None:
+            tn = np.ascontiguousarray(tile_norm_fp16, dtype=np.uint16)
+            norms_ptr = tn.ctypes.data_as(ctypes.c_void_p)
+        skipped_c = ctypes.c_int64(0)
+        rc = self.lib.gemm_bitserial_tile16_batch(
+            pk.ctypes.data_as(ctypes.c_void_p),
+            norms_ptr,
+            xv.ctypes.data_as(ctypes.c_void_p),
+            y_out.ctypes.data_as(ctypes.c_void_p),
+            int(d_out),
+            int(d_in),
+            int(block_size),
+            int(n_bits),
+            1 if is_asym else 0,
+            int(k_tokens),
+            ctypes.c_float(cs_skip_thresh),
+            int(num_threads),
+            ctypes.byref(skipped_c),
+        )
+        if rc != 0:
+            raise RuntimeError(f"gemm_bitserial_tile16_batch failed with rc={rc}")
+        return (y_out[0] if x_f32.ndim == 1 else y_out), int(skipped_c.value)
+
+    def gemv_bitserial_tile16(
+        self,
+        packed_ptr: int,
+        x_f32: np.ndarray,
+        d_out: int,
+        d_in: int,
+        block_size: int = 128,
+        n_bits: int = 3,
+        is_asym: bool = True,
+        tile_norm_ptr: int = 0,
+        cs_skip_thresh: float = 0.0,
+        num_threads: int = 4,
+    ) -> np.ndarray:
+        """Single-token zero-copy mmap/RAM tile-16 bit-serial GEMV."""
+        if not self.has_v2_tile16:
+            raise RuntimeError("Native library was built without gemv_bitserial_tile16_mmap")
+        xv = np.ascontiguousarray(x_f32, dtype=np.float32)
+        if xv.shape != (d_in,):
+            raise ValueError(f"Expected x shape ({d_in},), got {xv.shape}")
+        y_out = np.empty(d_out, dtype=np.float32)
+        rc = self.lib.gemv_bitserial_tile16_mmap(
+            ctypes.c_void_p(packed_ptr),
+            ctypes.c_void_p(tile_norm_ptr) if tile_norm_ptr else None,
+            xv.ctypes.data_as(ctypes.c_void_p),
+            y_out.ctypes.data_as(ctypes.c_void_p),
+            int(d_out),
+            int(d_in),
+            int(block_size),
+            int(n_bits),
+            1 if is_asym else 0,
+            ctypes.c_float(cs_skip_thresh),
+            int(num_threads),
+            None,
+        )
+        if rc != 0:
+            raise RuntimeError(f"gemv_bitserial_tile16_mmap failed with rc={rc}")
+        return y_out
 
 
 class NeonRunnerBridgeV2:
@@ -966,6 +1074,49 @@ def _self_test() -> int:
             )
             semantic_peak_ok = int(np.argmax(y_fwht)) == 0 and int(np.argmax(y_opt5)) == 0
 
+            # Tile-16 bit-serial sub64 LUT parity check (3-bit asym, k=4, tail rows d_out=37)
+            tile16_ok = True
+            if acc.has_v2_tile16:
+                d_out_t, d_in_t, bsize_t, n_bits_t = 37, 256, 128, 3
+                n_tiles_t = (d_out_t + 15) // 16
+                n_blks_t = d_in_t // bsize_t
+                plane_b_t = (bsize_t // 8) * 16
+                tblk_t = 64 + n_bits_t * plane_b_t
+                pk_t = np.zeros(n_tiles_t * n_blks_t * tblk_t, dtype=np.uint8)
+                w_t_ref = np.zeros((d_out_t, d_in_t), dtype=np.float32)
+                tn_t = np.zeros(n_tiles_t * n_blks_t, dtype=np.uint16)
+                t_rng = np.random.default_rng(314159)
+                for tt in range(n_tiles_t):
+                    for bb in range(n_blks_t):
+                        off_b = (tt * n_blks_t + bb) * tblk_t
+                        max_wn2 = 0.0
+                        for rr in range(16):
+                            gr = tt * 16 + rr
+                            if gr >= d_out_t:
+                                continue
+                            sc_h = np.float16(0.02 + 0.03 * float(t_rng.random()))
+                            bi_h = np.float16(0.01 * (2.0 * float(t_rng.random()) - 1.0))
+                            pk_t[off_b + rr * 2 : off_b + rr * 2 + 2] = np.frombuffer(sc_h.tobytes(), dtype=np.uint8)
+                            pk_t[off_b + 32 + rr * 2 : off_b + 32 + rr * 2 + 2] = np.frombuffer(bi_h.tobytes(), dtype=np.uint8)
+                            sc_f, bi_f = float(sc_h), float(bi_h)
+                            wv_blk = np.full(bsize_t, bi_f, dtype=np.float32)
+                            for p_i in range(n_bits_t):
+                                p_off = off_b + 64 + p_i * plane_b_t
+                                bytes_row = t_rng.integers(0, 256, size=bsize_t // 8, dtype=np.uint8)
+                                for bo in range(bsize_t // 8):
+                                    pk_t[p_off + bo * 16 + rr] = bytes_row[bo]
+                                bits = np.unpackbits(bytes_row).astype(np.float32) * 2.0 - 1.0
+                                wv_blk += sc_f * float(1 << p_i) * bits
+                            w_t_ref[gr, bb * bsize_t : (bb + 1) * bsize_t] = wv_blk
+                            max_wn2 = max(max_wn2, float(np.sum(wv_blk * wv_blk)))
+                        tn_t[tt * n_blks_t + bb] = np.frombuffer(np.float16(np.sqrt(max_wn2)).tobytes(), dtype=np.uint16)[0]
+                x_t = t_rng.normal(size=(4, d_in_t)).astype(np.float32)
+                y_t_got, sk0 = acc.gemm_bitserial_tile16(pk_t, x_t, d_out_t, d_in_t, bsize_t, n_bits_t, True, tn_t, 0.0, 2)
+                y_t_ref = x_t @ w_t_ref.T
+                cos_t = float(np.dot(y_t_got.ravel(), y_t_ref.ravel()) / (np.linalg.norm(y_t_got) * np.linalg.norm(y_t_ref) + 1e-12))
+                y_t_skip, sk_all = acc.gemm_bitserial_tile16(pk_t, x_t, d_out_t, d_in_t, bsize_t, n_bits_t, True, tn_t, 1e9, 2)
+                tile16_ok = (sk0 == 0 and cos_t > 0.999 and sk_all == ((x_t.shape[0] + 3) // 4) * n_tiles_t * n_blks_t and float(np.max(np.abs(y_t_skip))) == 0.0)
+
             g4_ok = (
                 err_fwht < 1e-4
                 and err_dir < 1e-4
@@ -973,6 +1124,7 @@ def _self_test() -> int:
                 and err_v1_compat < 1e-4
                 and m_fwht["cosine_similarity"] > 0.90
                 and semantic_peak_ok
+                and tile16_ok
             )
             record_gate(
                 4,

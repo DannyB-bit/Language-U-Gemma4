@@ -1,0 +1,16 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
+[run31b] weight_source=T16C native_ffi=disabled mats=410 norms=421 body_bytes=5413632000 norm_bytes=5326064 embed_bytes=715653120
+[run31b] loaded in 25.95s pinned_layers=60/60 pinned_bytes=5418958064 embed_bytes=715653120 vm=(Some(5911460), Some(5905912))
+[run31b] prompt 27 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 25685, 607, 1186, 506, 1548, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 15.38s (pinned=false)
+[run31b] layer 05/60 done in 16.58s (pinned=false)
+[run31b] layer 14/60 done in 14.06s (pinned=false)
+[run31b] layer 29/60 done in 16.66s (pinned=false)
+[run31b] layer 44/60 done in 14.42s (pinned=false)
+[run31b] layer 59/60 done in 17.15s (pinned=false)
+[run31b] prefill done in 889.23s ssd_read_mb=0.0 vm=(Some(6219076), Some(6219076))
+PREFILL_TOP5 [715:"//"(28.403), 100:"<|channel>"(26.847), 818:"The"(26.258), 1638:" same"(25.571), 1852:" own"(25.388)]
+[STEP 0] id=715 text="//"
+GEN31B ids=[715]
+GEN31B text="//"
+MEM31B pinned_bytes=5418958064 embed_bytes=715653120 ssd_read_bytes=0 prefill_s=889.23 decode_s=0.00 vm_hwm_kb=Some(6219076) vm_rss_kb=Some(6219076)

@@ -1,0 +1,46 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5413632000 norm_bytes=5326064 embed_bytes=715653120
+[run31b] loaded in 26.42s pinned_layers=60/60 pinned_bytes=5418958064 embed_bytes=715653120 vm=(Some(5926820), Some(5921460))
+[run31b] prompt 19 tokens ids=[2, 105, 2364, 107, 15938, 7971, 506, 1441, 124600, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.42s (pinned=false)
+[run31b] layer 05/60 done in 0.48s (pinned=false)
+[run31b] layer 14/60 done in 0.36s (pinned=false)
+[run31b] layer 29/60 done in 0.42s (pinned=false)
+[run31b] layer 44/60 done in 0.35s (pinned=false)
+[run31b] layer 59/60 done in 0.44s (pinned=false)
+[run31b] prefill done in 22.69s ssd_read_mb=0.0 vm=(Some(6238804), Some(6238804))
+PREFILL_TOP5 [715:"//"(28.548), 100:"<|channel>"(27.403), 1018:"**"(27.028), 818:"The"(26.473), 1638:" same"(26.393)]
+[STEP 0] id=715 text="//"
+[run31b] decode step 0 in 2.07s vm=(Some(6238804), Some(6238804))
+[STEP 1] id=715 text="//"
+[run31b] decode step 1 in 2.06s vm=(Some(6238804), Some(6238804))
+[STEP 2] id=715 text="//"
+[run31b] decode step 2 in 2.06s vm=(Some(6238804), Some(6238804))
+[STEP 3] id=715 text="//"
+[run31b] decode step 3 in 2.07s vm=(Some(6238804), Some(6238804))
+[STEP 4] id=715 text="//"
+[run31b] decode step 4 in 2.12s vm=(Some(6238804), Some(6238804))
+[STEP 5] id=715 text="//"
+[run31b] decode step 5 in 2.06s vm=(Some(6238804), Some(6238804))
+[STEP 6] id=715 text="//"
+[run31b] decode step 6 in 2.07s vm=(Some(6238804), Some(6238804))
+[STEP 7] id=715 text="//"
+[run31b] decode step 7 in 2.08s vm=(Some(6238804), Some(6238804))
+[STEP 8] id=715 text="//"
+[run31b] decode step 8 in 2.06s vm=(Some(6238804), Some(6238804))
+[STEP 9] id=715 text="//"
+[run31b] decode step 9 in 2.09s vm=(Some(6238804), Some(6238804))
+[STEP 10] id=715 text="//"
+[run31b] decode step 10 in 2.17s vm=(Some(6238804), Some(6238804))
+[STEP 11] id=715 text="//"
+[run31b] decode step 11 in 2.08s vm=(Some(6238804), Some(6238804))
+[STEP 12] id=715 text="//"
+[run31b] decode step 12 in 2.08s vm=(Some(6238804), Some(6238804))
+[STEP 13] id=715 text="//"
+[run31b] decode step 13 in 2.09s vm=(Some(6238804), Some(6238804))
+[STEP 14] id=715 text="//"
+[run31b] decode step 14 in 2.10s vm=(Some(6238804), Some(6238804))
+[STEP 15] id=715 text="//"
+GEN31B ids=[715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715, 715]
+GEN31B text="////////////////////////////////"
+MEM31B pinned_bytes=5418958064 embed_bytes=715653120 ssd_read_bytes=0 prefill_s=22.69 decode_s=31.27 vm_hwm_kb=Some(6238804) vm_rss_kb=Some(6238804)
