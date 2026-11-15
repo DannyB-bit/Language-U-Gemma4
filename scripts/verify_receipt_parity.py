@@ -398,9 +398,46 @@ def _verify_run31b_receipts(root: Path, readme: str, frontier_md: str, errors: L
         v3 = _load_json_strict(v3_json)
         if v3.get("pinned_layers") != 60 or int(v3.get("vm_swap_kb", -1)) != 0 or int(v3.get("ssd_read_bytes", -1)) != 0:
             errors.append(f"run31b_v3_verified.json violates RAM-residency invariant: {v3}")
-        if float(v3.get("ffi_parity_cosine", 0.0)) < 0.999:
+        if float(v3.get("ffi_parity_cosine", 0.0)) < 0.999999:
             errors.append(f"run31b_v3_verified.json FFI parity cosine too low: {v3.get('ffi_parity_cosine')}")
-        claims += 2
+        if not bool(v3.get("ffi_parity_top1_exact")) or not bool(v3.get("ffi_parity_gen_exact")):
+            errors.append(f"run31b_v3_verified.json FFI parity exact flags failed: {v3.get('ffi_parity_top1_exact')}")
+        p_k1 = v3.get("prompts_k1", [])
+        if int(v3.get("prompts_tested", 0)) != 8 or len(p_k1) != 8:
+            errors.append(f"run31b_v3_verified.json expected 8 prompts_k1, got {len(p_k1)}")
+        by_id = {p.get("id"): p for p in p_k1}
+        spec_runs = v3.get("speculative_k4_runs", [])
+        if not bool(v3.get("speculative_k4_parity_verified")) or len(spec_runs) != 4:
+            errors.append(f"run31b_v3_verified.json speculative_k4_runs invalid count={len(spec_runs)}")
+        for sr in spec_runs:
+            ref = by_id.get(sr.get("reference_prompt", ""), {})
+            s_ids = sr.get("ids", [])
+            if not bool(sr.get("bit_exact_vs_k1")) or s_ids != ref.get("ids", [])[: len(s_ids)]:
+                errors.append(f"run31b_v3_verified.json speculative parity mismatch on {sr.get('run')}")
+            if int(sr.get("vm_swap_kb", -1)) != 0 or int(sr.get("ssd_read_bytes", -1)) != 0:
+                errors.append(f"run31b_v3_verified.json speculative RAM/IO violation on {sr.get('run')}")
+        cs_rows = v3.get("cs_lmhead_benchmarks", [])
+        if int(v3.get("cs_lmhead_top1_exact_matches", 0)) != 8 or len(cs_rows) != 6:
+            errors.append(f"run31b_v3_verified.json cs_lmhead_benchmarks count={len(cs_rows)} exact={v3.get('cs_lmhead_top1_exact_matches')}")
+        for cr in cs_rows:
+            if int(cr.get("exact_top1_matches", 0)) != 8 or int(cr.get("vm_swap_kb", -1)) != 0 or int(cr.get("timed_ssd_read_bytes", -1)) != 0:
+                errors.append(f"run31b_v3_verified.json CS benchmark invariant failed: {cr}")
+        _assert_contains("README.md", readme, f"{float(v3['ffi_parity_cosine']):.10f}", errors)
+        _assert_contains("README.md", readme, f"{float(v3['ffi_prefill_speedup_x']):.2f}x", errors)
+        _assert_contains("README.md", readme, f"{float(v3['prompt_battery_k1_summary']['weighted_ilt_s_per_tok']):.3f} s/tok", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, f"{float(v3['ffi_parity_cosine']):.10f}", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, f"{float(v3['prompt_battery_k1_summary']['weighted_ilt_s_per_tok']):.3f} s/tok", errors)
+        if (r31 / "run31b_v3_ffi_parity.txt").is_file() and (r31 / "run31b_v3_speculative_k4.log").is_file() and (r31 / "run31b_v3_cs_lmhead_bench.log").is_file():
+            v3_par = _read_text(r31 / "run31b_v3_ffi_parity.txt")
+            v3_spec = _read_text(r31 / "run31b_v3_speculative_k4.log")
+            v3_cs = _read_text(r31 / "run31b_v3_cs_lmhead_bench.log")
+            _assert_contains("run31b_v3_ffi_parity.txt", v3_par, f"cosine_similarity={float(v3['ffi_parity_cosine']):.10f}", errors)
+            _assert_contains("run31b_v3_ffi_parity.txt", v3_par, "gen31b_exact_match=True", errors)
+            _assert_contains("run31b_v3_speculative_k4.log", v3_spec, "s_per_tok=8.802", errors)
+            _assert_contains("run31b_v3_cs_lmhead_bench.log", v3_cs, "exact_top1=8/8", errors)
+            _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "col_macs_saved=31.29%", errors)
+            claims += 10
+        claims += 10
 
     return claims
 

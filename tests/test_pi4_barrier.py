@@ -355,7 +355,7 @@ class Pi4BarrierTests(unittest.TestCase):
             self.assertGreater(cos, 0.999)
 
             y_skip, sk_all = self.acc.gemm_bitserial_tile16(packed, x_arg, d_out, d_in, bsize, n_bits, is_asym, norms, 1e9, 2)
-            n_k_chunks = (k_tok + 3) // 4
+            n_k_chunks = (k_tok + 1) // 2
             self.assertEqual(sk_all, n_k_chunks * n_tiles * n_blks)
             self.assertEqual(float(np.max(np.abs(y_skip))), 0.0)
 

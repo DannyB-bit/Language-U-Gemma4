@@ -1156,6 +1156,12 @@ fn load_runtime_31b_t16c(
     ))
 }
 
+const ALLOWED_SINGLE_BYTE_STARTS: [usize; 26] = [
+    236769, 236773, 236774, 236775, 236776, 236777, 236780, 236788, 236791, 236792, 236794,
+    236796, 236797, 236798, 236799, 236806, 236811, 236814, 236823, 236824, 236836, 236840,
+    236847, 236855, 236863, 236874,
+];
+
 /// Suppress already-closed Gemma-4 thought control tokens and repetitive stutter without altering raw prefill parity dumps.
 fn apply_degeneracy_guard(logits: &mut [f32], prompt_ids: &[u32], generated: &[u32]) {
     let thought_closed = prompt_ids.ends_with(&[100, 45518, 107, 101]);
@@ -1165,9 +1171,26 @@ fn apply_degeneracy_guard(logits: &mut [f32], prompt_ids: &[u32], generated: &[u
                 logits[tid] = -1.0e9;
             }
         }
-        if generated.is_empty() {
-            for &tid in &[107usize, 108usize, 109usize, 715usize, 642usize, 1807usize, 236783usize] {
+        if generated.len() < 4 {
+            for &tid in &[1usize, 106usize] {
                 if tid < logits.len() {
+                    logits[tid] = -1.0e9;
+                }
+            }
+        }
+        if generated.is_empty() {
+            for &tid in &[
+                1usize, 106usize, 107usize, 108usize, 109usize, 715usize, 642usize, 1807usize,
+                1852usize, 1638usize, 759usize, 7243usize, 1025usize, 4317usize, 1884usize,
+                3161usize, 236783usize,
+            ] {
+                if tid < logits.len() {
+                    logits[tid] = -1.0e9;
+                }
+            }
+            let single_byte_end = 236891usize.min(logits.len());
+            for tid in 236743usize..single_byte_end {
+                if !ALLOWED_SINGLE_BYTE_STARTS.contains(&tid) {
                     logits[tid] = -1.0e9;
                 }
             }
@@ -1772,6 +1795,22 @@ mod tests {
         logits[23681] = 20.0;
         apply_degeneracy_guard(&mut logits, &prompt_ids, &[]);
         assert_eq!(argmax_f32(&logits), 23681);
+
+        let mut logits_sb = vec![0.0f32; 240000];
+        logits_sb[1] = 35.0; // <eos>
+        logits_sb[106] = 34.0; // <turn|>
+        logits_sb[1852] = 33.0; // common-mode carrier artifact
+        logits_sb[236779] = 32.0; // '_'
+        logits_sb[236751] = 31.0; // 's'
+        logits_sb[236774] = 20.0; // 'T' (allowed uppercase ASCII start)
+        apply_degeneracy_guard(&mut logits_sb, &prompt_ids, &[]);
+        assert_eq!(argmax_f32(&logits_sb), 236774);
+
+        let mut logits_premature = vec![0.0f32; 50000];
+        logits_premature[1] = 40.0; // premature <eos> at generated.len() < 4
+        logits_premature[23682] = 18.0;
+        apply_degeneracy_guard(&mut logits_premature, &prompt_ids, &[23681]);
+        assert_eq!(argmax_f32(&logits_premature), 23682);
 
         let mut logits2 = vec![0.0f32; 50000];
         logits2[23681] = 20.0;

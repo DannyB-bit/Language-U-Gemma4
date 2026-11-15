@@ -1540,31 +1540,118 @@ def main() -> int:
             print(f"L{l:02d} cascade_cos={cos_l:.5f} nr={nr_l:.4f} [{time.perf_counter()-t_l:.1f}s]", flush=True)
             gc.collect()
 
-        # Fail-closed final_norm refinement via real PyTorch autograd + AdamW
+        # Fail-closed final_norm refinement (clean non-tag filter + Wiener/AdamW) and Cell 60
         refined_norms: List[Tuple[str, np.ndarray]] = []
         fn_key = "model.language_model.norm.weight" if sr.has_tensor("model.language_model.norm.weight") else "model.norm.weight"
         if sr.has_tensor(fn_key):
             fn_orig = sr.read_f32(fn_key)
             ht_norm = _rmsn(h_teacher, fn_orig)
             hs_unit = _rmsn(h_student, None)
-            base_val = hs_unit[val_mask] * fn_orig[None, :]
-            val_mse_before = float(np.mean((base_val - ht_norm[val_mask]) ** 2))
+            n_tok = int(h_student.shape[0])
+
+            clean_mask = np.ones(n_tok, dtype=bool)
+            all_ids_local = locals().get("all_ids", None)
+            if all_ids_local is not None and len(all_ids_local) >= max(32, n_tok):
+                tag_ids = {1, 2, 100, 101, 105, 106, 107, 236779}
+                ids_head = [int(x) for x in all_ids_local[:n_tok]]
+                span_tail = (236779, 1340, 236779, 887, 236813)
+                cand_mask = np.array([tid not in tag_ids for tid in ids_head], dtype=bool)
+                for ti in range(max(0, n_tok - 5)):
+                    if ids_head[ti] in (3041, 643, 808) and tuple(ids_head[ti + 1 : ti + 6]) == span_tail:
+                        cand_mask[max(0, ti - 1) : min(n_tok, ti + 8)] = False
+                if int(cand_mask.sum()) >= 16:
+                    clean_mask = cand_mask
+
+            tr_clean = tr_mask & clean_mask
+            val_clean = val_mask & clean_mask
+            if int(tr_clean.sum()) < 8 or int(val_clean.sum()) < 4:
+                tr_clean = tr_mask
+                val_clean = val_mask
+
+            hs_tr = hs_unit[tr_clean]
+            ht_tr = ht_norm[tr_clean]
+            hs_va = hs_unit[val_clean]
+            ht_va = ht_norm[val_clean]
+            base_val = hs_va * fn_orig[None, :]
+            val_mse_before = float(np.mean((base_val - ht_va) ** 2))
+
+            lam_w = 0.25
+            num_w = np.mean(hs_tr * ht_tr, axis=0) + lam_w * fn_orig
+            den_w = np.mean(hs_tr * hs_tr, axis=0) + lam_w
+            fn_wiener = (num_w / np.maximum(den_w, 1e-8)).astype(np.float32)
+            mse_wiener = float(np.mean((hs_va * fn_wiener[None, :] - ht_va) ** 2))
+
             w_p = nn.Parameter(torch.from_numpy(fn_orig.copy()))
             opt_n = torch.optim.AdamW([w_p], lr=5e-3, weight_decay=1e-4)
-            xt_n = torch.from_numpy(hs_unit[tr_mask])
-            yt_n = torch.from_numpy(ht_norm[tr_mask])
+            xt_n = torch.from_numpy(hs_tr)
+            yt_n = torch.from_numpy(ht_tr)
             for _ in range(120):
                 opt_n.zero_grad()
                 pred_n = xt_n * w_p.unsqueeze(0)
                 loss_n = F.mse_loss(pred_n, yt_n) + 1e-3 * ((w_p - torch.from_numpy(fn_orig)) ** 2).mean()
                 loss_n.backward()
                 opt_n.step()
-            fn_new = w_p.detach().cpu().numpy().astype(np.float32)
-            val_mse_after = float(np.mean((hs_unit[val_mask] * fn_new[None, :] - ht_norm[val_mask]) ** 2))
+            fn_adam = w_p.detach().cpu().numpy().astype(np.float32)
+            mse_adam = float(np.mean((hs_va * fn_adam[None, :] - ht_va) ** 2))
+
+            if mse_wiener <= mse_adam:
+                fn_new, val_mse_after, fn_kind = fn_wiener, mse_wiener, "Wiener"
+            else:
+                fn_new, val_mse_after, fn_kind = fn_adam, mse_adam, "AdamW"
+
+            fn_eff = fn_orig
             if val_mse_after < val_mse_before:
+                fn_eff = fn_new
                 out_norm_key = fn_key if fn_key in tr.norms else ("model.norm.weight" if "model.norm.weight" in tr.norms else fn_key)
                 refined_norms.append((out_norm_key, fn_new))
-                print(f"[C8DB NORM] {out_norm_key} val_mse {val_mse_before:.4f}->{val_mse_after:.4f}", flush=True)
+                print(
+                    f"[C8DB NORM/{fn_kind}] {out_norm_key} clean={int(clean_mask.sum())}/{n_tok} "
+                    f"val_mse {val_mse_before:.4f}->{val_mse_after:.4f}",
+                    flush=True,
+                )
+
+            y_base_norm = hs_unit * fn_eff[None, :]
+            x_tr60 = y_base_norm[tr_clean]
+            y_tr_base60 = y_base_norm[tr_clean]
+            y_tr_teach60 = ht_norm[tr_clean]
+            x_va60 = y_base_norm[val_clean]
+            y_va_base60 = y_base_norm[val_clean]
+            y_va_teach60 = ht_norm[val_clean]
+
+            mu_s = np.mean(x_tr60, axis=0)
+            mu_norm = float(np.linalg.norm(mu_s))
+            if mu_norm > 1e-8:
+                u_s = (mu_s / mu_norm).astype(np.float32)
+                y_tr_teach60 = y_tr_teach60 - 0.35 * ((y_tr_teach60 @ u_s)[:, None] * u_s[None, :])
+                y_va_teach60 = y_va_teach60 - 0.35 * ((y_va_teach60 @ u_s)[:, None] * u_s[None, :])
+
+            pd_local = locals().get("prompt_domains", None)
+            if pd_local is not None and len(pd_local) >= n_tok:
+                pd_tr60 = [pd_local[i] for i in np.flatnonzero(tr_clean)]
+            else:
+                pd_tr60 = ["general"] * int(tr_clean.sum())
+
+            entry60, stats60 = train_projection_pattern_bank(
+                "model.language_model.norm.post_cell60",
+                x_tr60,
+                y_tr_base60,
+                y_tr_teach60,
+                x_va60,
+                y_va_base60,
+                y_va_teach60,
+                pd_tr60,
+                rank=8,
+                n_experts=8,
+                top_k=2,
+                steps=120,
+                lr=5e-3,
+            )
+            if entry60 is not None:
+                trained_entries.append(entry60)
+                print(
+                    f"[C8DB CELL60] val_cos {stats60.get('val_cos_before', 0.0):.5f}->{stats60.get('val_cos_after', 0.0):.5f}",
+                    flush=True,
+                )
 
     out_sz = write_c8db_file(args.out, refined_norms, trained_entries)
     print(f"[C8DB-DONE] wrote {args.out} ({len(refined_norms)} norms, {len(trained_entries)} entries, {out_sz:,} bytes)", flush=True)
