@@ -94,6 +94,18 @@
   #define NEON_ALIGN64 __attribute__((aligned(64)))
 #endif
 
+#if defined(_MSC_VER)
+  #if HAS_AVX2 || defined(NEON_MSVC_FREESTANDING_DLL)
+    #define neon_prefetch(p) _mm_prefetch((const char*)(p), _MM_HINT_NTA)
+  #else
+    #define neon_prefetch(p) ((void)(p))
+  #endif
+#elif defined(__GNUC__) || defined(__clang__)
+  #define neon_prefetch(p) __builtin_prefetch((const void*)(p), 0, 0)
+#else
+  #define neon_prefetch(p) ((void)(p))
+#endif
+
 /* ----------------------------------------------------------------------------
  * Safe Little-Endian uint16 + IEEE-754 Binary16 -> Binary32 Conversion
  * ---------------------------------------------------------------------------- */
@@ -2704,6 +2716,35 @@ static inline int neon_round_i32(float v) {
     return (int)((v >= 0.0f) ? (v + 0.5f) : (v - 0.5f));
 }
 
+static inline void fill_l1_quad_lut_s8(
+    const float* NEON_RESTRICT qx4,
+    float inv,
+    int8_t* NEON_RESTRICT tab,
+    int* NEON_RESTRICT out_q4
+) {
+    int q0 = neon_round_i32(qx4[0] * inv);
+    int q1 = neon_round_i32(qx4[1] * inv);
+    int q2 = neon_round_i32(qx4[2] * inv);
+    int q3 = neon_round_i32(qx4[3] * inv);
+    if (q0 > 125) q0 = 125; else if (q0 < -125) q0 = -125;
+    if (q1 > 125) q1 = 125; else if (q1 < -125) q1 = -125;
+    if (q2 > 125) q2 = 125; else if (q2 < -125) q2 = -125;
+    if (q3 > 125) q3 = 125; else if (q3 < -125) q3 = -125;
+    if (out_q4) {
+        out_q4[0] = q0;
+        out_q4[1] = q1;
+        out_q4[2] = q2;
+        out_q4[3] = q3;
+    }
+    for (int m = 0; m < 16; m++) {
+        int tot = ((m & 8) ? q0 : -q0) + ((m & 4) ? q1 : -q1) +
+                  ((m & 2) ? q2 : -q2) + ((m & 1) ? q3 : -q3);
+        if (tot > 127) tot = 127;
+        if (tot < -127) tot = -127;
+        tab[m] = (int8_t)tot;
+    }
+}
+
 static void quantize_x_sub64_l1_tile16(
     const float* NEON_RESTRICT x,
     int d_in,
@@ -2723,28 +2764,936 @@ static void quantize_x_sub64_l1_tile16(
         sub_scales[s] = sc;
         float inv = (sc > 0.0f) ? (1.0f / sc) : 0.0f;
         for (int n = 0; n < 16; n++) {
-            int q0 = neon_round_i32(xs[n * 4 + 0] * inv);
-            int q1 = neon_round_i32(xs[n * 4 + 1] * inv);
-            int q2 = neon_round_i32(xs[n * 4 + 2] * inv);
-            int q3 = neon_round_i32(xs[n * 4 + 3] * inv);
-            if (q0 > 125) q0 = 125;
-            if (q0 < -125) q0 = -125;
-            if (q1 > 125) q1 = 125;
-            if (q1 < -125) q1 = -125;
-            if (q2 > 125) q2 = 125;
-            if (q2 < -125) q2 = -125;
-            if (q3 > 125) q3 = 125;
-            if (q3 < -125) q3 = -125;
-            int8_t* tab = luts + ((size_t)s * 16 + (size_t)n) * 16;
-            for (int m = 0; m < 16; m++) {
-                int tot = ((m & 8) ? q0 : -q0) + ((m & 4) ? q1 : -q1) +
-                          ((m & 2) ? q2 : -q2) + ((m & 1) ? q3 : -q3);
-                if (tot > 127) tot = 127;
-                if (tot < -127) tot = -127;
-                tab[m] = (int8_t)tot;
+            fill_l1_quad_lut_s8(xs + n * 4, inv, luts + ((size_t)s * 16 + (size_t)n) * 16, NULL);
+        }
+    }
+}
+
+static void quantize_x_sub64_l1_dual_tile16(
+    const float* NEON_RESTRICT x,
+    int d_in,
+    int8_t* NEON_RESTRICT luts_hi,
+    float* NEON_RESTRICT sub_scales_hi,
+    int8_t* NEON_RESTRICT luts_lo,
+    float* NEON_RESTRICT sub_scales_lo
+) {
+    const int n_subs = d_in / 64;
+    float res[64];
+    for (int s = 0; s < n_subs; s++) {
+        const float* xs = x + (size_t)s * 64;
+        float smax_hi = 0.0f;
+        for (int n = 0; n < 16; n++) {
+            float sa = neon_fabsf(xs[n * 4 + 0]) + neon_fabsf(xs[n * 4 + 1]) +
+                       neon_fabsf(xs[n * 4 + 2]) + neon_fabsf(xs[n * 4 + 3]);
+            if (sa > smax_hi) smax_hi = sa;
+        }
+        float sc_hi = (smax_hi > 1e-12f) ? (smax_hi / 125.0f) : 0.0f;
+        sub_scales_hi[s] = sc_hi;
+        float inv_hi = (sc_hi > 0.0f) ? (1.0f / sc_hi) : 0.0f;
+        float smax_lo = 0.0f;
+        for (int n = 0; n < 16; n++) {
+            int q4[4];
+            fill_l1_quad_lut_s8(xs + n * 4, inv_hi, luts_hi + ((size_t)s * 16 + (size_t)n) * 16, q4);
+            float e0 = xs[n * 4 + 0] - sc_hi * (float)q4[0];
+            float e1 = xs[n * 4 + 1] - sc_hi * (float)q4[1];
+            float e2 = xs[n * 4 + 2] - sc_hi * (float)q4[2];
+            float e3 = xs[n * 4 + 3] - sc_hi * (float)q4[3];
+            res[n * 4 + 0] = e0;
+            res[n * 4 + 1] = e1;
+            res[n * 4 + 2] = e2;
+            res[n * 4 + 3] = e3;
+            float sa_lo = neon_fabsf(e0) + neon_fabsf(e1) + neon_fabsf(e2) + neon_fabsf(e3);
+            if (sa_lo > smax_lo) smax_lo = sa_lo;
+        }
+        float sc_lo = (smax_lo > 1e-30f) ? (smax_lo / 125.0f) : 0.0f;
+        sub_scales_lo[s] = sc_lo;
+        float inv_lo = (sc_lo > 0.0f) ? (1.0f / sc_lo) : 0.0f;
+        for (int n = 0; n < 16; n++) {
+            fill_l1_quad_lut_s8(res + n * 4, inv_lo, luts_lo + ((size_t)s * 16 + (size_t)n) * 16, NULL);
+        }
+    }
+}
+
+/* Build 256-entry FP32 quintet LUT (0..242 valid base-3, 243..255 zeroed). */
+static inline void build_tern5_lut_f32(
+    float x0, float x1, float x2, float x3, float x4, float* NEON_RESTRICT dst_lut
+) {
+    const float a0[3] = { -x0, 0.0f, x0 };
+    const float a1[3] = { -x1, 0.0f, x1 };
+    const float a2[3] = { -x2, 0.0f, x2 };
+    const float a3[3] = { -x3, 0.0f, x3 };
+    const float a4[3] = { -x4, 0.0f, x4 };
+    float b[9];
+    for (int d1 = 0, i = 0; d1 < 3; d1++) {
+        const float v1 = a1[d1];
+        for (int d0 = 0; d0 < 3; d0++, i++) b[i] = a0[d0] + v1;
+    }
+    float c[27];
+    for (int d2 = 0, i = 0; d2 < 3; d2++) {
+        const float v2 = a2[d2];
+        for (int j = 0; j < 9; j++, i++) c[i] = b[j] + v2;
+    }
+    for (int d4 = 0, out = 0; d4 < 3; d4++) {
+        const float v4 = a4[d4];
+        for (int d3 = 0; d3 < 3; d3++) {
+            const float v34 = v4 + a3[d3];
+            for (int j = 0; j < 27; j++, out++) {
+                dst_lut[out] = c[j] + v34;
             }
         }
     }
+    for (int out = 243; out < 256; out++) {
+        dst_lut[out] = 0.0f;
+    }
+}
+
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+static const int8_t NEON_T5_LUT27_D0[32] = {
+    -1, 0, 1, -1, 0, 1, -1, 0, 1,
+    -1, 0, 1, -1, 0, 1, -1, 0, 1,
+    -1, 0, 1, -1, 0, 1, -1, 0, 1,
+     0, 0, 0,  0, 0
+};
+static const int8_t NEON_T5_LUT27_D1[32] = {
+    -1, -1, -1,  0,  0,  0,  1,  1,  1,
+    -1, -1, -1,  0,  0,  0,  1,  1,  1,
+    -1, -1, -1,  0,  0,  0,  1,  1,  1,
+     0,  0,  0,  0,  0
+};
+static const int8_t NEON_T5_LUT27_D2[32] = {
+    -1, -1, -1, -1, -1, -1, -1, -1, -1,
+     0,  0,  0,  0,  0,  0,  0,  0,  0,
+     1,  1,  1,  1,  1,  1,  1,  1,  1,
+     0,  0,  0,  0,  0
+};
+static const int8_t NEON_T5_LUT9_D3[16] = {
+    -1, 0, 1, -1, 0, 1, -1, 0, 1,  0, 0, 0, 0, 0, 0, 0
+};
+static const int8_t NEON_T5_LUT9_D4[16] = {
+    -1, -1, -1,  0,  0,  0,  1,  1,  1,  0, 0, 0, 0, 0, 0, 0
+};
+
+/* Exact single-step DIV27 + parallel AArch64 TBL unpack of 16 packed 5-trit uint8 bytes
+ * -> five {-1, 0, +1} vectors with no 4-stage serial dependency chain.
+ * Proof: for all q in [0, 242], write q = 27*a + r with 0 <= a <= 8, 0 <= r <= 26.
+ * Since 27 * 19 = 513 = 512 + 1 and a + 19*r <= 8 + 19*26 = 502 < 512,
+ * (q * 19) >> 9 == a and q - 27*a == r identically. */
+static inline void unpack5_neon_tile16(
+    uint8x16_t q0,
+    int8x16x2_t t27_0, int8x16x2_t t27_1, int8x16x2_t t27_2,
+    int8x16_t t9_3, int8x16_t t9_4,
+    int8x16_t* w0, int8x16_t* w1, int8x16_t* w2, int8x16_t* w3, int8x16_t* w4
+) {
+    const uint8x16_t c242 = vdupq_n_u8(242);
+    const uint8x16_t c19 = vdupq_n_u8(19);
+    const uint8x8_t c19_lo = vget_low_u8(c19);
+    const uint8x16_t c27 = vdupq_n_u8(27);
+
+    uint8x16_t q = vminq_u8(q0, c242);
+    uint16x8_t p_lo = vmull_u8(vget_low_u8(q), c19_lo);
+    uint16x8_t p_hi = vmull_high_u8(q, c19);
+    uint8x16_t a = vcombine_u8(vmovn_u16(vshrq_n_u16(p_lo, 9)), vmovn_u16(vshrq_n_u16(p_hi, 9)));
+    uint8x16_t r = vmlsq_u8(q, a, c27);
+
+    *w3 = vqtbl1q_s8(t9_3, a);
+    *w4 = vqtbl1q_s8(t9_4, a);
+    *w0 = vqtbl2q_s8(t27_0, r);
+    *w1 = vqtbl2q_s8(t27_1, r);
+    *w2 = vqtbl2q_s8(t27_2, r);
+}
+
+static inline float quantize_t5_subblk_i8(
+    const float* NEON_RESTRICT src,
+    int len,
+    int pad_to,
+    int8_t* NEON_RESTRICT dst
+) {
+    float mx = 0.0f;
+    for (int i = 0; i < len; i++) {
+        float a = neon_fabsf(src[i]);
+        if (a > mx) mx = a;
+    }
+    const float scale = (mx > 1e-30f) ? (mx / 127.0f) : 0.0f;
+    const float inv = (mx > 1e-30f) ? (127.0f / mx) : 0.0f;
+    for (int i = 0; i < len; i++) {
+        float sv = src[i] * inv;
+        int v = (int)(sv >= 0.0f ? (sv + 0.5f) : (sv - 0.5f));
+        if (v > 127) v = 127;
+        else if (v < -127) v = -127;
+        dst[i] = (int8_t)v;
+    }
+    for (int i = len; i < pad_to; i++) dst[i] = 0;
+    return scale;
+}
+#endif
+
+static int gemm_ternary5_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int k_tokens,
+    float cs_skip_thresh,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+) {
+    const int n_tiles = (d_out + 15) / 16;
+    const int n_blks = d_in / block_size;
+    const int quintets = (block_size + 4) / 5;
+    const size_t tblk_bytes = (size_t)32 + (size_t)quintets * (size_t)16;
+    const int use_cs = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL);
+
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    if (k_tokens <= 0 || d_out <= 0 || n_blks <= 0 || quintets <= 0) {
+        if (out_skipped) *out_skipped = 0;
+        return 0;
+    }
+
+    /* 13 quintets = 65 ternary weights per sub-block -> |sum| <= 65*127 = 8255 (fits int16x8_t cleanly). */
+    const int sub_q = 13;
+    const int n_subs_blk = (quintets + sub_q - 1) / sub_q;
+    const int q_pad = n_subs_blk * sub_q * 5;
+
+    const size_t xq_bytes = (size_t)4 * (size_t)n_blks * (size_t)q_pad;
+    const size_t xsc_elems = (size_t)4 * (size_t)n_blks * (size_t)n_subs_blk;
+    int8_t* xq = (int8_t*)neon_alloc(xq_bytes);
+    float* xsc = (float*)neon_alloc(xsc_elems * sizeof(float));
+    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float)) : NULL;
+    int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
+
+    if (!xq || !xsc || (use_cs && !blk_xnorm) || (out_skipped != NULL && !tile_skips)) {
+        neon_free(xq);
+        neon_free(xsc);
+        neon_free(blk_xnorm);
+        neon_free(tile_skips);
+        return -1;
+    }
+
+    memset(xq, 0, xq_bytes);
+    memset(y, 0, (size_t)k_tokens * (size_t)d_out * sizeof(float));
+
+#if HAS_OMP
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+#else
+    (void)num_threads;
+#endif
+
+    int64_t total_skipped = 0;
+
+    for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+        const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+        const int dual = (kc <= 2) ? 1 : 0;
+        const int slots = dual ? (kc * 2) : kc;
+
+        for (int kk = 0; kk < kc; kk++) {
+            const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
+            for (int blk = 0; blk < n_blks; blk++) {
+                const float* xb = xk + (size_t)blk * (size_t)block_size;
+                if (use_cs) {
+                    float n2 = 0.0f;
+                    for (int i = 0; i < block_size; i++) {
+                        float v = xb[i];
+                        n2 += v * v;
+                    }
+                    blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk] = neon_sqrtf(n2);
+                }
+                for (int sb = 0; sb < n_subs_blk; sb++) {
+                    const int s0 = sb * sub_q * 5;
+                    int s1 = s0 + sub_q * 5;
+                    if (s1 > block_size) s1 = block_size;
+                    const int len = s1 - s0;
+                    const int pad_len = sub_q * 5;
+                    const int slot_hi = dual ? (kk * 2) : kk;
+                    int8_t* dst_hi = xq + ((size_t)slot_hi * (size_t)n_blks + (size_t)blk) * (size_t)q_pad + (size_t)s0;
+                    float sc_hi = quantize_t5_subblk_i8(xb + s0, len, pad_len, dst_hi);
+                    xsc[((size_t)slot_hi * (size_t)n_blks + (size_t)blk) * (size_t)n_subs_blk + (size_t)sb] = sc_hi;
+                    if (dual) {
+                        float res[65];
+                        for (int i = 0; i < len; i++) {
+                            res[i] = xb[s0 + i] - sc_hi * (float)dst_hi[i];
+                        }
+                        const int slot_lo = kk * 2 + 1;
+                        int8_t* dst_lo = xq + ((size_t)slot_lo * (size_t)n_blks + (size_t)blk) * (size_t)q_pad + (size_t)s0;
+                        float sc_lo = quantize_t5_subblk_i8(res, len, pad_len, dst_lo);
+                        xsc[((size_t)slot_lo * (size_t)n_blks + (size_t)blk) * (size_t)n_subs_blk + (size_t)sb] = sc_lo;
+                    }
+                }
+            }
+        }
+
+        if (tile_skips) {
+            memset(tile_skips, 0, (size_t)n_tiles * sizeof(int32_t));
+        }
+
+        int t;
+#if HAS_OMP
+        #pragma omp parallel for schedule(static)
+#endif
+        for (t = 0; t < n_tiles; t++) {
+            const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+            const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
+            int32_t t_skip = 0;
+            int8x16x2_t t27_0, t27_1, t27_2;
+            t27_0.val[0] = vld1q_s8(NEON_T5_LUT27_D0); t27_0.val[1] = vld1q_s8(NEON_T5_LUT27_D0 + 16);
+            t27_1.val[0] = vld1q_s8(NEON_T5_LUT27_D1); t27_1.val[1] = vld1q_s8(NEON_T5_LUT27_D1 + 16);
+            t27_2.val[0] = vld1q_s8(NEON_T5_LUT27_D2); t27_2.val[1] = vld1q_s8(NEON_T5_LUT27_D2 + 16);
+            const int8x16_t t9_3 = vld1q_s8(NEON_T5_LUT9_D3);
+            const int8x16_t t9_4 = vld1q_s8(NEON_T5_LUT9_D4);
+
+            float32x4_t acc00 = vdupq_n_f32(0), acc01 = vdupq_n_f32(0), acc02 = vdupq_n_f32(0), acc03 = vdupq_n_f32(0);
+            float32x4_t acc10 = vdupq_n_f32(0), acc11 = vdupq_n_f32(0), acc12 = vdupq_n_f32(0), acc13 = vdupq_n_f32(0);
+            float32x4_t acc20 = vdupq_n_f32(0), acc21 = vdupq_n_f32(0), acc22 = vdupq_n_f32(0), acc23 = vdupq_n_f32(0);
+            float32x4_t acc30 = vdupq_n_f32(0), acc31 = vdupq_n_f32(0), acc32 = vdupq_n_f32(0), acc33 = vdupq_n_f32(0);
+
+            for (int blk = 0; blk < n_blks; blk++) {
+                if (use_cs) {
+                    float max_xnorm = 0.0f;
+                    for (int kk = 0; kk < kc; kk++) {
+                        float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
+                        if (xn > max_xnorm) max_xnorm = xn;
+                    }
+                    float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
+                    if (wnorm * max_xnorm <= cs_skip_thresh) {
+                        t_skip++;
+                        continue;
+                    }
+                }
+
+                const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                if (blk + 2 < n_blks) {
+                    neon_prefetch(tptr + ((size_t)blk + 2) * tblk_bytes);
+                }
+                float sc[16];
+                for (int r = 0; r < r_lim; r++) {
+                    sc[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
+                }
+                for (int r = r_lim; r < 16; r++) sc[r] = 0.0f;
+                const float32x4_t vs0 = vld1q_f32(sc);
+                const float32x4_t vs1 = vld1q_f32(sc + 4);
+                const float32x4_t vs2 = vld1q_f32(sc + 8);
+                const float32x4_t vs3 = vld1q_f32(sc + 12);
+
+                const uint8_t* qp = bptr + 32;
+                float bsum[4][16] = {{0}};
+
+                for (int sb = 0; sb < n_subs_blk; sb++) {
+                    int g_end = (sb + 1) * sub_q;
+                    if (g_end > quintets) g_end = quintets;
+                    int16x8_t i0L = vdupq_n_s16(0), i0H = vdupq_n_s16(0);
+                    int16x8_t i1L = vdupq_n_s16(0), i1H = vdupq_n_s16(0);
+                    int16x8_t i2L = vdupq_n_s16(0), i2H = vdupq_n_s16(0);
+                    int16x8_t i3L = vdupq_n_s16(0), i3H = vdupq_n_s16(0);
+
+                    const size_t x_off = (size_t)blk * (size_t)q_pad + (size_t)sb * (size_t)sub_q * 5u;
+                    const int8_t* x0p = xq + ((size_t)0 * (size_t)n_blks) * (size_t)q_pad + x_off;
+                    const int8_t* x1p = xq + ((size_t)1 * (size_t)n_blks) * (size_t)q_pad + x_off;
+                    const int8_t* x2p = xq + ((size_t)2 * (size_t)n_blks) * (size_t)q_pad + x_off;
+                    const int8_t* x3p = xq + ((size_t)3 * (size_t)n_blks) * (size_t)q_pad + x_off;
+
+                    for (int g = sb * sub_q; g < g_end; g++, qp += 16, x0p += 5, x1p += 5, x2p += 5, x3p += 5) {
+                        uint8x16_t bv = vld1q_u8(qp);
+                        int8x16_t w[5];
+                        unpack5_neon_tile16(bv, t27_0, t27_1, t27_2, t9_3, t9_4, &w[0], &w[1], &w[2], &w[3], &w[4]);
+                        if (slots == 1) {
+                            for (int p = 0; p < 5; p++) {
+                                int8x16_t wp = w[p];
+                                int8x16_t vx0 = vdupq_n_s8(x0p[p]);
+                                i0L = vmlal_s8(i0L, vget_low_s8(wp), vget_low_s8(vx0));
+                                i0H = vmlal_high_s8(i0H, wp, vx0);
+                            }
+                        } else {
+                            for (int p = 0; p < 5; p++) {
+                                int8x16_t wp = w[p];
+                                int8x8_t wl = vget_low_s8(wp);
+                                int8x16_t vx0 = vdupq_n_s8(x0p[p]);
+                                int8x16_t vx1 = vdupq_n_s8(x1p[p]);
+                                i0L = vmlal_s8(i0L, wl, vget_low_s8(vx0)); i0H = vmlal_high_s8(i0H, wp, vx0);
+                                i1L = vmlal_s8(i1L, wl, vget_low_s8(vx1)); i1H = vmlal_high_s8(i1H, wp, vx1);
+                                if (slots > 2) {
+                                    int8x16_t vx2 = vdupq_n_s8(x2p[p]);
+                                    i2L = vmlal_s8(i2L, wl, vget_low_s8(vx2)); i2H = vmlal_high_s8(i2H, wp, vx2);
+                                }
+                                if (slots > 3) {
+                                    int8x16_t vx3 = vdupq_n_s8(x3p[p]);
+                                    i3L = vmlal_s8(i3L, wl, vget_low_s8(vx3)); i3H = vmlal_high_s8(i3H, wp, vx3);
+                                }
+                            }
+                        }
+                    }
+
+                    #define T5_FLUSH_SB(sl, iL, iH) do { \
+                        float ss = xsc[((size_t)(sl) * (size_t)n_blks + (size_t)blk) * (size_t)n_subs_blk + (size_t)sb]; \
+                        float32x4_t vss = vdupq_n_f32(ss); \
+                        float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iL))), vss); \
+                        float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iL)), vss); \
+                        float32x4_t f2 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iH))), vss); \
+                        float32x4_t f3 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iH)), vss); \
+                        vst1q_f32(bsum[sl],      vaddq_f32(vld1q_f32(bsum[sl]),      f0)); \
+                        vst1q_f32(bsum[sl] + 4,  vaddq_f32(vld1q_f32(bsum[sl] + 4),  f1)); \
+                        vst1q_f32(bsum[sl] + 8,  vaddq_f32(vld1q_f32(bsum[sl] + 8),  f2)); \
+                        vst1q_f32(bsum[sl] + 12, vaddq_f32(vld1q_f32(bsum[sl] + 12), f3)); \
+                    } while (0)
+                    T5_FLUSH_SB(0, i0L, i0H);
+                    if (slots > 1) T5_FLUSH_SB(1, i1L, i1H);
+                    if (slots > 2) T5_FLUSH_SB(2, i2L, i2H);
+                    if (slots > 3) T5_FLUSH_SB(3, i3L, i3H);
+                    #undef T5_FLUSH_SB
+                }
+
+                acc00 = vfmaq_f32(acc00, vs0, vld1q_f32(bsum[0]));
+                acc01 = vfmaq_f32(acc01, vs1, vld1q_f32(bsum[0] + 4));
+                acc02 = vfmaq_f32(acc02, vs2, vld1q_f32(bsum[0] + 8));
+                acc03 = vfmaq_f32(acc03, vs3, vld1q_f32(bsum[0] + 12));
+                if (slots > 1) {
+                    acc10 = vfmaq_f32(acc10, vs0, vld1q_f32(bsum[1]));
+                    acc11 = vfmaq_f32(acc11, vs1, vld1q_f32(bsum[1] + 4));
+                    acc12 = vfmaq_f32(acc12, vs2, vld1q_f32(bsum[1] + 8));
+                    acc13 = vfmaq_f32(acc13, vs3, vld1q_f32(bsum[1] + 12));
+                }
+                if (slots > 2) {
+                    acc20 = vfmaq_f32(acc20, vs0, vld1q_f32(bsum[2]));
+                    acc21 = vfmaq_f32(acc21, vs1, vld1q_f32(bsum[2] + 4));
+                    acc22 = vfmaq_f32(acc22, vs2, vld1q_f32(bsum[2] + 8));
+                    acc23 = vfmaq_f32(acc23, vs3, vld1q_f32(bsum[2] + 12));
+                }
+                if (slots > 3) {
+                    acc30 = vfmaq_f32(acc30, vs0, vld1q_f32(bsum[3]));
+                    acc31 = vfmaq_f32(acc31, vs1, vld1q_f32(bsum[3] + 4));
+                    acc32 = vfmaq_f32(acc32, vs2, vld1q_f32(bsum[3] + 8));
+                    acc33 = vfmaq_f32(acc33, vs3, vld1q_f32(bsum[3] + 12));
+                }
+            }
+
+            float tmp[4][16];
+            vst1q_f32(tmp[0], acc00); vst1q_f32(tmp[0] + 4, acc01); vst1q_f32(tmp[0] + 8, acc02); vst1q_f32(tmp[0] + 12, acc03);
+            if (slots > 1) {
+                vst1q_f32(tmp[1], acc10); vst1q_f32(tmp[1] + 4, acc11); vst1q_f32(tmp[1] + 8, acc12); vst1q_f32(tmp[1] + 12, acc13);
+            }
+            if (slots > 2) {
+                vst1q_f32(tmp[2], acc20); vst1q_f32(tmp[2] + 4, acc21); vst1q_f32(tmp[2] + 8, acc22); vst1q_f32(tmp[2] + 12, acc23);
+            }
+            if (slots > 3) {
+                vst1q_f32(tmp[3], acc30); vst1q_f32(tmp[3] + 4, acc31); vst1q_f32(tmp[3] + 8, acc32); vst1q_f32(tmp[3] + 12, acc33);
+            }
+            if (dual) {
+                for (int kk = 0; kk < kc; kk++) {
+                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
+                    const float* t_hi = tmp[kk * 2];
+                    const float* t_lo = tmp[kk * 2 + 1];
+                    for (int r = 0; r < r_lim; r++) {
+                        yk[r] += t_hi[r] + t_lo[r];
+                    }
+                }
+            } else {
+                for (int kk = 0; kk < kc; kk++) {
+                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
+                    for (int r = 0; r < r_lim; r++) {
+                        yk[r] += tmp[kk][r];
+                    }
+                }
+            }
+            if (tile_skips) tile_skips[t] = t_skip;
+        }
+
+        if (tile_skips) {
+            for (int ti = 0; ti < n_tiles; ti++) total_skipped += tile_skips[ti];
+        }
+    }
+
+    if (out_skipped) *out_skipped = total_skipped;
+    neon_free(xq);
+    neon_free(xsc);
+    neon_free(blk_xnorm);
+    neon_free(tile_skips);
+    return 0;
+#else
+    /* Keep L2 LUT budget <= 8 * 52 * 256 * 4 B = 426 KB across kc <= 4 tokens. */
+    const size_t max_lut_elems = (size_t)8 * (size_t)quintets * (size_t)256;
+    float* luts = (float*)neon_alloc(max_lut_elems * sizeof(float));
+    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float)) : NULL;
+    int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
+
+    if (!luts || (use_cs && !blk_xnorm) || (out_skipped != NULL && !tile_skips)) {
+        neon_free(luts);
+        neon_free(blk_xnorm);
+        neon_free(tile_skips);
+        return -1;
+    }
+
+    memset(y, 0, (size_t)k_tokens * (size_t)d_out * sizeof(float));
+
+#if HAS_OMP
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+#else
+    (void)num_threads;
+#endif
+
+    int64_t total_skipped = 0;
+
+    for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+        const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+        const int b_chunk = (kc == 1) ? 8 : 2;
+
+        if (use_cs) {
+            for (int kk = 0; kk < kc; kk++) {
+                const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
+                for (int blk = 0; blk < n_blks; blk++) {
+                    const float* xb = xk + (size_t)blk * (size_t)block_size;
+                    float n2 = 0.0f;
+                    for (int i = 0; i < block_size; i++) {
+                        float v = xb[i];
+                        n2 += v * v;
+                    }
+                    blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk] = neon_sqrtf(n2);
+                }
+            }
+        }
+
+        for (int blk0 = 0; blk0 < n_blks; blk0 += b_chunk) {
+            const int b_cnt = (n_blks - blk0 < b_chunk) ? (n_blks - blk0) : b_chunk;
+            for (int kk = 0; kk < kc; kk++) {
+                const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
+                for (int bi = 0; bi < b_cnt; bi++) {
+                    const float* xblk = xk + (size_t)(blk0 + bi) * (size_t)block_size;
+                    float* dst_b = luts + ((size_t)kk * (size_t)b_cnt + (size_t)bi) * (size_t)quintets * (size_t)256;
+                    for (int g = 0; g < quintets; g++) {
+                        const int base = g * 5;
+                        const float x0 = (base + 0 < block_size) ? xblk[base + 0] : 0.0f;
+                        const float x1 = (base + 1 < block_size) ? xblk[base + 1] : 0.0f;
+                        const float x2 = (base + 2 < block_size) ? xblk[base + 2] : 0.0f;
+                        const float x3 = (base + 3 < block_size) ? xblk[base + 3] : 0.0f;
+                        const float x4 = (base + 4 < block_size) ? xblk[base + 4] : 0.0f;
+                        build_tern5_lut_f32(x0, x1, x2, x3, x4, dst_b + (size_t)g * 256u);
+                    }
+                }
+            }
+
+            if (tile_skips) {
+                memset(tile_skips, 0, (size_t)n_tiles * sizeof(int32_t));
+            }
+
+            int t;
+#if HAS_OMP
+            #pragma omp parallel for schedule(static)
+#endif
+            for (t = 0; t < n_tiles; t++) {
+                const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+                const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
+                int32_t t_skip = 0;
+                float acc[4][16];
+                for (int kk = 0; kk < kc; kk++) {
+                    for (int r = 0; r < 16; r++) acc[kk][r] = 0.0f;
+                }
+
+                for (int bi = 0; bi < b_cnt; bi++) {
+                    const int blk = blk0 + bi;
+                    if (use_cs) {
+                        float max_xnorm = 0.0f;
+                        for (int kk = 0; kk < kc; kk++) {
+                            float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
+                            if (xn > max_xnorm) max_xnorm = xn;
+                        }
+                        float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
+                        if (wnorm * max_xnorm <= cs_skip_thresh) {
+                            t_skip++;
+                            continue;
+                        }
+                    }
+
+                    const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                    float sc[16];
+                    for (int r = 0; r < r_lim; r++) {
+                        sc[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
+                    }
+                    for (int r = r_lim; r < 16; r++) {
+                        sc[r] = 0.0f;
+                    }
+
+                    if (kc == 1) {
+                        float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+                        float s4 = 0.0f, s5 = 0.0f, s6 = 0.0f, s7 = 0.0f;
+                        float s8 = 0.0f, s9 = 0.0f, s10 = 0.0f, s11 = 0.0f;
+                        float s12 = 0.0f, s13 = 0.0f, s14 = 0.0f, s15 = 0.0f;
+                        const uint8_t* qp = bptr + 32;
+                        const float* lg = luts + (size_t)bi * (size_t)quintets * (size_t)256;
+                        for (int g = 0; g < quintets; g++, qp += 16, lg += 256) {
+                            s0  += lg[qp[0]];  s1  += lg[qp[1]];  s2  += lg[qp[2]];  s3  += lg[qp[3]];
+                            s4  += lg[qp[4]];  s5  += lg[qp[5]];  s6  += lg[qp[6]];  s7  += lg[qp[7]];
+                            s8  += lg[qp[8]];  s9  += lg[qp[9]];  s10 += lg[qp[10]]; s11 += lg[qp[11]];
+                            s12 += lg[qp[12]]; s13 += lg[qp[13]]; s14 += lg[qp[14]]; s15 += lg[qp[15]];
+                        }
+                        acc[0][0]  += sc[0]  * s0;  acc[0][1]  += sc[1]  * s1;
+                        acc[0][2]  += sc[2]  * s2;  acc[0][3]  += sc[3]  * s3;
+                        acc[0][4]  += sc[4]  * s4;  acc[0][5]  += sc[5]  * s5;
+                        acc[0][6]  += sc[6]  * s6;  acc[0][7]  += sc[7]  * s7;
+                        acc[0][8]  += sc[8]  * s8;  acc[0][9]  += sc[9]  * s9;
+                        acc[0][10] += sc[10] * s10; acc[0][11] += sc[11] * s11;
+                        acc[0][12] += sc[12] * s12; acc[0][13] += sc[13] * s13;
+                        acc[0][14] += sc[14] * s14; acc[0][15] += sc[15] * s15;
+                    } else {
+                        float bs[4][16];
+                        for (int kk = 0; kk < kc; kk++) {
+                            for (int r = 0; r < 16; r++) bs[kk][r] = 0.0f;
+                        }
+                        const uint8_t* qp = bptr + 32;
+                        for (int g = 0; g < quintets; g++, qp += 16) {
+                            const uint8_t c0 = qp[0],  c1 = qp[1],  c2 = qp[2],  c3 = qp[3];
+                            const uint8_t c4 = qp[4],  c5 = qp[5],  c6 = qp[6],  c7 = qp[7];
+                            const uint8_t c8 = qp[8],  c9 = qp[9],  c10 = qp[10], c11 = qp[11];
+                            const uint8_t c12 = qp[12], c13 = qp[13], c14 = qp[14], c15 = qp[15];
+                            for (int kk = 0; kk < kc; kk++) {
+                                const float* lg = luts + (((size_t)kk * (size_t)b_cnt + (size_t)bi) * (size_t)quintets + (size_t)g) * (size_t)256;
+                                bs[kk][0]  += lg[c0];  bs[kk][1]  += lg[c1];  bs[kk][2]  += lg[c2];  bs[kk][3]  += lg[c3];
+                                bs[kk][4]  += lg[c4];  bs[kk][5]  += lg[c5];  bs[kk][6]  += lg[c6];  bs[kk][7]  += lg[c7];
+                                bs[kk][8]  += lg[c8];  bs[kk][9]  += lg[c9];  bs[kk][10] += lg[c10]; bs[kk][11] += lg[c11];
+                                bs[kk][12] += lg[c12]; bs[kk][13] += lg[c13]; bs[kk][14] += lg[c14]; bs[kk][15] += lg[c15];
+                            }
+                        }
+                        for (int kk = 0; kk < kc; kk++) {
+                            for (int r = 0; r < r_lim; r++) {
+                                acc[kk][r] += sc[r] * bs[kk][r];
+                            }
+                        }
+                    }
+                }
+
+                for (int kk = 0; kk < kc; kk++) {
+                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16;
+                    for (int r = 0; r < r_lim; r++) {
+                        yk[r] += acc[kk][r];
+                    }
+                }
+                if (tile_skips) tile_skips[t] = t_skip;
+            }
+
+            if (tile_skips) {
+                for (int ti = 0; ti < n_tiles; ti++) total_skipped += tile_skips[ti];
+            }
+        }
+    }
+
+    if (out_skipped) *out_skipped = total_skipped;
+    neon_free(luts);
+    neon_free(blk_xnorm);
+    neon_free(tile_skips);
+    return 0;
+#endif
+}
+
+/* ============================================================================
+ * Packed Tile-16 Symmetric Signed Int8 (n_bits=8) GEMV/GEMM Kernel
+ * ============================================================================
+ * Tile block layout: 32 B (16 x FP16 per-row scales) + block_size * 16 B int8
+ * weights stored in [col][row=0..15] order. On ARMv8 NEON without SDOT,
+ * accumulating two columns at a time into int16x8 guarantees |sum| <= 2*127*127
+ * = 32,258 < 32,767 (zero int16 overflow) before widening to int32x4.
+ */
+static int gemm_int8_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int k_tokens,
+    float cs_skip_thresh,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+) {
+    const int n_tiles = (d_out + 15) / 16;
+    const int n_blks = d_in / block_size;
+    const size_t tblk_bytes = (size_t)32 + (size_t)block_size * 16u;
+    const int use_cs = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) ? 1 : 0;
+
+    if (k_tokens <= 0 || d_out <= 0 || n_blks <= 0) {
+        if (out_skipped) *out_skipped = 0;
+        return 0;
+    }
+
+    memset(y, 0, (size_t)k_tokens * (size_t)d_out * sizeof(float));
+
+#if HAS_OMP
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+#else
+    (void)num_threads;
+#endif
+
+    int64_t total_skipped = 0;
+    int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
+    if (out_skipped != NULL && !tile_skips) {
+        return -1;
+    }
+
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    int8_t* xq = (int8_t*)neon_alloc((size_t)4 * (size_t)d_in);
+    float* xsc = (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float));
+    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float)) : NULL;
+
+    if (!xq || !xsc || (use_cs && !blk_xnorm)) {
+        neon_free(xq);
+        neon_free(xsc);
+        neon_free(blk_xnorm);
+        neon_free(tile_skips);
+        return -1;
+    }
+
+    for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+        const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+        const int dual = (kc <= 2) ? 1 : 0;
+        const int slots = dual ? (kc * 2) : kc;
+
+        for (int kk = 0; kk < kc; kk++) {
+            const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
+            for (int blk = 0; blk < n_blks; blk++) {
+                const float* xb = xk + (size_t)blk * (size_t)block_size;
+                if (use_cs) {
+                    float n2 = 0.0f;
+                    for (int i = 0; i < block_size; i++) {
+                        float v = xb[i];
+                        n2 += v * v;
+                    }
+                    blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk] = neon_sqrtf(n2);
+                }
+                const int slot_hi = dual ? (kk * 2) : kk;
+                int8_t* dst_hi = xq + (size_t)slot_hi * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                float sc_hi = quantize_t5_subblk_i8(xb, block_size, block_size, dst_hi);
+                xsc[(size_t)slot_hi * (size_t)n_blks + (size_t)blk] = sc_hi;
+                if (dual) {
+                    float res[256];
+                    for (int i = 0; i < block_size; i++) {
+                        res[i] = xb[i] - sc_hi * (float)dst_hi[i];
+                    }
+                    const int slot_lo = kk * 2 + 1;
+                    int8_t* dst_lo = xq + (size_t)slot_lo * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                    float sc_lo = quantize_t5_subblk_i8(res, block_size, block_size, dst_lo);
+                    xsc[(size_t)slot_lo * (size_t)n_blks + (size_t)blk] = sc_lo;
+                }
+            }
+        }
+
+        if (tile_skips) {
+            memset(tile_skips, 0, (size_t)n_tiles * sizeof(int32_t));
+        }
+
+        int t;
+#if HAS_OMP
+        #pragma omp parallel for schedule(static)
+#endif
+        for (t = 0; t < n_tiles; t++) {
+            const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+            const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
+            int32_t t_skip = 0;
+            float acc[4][16];
+            for (int sl = 0; sl < slots; sl++) {
+                for (int r = 0; r < 16; r++) acc[sl][r] = 0.0f;
+            }
+
+            for (int blk = 0; blk < n_blks; blk++) {
+                if (use_cs) {
+                    float max_xnorm = 0.0f;
+                    for (int kk = 0; kk < kc; kk++) {
+                        float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
+                        if (xn > max_xnorm) max_xnorm = xn;
+                    }
+                    float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
+                    if (wnorm * max_xnorm <= cs_skip_thresh) {
+                        t_skip++;
+                        continue;
+                    }
+                }
+
+                const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                if (blk + 2 < n_blks) {
+                    neon_prefetch(tptr + ((size_t)blk + 2) * tblk_bytes);
+                }
+                float sc[16];
+                for (int r = 0; r < r_lim; r++) {
+                    sc[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
+                }
+                for (int r = r_lim; r < 16; r++) sc[r] = 0.0f;
+                const float32x4_t vs0 = vld1q_f32(sc);
+                const float32x4_t vs1 = vld1q_f32(sc + 4);
+                const float32x4_t vs2 = vld1q_f32(sc + 8);
+                const float32x4_t vs3 = vld1q_f32(sc + 12);
+                const int8_t* wp = (const int8_t*)(bptr + 32);
+
+                if (slots == 2) {
+                    const int8_t* x0p = xq + (size_t)0 * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                    const int8_t* x1p = xq + (size_t)1 * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                    int32x4_t d00 = vdupq_n_s32(0), d01 = d00, d02 = d00, d03 = d00;
+                    int32x4_t d10 = vdupq_n_s32(0), d11 = d10, d12 = d10, d13 = d10;
+                    for (int c = 0; c < block_size; c += 2, wp += 32) {
+                        int8x16_t w0 = vld1q_s8(wp);
+                        int8x16_t w1 = vld1q_s8(wp + 16);
+                        int8x8_t w0l = vget_low_s8(w0), w0h = vget_high_s8(w0);
+                        int8x8_t w1l = vget_low_s8(w1), w1h = vget_high_s8(w1);
+
+                        int8x8_t x0a = vdup_n_s8(x0p[c]), x0b = vdup_n_s8(x0p[c + 1]);
+                        int16x8_t l0 = vmlal_s8(vmull_s8(w0l, x0a), w1l, x0b);
+                        int16x8_t h0 = vmlal_s8(vmull_s8(w0h, x0a), w1h, x0b);
+                        d00 = vaddw_s16(d00, vget_low_s16(l0));
+                        d01 = vaddw_s16(d01, vget_high_s16(l0));
+                        d02 = vaddw_s16(d02, vget_low_s16(h0));
+                        d03 = vaddw_s16(d03, vget_high_s16(h0));
+
+                        int8x8_t x1a = vdup_n_s8(x1p[c]), x1b = vdup_n_s8(x1p[c + 1]);
+                        int16x8_t l1 = vmlal_s8(vmull_s8(w0l, x1a), w1l, x1b);
+                        int16x8_t h1 = vmlal_s8(vmull_s8(w0h, x1a), w1h, x1b);
+                        d10 = vaddw_s16(d10, vget_low_s16(l1));
+                        d11 = vaddw_s16(d11, vget_high_s16(l1));
+                        d12 = vaddw_s16(d12, vget_low_s16(h1));
+                        d13 = vaddw_s16(d13, vget_high_s16(h1));
+                    }
+                    const float32x4_t m0 = vdupq_n_f32(xsc[(size_t)0 * (size_t)n_blks + (size_t)blk]);
+                    vst1q_f32(acc[0],      vfmaq_f32(vld1q_f32(acc[0]),      vmulq_f32(vs0, m0), vcvtq_f32_s32(d00)));
+                    vst1q_f32(acc[0] + 4,  vfmaq_f32(vld1q_f32(acc[0] + 4),  vmulq_f32(vs1, m0), vcvtq_f32_s32(d01)));
+                    vst1q_f32(acc[0] + 8,  vfmaq_f32(vld1q_f32(acc[0] + 8),  vmulq_f32(vs2, m0), vcvtq_f32_s32(d02)));
+                    vst1q_f32(acc[0] + 12, vfmaq_f32(vld1q_f32(acc[0] + 12), vmulq_f32(vs3, m0), vcvtq_f32_s32(d03)));
+                    const float32x4_t m1 = vdupq_n_f32(xsc[(size_t)1 * (size_t)n_blks + (size_t)blk]);
+                    vst1q_f32(acc[1],      vfmaq_f32(vld1q_f32(acc[1]),      vmulq_f32(vs0, m1), vcvtq_f32_s32(d10)));
+                    vst1q_f32(acc[1] + 4,  vfmaq_f32(vld1q_f32(acc[1] + 4),  vmulq_f32(vs1, m1), vcvtq_f32_s32(d11)));
+                    vst1q_f32(acc[1] + 8,  vfmaq_f32(vld1q_f32(acc[1] + 8),  vmulq_f32(vs2, m1), vcvtq_f32_s32(d12)));
+                    vst1q_f32(acc[1] + 12, vfmaq_f32(vld1q_f32(acc[1] + 12), vmulq_f32(vs3, m1), vcvtq_f32_s32(d13)));
+                } else {
+                    int32x4_t d[4][4];
+                    for (int sl = 0; sl < slots; sl++) {
+                        d[sl][0] = vdupq_n_s32(0);
+                        d[sl][1] = vdupq_n_s32(0);
+                        d[sl][2] = vdupq_n_s32(0);
+                        d[sl][3] = vdupq_n_s32(0);
+                    }
+                    const int8_t* xp[4];
+                    for (int sl = 0; sl < slots; sl++) {
+                        xp[sl] = xq + (size_t)sl * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                    }
+                    for (int c = 0; c < block_size; c += 2, wp += 32) {
+                        int8x16_t w0 = vld1q_s8(wp);
+                        int8x16_t w1 = vld1q_s8(wp + 16);
+                        int8x8_t w0l = vget_low_s8(w0), w0h = vget_high_s8(w0);
+                        int8x8_t w1l = vget_low_s8(w1), w1h = vget_high_s8(w1);
+                        for (int sl = 0; sl < slots; sl++) {
+                            int8x8_t xa = vdup_n_s8(xp[sl][c]), xb_v = vdup_n_s8(xp[sl][c + 1]);
+                            int16x8_t l = vmlal_s8(vmull_s8(w0l, xa), w1l, xb_v);
+                            int16x8_t h = vmlal_s8(vmull_s8(w0h, xa), w1h, xb_v);
+                            d[sl][0] = vaddw_s16(d[sl][0], vget_low_s16(l));
+                            d[sl][1] = vaddw_s16(d[sl][1], vget_high_s16(l));
+                            d[sl][2] = vaddw_s16(d[sl][2], vget_low_s16(h));
+                            d[sl][3] = vaddw_s16(d[sl][3], vget_high_s16(h));
+                        }
+                    }
+                    for (int sl = 0; sl < slots; sl++) {
+                        const float32x4_t m = vdupq_n_f32(xsc[(size_t)sl * (size_t)n_blks + (size_t)blk]);
+                        vst1q_f32(acc[sl],      vfmaq_f32(vld1q_f32(acc[sl]),      vmulq_f32(vs0, m), vcvtq_f32_s32(d[sl][0])));
+                        vst1q_f32(acc[sl] + 4,  vfmaq_f32(vld1q_f32(acc[sl] + 4),  vmulq_f32(vs1, m), vcvtq_f32_s32(d[sl][1])));
+                        vst1q_f32(acc[sl] + 8,  vfmaq_f32(vld1q_f32(acc[sl] + 8),  vmulq_f32(vs2, m), vcvtq_f32_s32(d[sl][2])));
+                        vst1q_f32(acc[sl] + 12, vfmaq_f32(vld1q_f32(acc[sl] + 12), vmulq_f32(vs3, m), vcvtq_f32_s32(d[sl][3])));
+                    }
+                }
+            }
+
+            if (dual) {
+                for (int kk = 0; kk < kc; kk++) {
+                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
+                    const float* t_hi = acc[kk * 2];
+                    const float* t_lo = acc[kk * 2 + 1];
+                    for (int r = 0; r < r_lim; r++) {
+                        yk[r] = t_hi[r] + t_lo[r];
+                    }
+                }
+            } else {
+                for (int kk = 0; kk < kc; kk++) {
+                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
+                    for (int r = 0; r < r_lim; r++) {
+                        yk[r] = acc[kk][r];
+                    }
+                }
+            }
+            if (tile_skips) tile_skips[t] = t_skip;
+        }
+
+        if (tile_skips) {
+            for (int ti = 0; ti < n_tiles; ti++) total_skipped += tile_skips[ti];
+        }
+    }
+
+    neon_free(xq);
+    neon_free(xsc);
+    neon_free(blk_xnorm);
+    neon_free(tile_skips);
+    if (out_skipped) *out_skipped = total_skipped;
+    return 0;
+#else
+    int t;
+#if HAS_OMP
+    #pragma omp parallel for schedule(static)
+#endif
+    for (t = 0; t < n_tiles; t++) {
+        const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+        const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
+        int32_t t_skip = 0;
+        for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+            const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+            double acc[4][16];
+            for (int kk = 0; kk < kc; kk++) {
+                for (int r = 0; r < 16; r++) acc[kk][r] = 0.0;
+            }
+            for (int blk = 0; blk < n_blks; blk++) {
+                if (use_cs) {
+                    float max_xnorm = 0.0f;
+                    for (int kk = 0; kk < kc; kk++) {
+                        const float* xb = x + (size_t)(k0 + kk) * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                        float n2 = 0.0f;
+                        for (int i = 0; i < block_size; i++) {
+                            float v = xb[i];
+                            n2 += v * v;
+                        }
+                        float xn = neon_sqrtf(n2);
+                        if (xn > max_xnorm) max_xnorm = xn;
+                    }
+                    float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
+                    if (wnorm * max_xnorm <= cs_skip_thresh) {
+                        t_skip++;
+                        continue;
+                    }
+                }
+                const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                double sc[16];
+                for (int r = 0; r < r_lim; r++) {
+                    sc[r] = (double)fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
+                }
+                const int8_t* wp = (const int8_t*)(bptr + 32);
+                for (int kk = 0; kk < kc; kk++) {
+                    const float* xb = x + (size_t)(k0 + kk) * (size_t)d_in + (size_t)blk * (size_t)block_size;
+                    double bsum[16] = {0};
+                    for (int c = 0; c < block_size; c++) {
+                        const int8_t* wr = wp + (size_t)c * 16u;
+                        double xv = (double)xb[c];
+                        for (int r = 0; r < r_lim; r++) bsum[r] += (double)wr[r] * xv;
+                    }
+                    for (int r = 0; r < r_lim; r++) acc[kk][r] += sc[r] * bsum[r];
+                }
+            }
+            for (int kk = 0; kk < kc; kk++) {
+                float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
+                for (int r = 0; r < r_lim; r++) {
+                    yk[r] = (float)acc[kk][r];
+                }
+            }
+        }
+        if (tile_skips) tile_skips[t] = t_skip;
+    }
+
+    if (tile_skips) {
+        for (int ti = 0; ti < n_tiles; ti++) total_skipped += tile_skips[ti];
+        neon_free(tile_skips);
+    }
+    if (out_skipped) *out_skipped = total_skipped;
+    return 0;
+#endif
 }
 
 NEON_API int gemm_bitserial_tile16_batch(
@@ -2766,8 +3715,24 @@ NEON_API int gemm_bitserial_tile16_batch(
     if (d_out <= 0 || d_in <= 0) return -1;
     if (block_size != 64 && block_size != 128 && block_size != 256) return -1;
     if ((d_in % block_size) != 0) return -1;
-    if (n_bits < 1 || n_bits > 4) return -1;
+    if (n_bits < 1 || (n_bits > 5 && n_bits != 8)) return -1;
     if ((is_asym != 0 && is_asym != 1) || k_tokens <= 0) return -1;
+    if (n_bits == 5) {
+        if (is_asym != 0) return -1;
+        return gemm_ternary5_tile16_batch(
+            packed, tile_norm_fp16, x, y,
+            d_out, d_in, block_size, k_tokens,
+            cs_skip_thresh, num_threads, out_skipped
+        );
+    }
+    if (n_bits == 8) {
+        if (is_asym != 0) return -1;
+        return gemm_int8_tile16_batch(
+            packed, tile_norm_fp16, x, y,
+            d_out, d_in, block_size, k_tokens,
+            cs_skip_thresh, num_threads, out_skipped
+        );
+    }
 
     const int n_tiles = (d_out + 15) / 16;
     const int n_blks = d_in / block_size;
@@ -2778,14 +3743,17 @@ NEON_API int gemm_bitserial_tile16_batch(
     const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)n_bits * (size_t)bytes_per_plane_blk;
     const size_t luts_stride = (size_t)(d_in / 4) * 16;
     const int kc_max = (k_tokens < 4) ? k_tokens : 4;
+    const int slot_cap = (k_tokens <= 2) ? (k_tokens * 2) : 4;
+    const int need_norm = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) ? 1 : 0;
+    const int need_sum = (is_asym != 0) ? 1 : 0;
 
-    int8_t* luts = (int8_t*)neon_alloc((size_t)kc_max * luts_stride);
-    float* sub_scales = (float*)neon_alloc((size_t)kc_max * (size_t)n_subs * sizeof(float));
-    float* blk_xnorm = (float*)neon_alloc((size_t)kc_max * (size_t)n_blks * sizeof(float));
-    float* blk_xsum = (float*)neon_alloc((size_t)kc_max * (size_t)n_blks * sizeof(float));
+    int8_t* luts = (int8_t*)neon_alloc((size_t)slot_cap * luts_stride);
+    float* sub_scales = (float*)neon_alloc((size_t)slot_cap * (size_t)n_subs * sizeof(float));
+    float* blk_xnorm = need_norm ? (float*)neon_alloc((size_t)kc_max * (size_t)n_blks * sizeof(float)) : NULL;
+    float* blk_xsum = need_sum ? (float*)neon_alloc((size_t)kc_max * (size_t)n_blks * sizeof(float)) : NULL;
     int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
 
-    if (!luts || !sub_scales || !blk_xnorm || !blk_xsum || (out_skipped != NULL && !tile_skips)) {
+    if (!luts || !sub_scales || (need_norm && !blk_xnorm) || (need_sum && !blk_xsum) || (out_skipped != NULL && !tile_skips)) {
         neon_free(luts);
         neon_free(sub_scales);
         neon_free(blk_xnorm);
@@ -2804,20 +3772,38 @@ NEON_API int gemm_bitserial_tile16_batch(
 
     for (int k0 = 0; k0 < k_tokens; k0 += 4) {
         const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+        const int dual = (kc <= 2) ? 1 : 0;
+        const int slots = dual ? (kc * 2) : kc;
         for (int kk = 0; kk < kc; kk++) {
             const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
-            quantize_x_sub64_l1_tile16(xk, d_in, luts + (size_t)kk * luts_stride, sub_scales + (size_t)kk * (size_t)n_subs);
-            for (int blk = 0; blk < n_blks; blk++) {
-                const float* xb = xk + (size_t)blk * (size_t)block_size;
-                float n2 = 0.0f;
-                float bs = 0.0f;
-                for (int i = 0; i < block_size; i++) {
-                    float v = xb[i];
-                    n2 += v * v;
-                    bs += v;
+            if (dual) {
+                const size_t shi = (size_t)(kk * 2);
+                const size_t slo = shi + 1;
+                quantize_x_sub64_l1_dual_tile16(
+                    xk, d_in,
+                    luts + shi * luts_stride, sub_scales + shi * (size_t)n_subs,
+                    luts + slo * luts_stride, sub_scales + slo * (size_t)n_subs
+                );
+            } else {
+                quantize_x_sub64_l1_tile16(
+                    xk, d_in,
+                    luts + (size_t)kk * luts_stride,
+                    sub_scales + (size_t)kk * (size_t)n_subs
+                );
+            }
+            if (need_norm || need_sum) {
+                for (int blk = 0; blk < n_blks; blk++) {
+                    const float* xb = xk + (size_t)blk * (size_t)block_size;
+                    float n2 = 0.0f;
+                    float bs = 0.0f;
+                    for (int i = 0; i < block_size; i++) {
+                        float v = xb[i];
+                        n2 += v * v;
+                        bs += v;
+                    }
+                    if (need_norm) blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk] = neon_sqrtf(n2);
+                    if (need_sum)  blk_xsum[(size_t)kk * (size_t)n_blks + (size_t)blk] = bs;
                 }
-                blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk] = neon_sqrtf(n2);
-                blk_xsum[(size_t)kk * (size_t)n_blks + (size_t)blk] = bs;
             }
         }
         if (tile_skips) {
@@ -2840,7 +3826,7 @@ NEON_API int gemm_bitserial_tile16_batch(
             float32x4_t acc30 = vdupq_n_f32(0.0f), acc31 = vdupq_n_f32(0.0f), acc32 = vdupq_n_f32(0.0f), acc33 = vdupq_n_f32(0.0f);
 
             for (int blk = 0; blk < n_blks; blk++) {
-                if (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) {
+                if (need_norm) {
                     float max_xnorm = 0.0f;
                     for (int kk = 0; kk < kc; kk++) {
                         float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
@@ -2853,6 +3839,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                     }
                 }
                 const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                if (blk + 2 < n_blks) {
+                    neon_prefetch(tptr + ((size_t)blk + 2) * tile_blk_bytes);
+                }
                 uint16_t raw_sc[8];
                 memcpy(raw_sc, bptr + 0, 16);
                 float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
@@ -2863,7 +3852,7 @@ NEON_API int gemm_bitserial_tile16_batch(
                 float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
                 float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
 
-                if (is_asym) {
+                if (need_sum) {
                     uint16_t raw_bi[8];
                     memcpy(raw_bi, bptr + 32, 16);
                     float16x8_t hbi0 = vreinterpretq_f16_u16(vld1q_u16(raw_bi));
@@ -2876,20 +3865,28 @@ NEON_API int gemm_bitserial_tile16_batch(
                     float sx0 = blk_xsum[0 * n_blks + blk];
                     acc00 = vfmaq_n_f32(acc00, bi0, sx0); acc01 = vfmaq_n_f32(acc01, bi1, sx0);
                     acc02 = vfmaq_n_f32(acc02, bi2, sx0); acc03 = vfmaq_n_f32(acc03, bi3, sx0);
-                    if (kc >= 2) {
-                        float sx1 = blk_xsum[1 * n_blks + blk];
-                        acc10 = vfmaq_n_f32(acc10, bi0, sx1); acc11 = vfmaq_n_f32(acc11, bi1, sx1);
-                        acc12 = vfmaq_n_f32(acc12, bi2, sx1); acc13 = vfmaq_n_f32(acc13, bi3, sx1);
-                    }
-                    if (kc >= 3) {
-                        float sx2 = blk_xsum[2 * n_blks + blk];
-                        acc20 = vfmaq_n_f32(acc20, bi0, sx2); acc21 = vfmaq_n_f32(acc21, bi1, sx2);
-                        acc22 = vfmaq_n_f32(acc22, bi2, sx2); acc23 = vfmaq_n_f32(acc23, bi3, sx2);
-                    }
-                    if (kc == 4) {
-                        float sx3 = blk_xsum[3 * n_blks + blk];
-                        acc30 = vfmaq_n_f32(acc30, bi0, sx3); acc31 = vfmaq_n_f32(acc31, bi1, sx3);
-                        acc32 = vfmaq_n_f32(acc32, bi2, sx3); acc33 = vfmaq_n_f32(acc33, bi3, sx3);
+                    if (dual) {
+                        if (kc == 2) {
+                            float sx1 = blk_xsum[1 * n_blks + blk];
+                            acc20 = vfmaq_n_f32(acc20, bi0, sx1); acc21 = vfmaq_n_f32(acc21, bi1, sx1);
+                            acc22 = vfmaq_n_f32(acc22, bi2, sx1); acc23 = vfmaq_n_f32(acc23, bi3, sx1);
+                        }
+                    } else {
+                        if (kc >= 2) {
+                            float sx1 = blk_xsum[1 * n_blks + blk];
+                            acc10 = vfmaq_n_f32(acc10, bi0, sx1); acc11 = vfmaq_n_f32(acc11, bi1, sx1);
+                            acc12 = vfmaq_n_f32(acc12, bi2, sx1); acc13 = vfmaq_n_f32(acc13, bi3, sx1);
+                        }
+                        if (kc >= 3) {
+                            float sx2 = blk_xsum[2 * n_blks + blk];
+                            acc20 = vfmaq_n_f32(acc20, bi0, sx2); acc21 = vfmaq_n_f32(acc21, bi1, sx2);
+                            acc22 = vfmaq_n_f32(acc22, bi2, sx2); acc23 = vfmaq_n_f32(acc23, bi3, sx2);
+                        }
+                        if (kc == 4) {
+                            float sx3 = blk_xsum[3 * n_blks + blk];
+                            acc30 = vfmaq_n_f32(acc30, bi0, sx3); acc31 = vfmaq_n_f32(acc31, bi1, sx3);
+                            acc32 = vfmaq_n_f32(acc32, bi2, sx3); acc33 = vfmaq_n_f32(acc33, bi3, sx3);
+                        }
                     }
                 }
 
@@ -2897,7 +3894,7 @@ NEON_API int gemm_bitserial_tile16_batch(
                 for (int p = 0; p < n_bits; p++) {
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
                     float weight_p = (float)(1u << p);
-                    if (kc == 4) {
+                    if (slots == 4) {
                         const int8_t* l0 = luts + 0 * luts_stride;
                         const int8_t* l1 = luts + 1 * luts_stride;
                         const int8_t* l2 = luts + 2 * luts_stride;
@@ -2955,8 +3952,8 @@ NEON_API int gemm_bitserial_tile16_batch(
                             int16x8_t a1l = vdupq_n_s16(0), a1h = vdupq_n_s16(0);
                             int16x8_t a2l = vdupq_n_s16(0), a2h = vdupq_n_s16(0);
                             const int8_t* l0 = luts + 0 * luts_stride;
-                            const int8_t* l1 = (kc >= 2) ? (luts + 1 * luts_stride) : l0;
-                            const int8_t* l2 = (kc >= 3) ? (luts + 2 * luts_stride) : l0;
+                            const int8_t* l1 = (slots >= 2) ? (luts + 1 * luts_stride) : l0;
+                            const int8_t* l2 = (slots >= 3) ? (luts + 2 * luts_stride) : l0;
                             for (int bo = 0; bo < 8; bo++) {
                                 size_t loff = ((size_t)g_sub * 8 + (size_t)bo) * 32;
                                 uint8x16_t bv = vld1q_u8(pptr + ((size_t)sb * 8 + (size_t)bo) * 16);
@@ -2966,12 +3963,12 @@ NEON_API int gemm_bitserial_tile16_batch(
                                 int8x16_t rl = vqtbl1q_s8(vld1q_s8(l0 + loff + 16), nlo);
                                 a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
                                 a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
-                                if (kc >= 2) {
+                                if (slots >= 2) {
                                     rh = vqtbl1q_s8(vld1q_s8(l1 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l1 + loff + 16), nlo);
                                     a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
                                     a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
                                 }
-                                if (kc >= 3) {
+                                if (slots >= 3) {
                                     rh = vqtbl1q_s8(vld1q_s8(l2 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l2 + loff + 16), nlo);
                                     a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
                                     a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
@@ -2982,14 +3979,14 @@ NEON_API int gemm_bitserial_tile16_batch(
                             acc01 = vfmaq_f32(acc01, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0l)), m0));
                             acc02 = vfmaq_f32(acc02, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0h))), m0));
                             acc03 = vfmaq_f32(acc03, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0h)), m0));
-                            if (kc >= 2) {
+                            if (slots >= 2) {
                                 float m1 = sub_scales[1 * n_subs + g_sub] * weight_p;
                                 acc10 = vfmaq_f32(acc10, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1l))), m1));
                                 acc11 = vfmaq_f32(acc11, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1l)), m1));
                                 acc12 = vfmaq_f32(acc12, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1h))), m1));
                                 acc13 = vfmaq_f32(acc13, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1h)), m1));
                             }
-                            if (kc >= 3) {
+                            if (slots >= 3) {
                                 float m2 = sub_scales[2 * n_subs + g_sub] * weight_p;
                                 acc20 = vfmaq_f32(acc20, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a2l))), m2));
                                 acc21 = vfmaq_f32(acc21, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a2l)), m2));
@@ -2998,6 +3995,15 @@ NEON_API int gemm_bitserial_tile16_batch(
                             }
                         }
                     }
+                }
+            }
+
+            if (dual) {
+                acc00 = vaddq_f32(acc00, acc10); acc01 = vaddq_f32(acc01, acc11);
+                acc02 = vaddq_f32(acc02, acc12); acc03 = vaddq_f32(acc03, acc13);
+                if (kc == 2) {
+                    acc10 = vaddq_f32(acc20, acc30); acc11 = vaddq_f32(acc21, acc31);
+                    acc12 = vaddq_f32(acc22, acc32); acc13 = vaddq_f32(acc23, acc33);
                 }
             }
 
@@ -3037,7 +4043,7 @@ NEON_API int gemm_bitserial_tile16_batch(
             __m256 acc3_lo = _mm256_setzero_ps(), acc3_hi = _mm256_setzero_ps();
 
             for (int blk = 0; blk < n_blks; blk++) {
-                if (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) {
+                if (need_norm) {
                     float max_xnorm = 0.0f;
                     for (int kk = 0; kk < kc; kk++) {
                         float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
@@ -3050,12 +4056,15 @@ NEON_API int gemm_bitserial_tile16_batch(
                     }
                 }
                 const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                if (blk + 2 < n_blks) {
+                    neon_prefetch(tptr + ((size_t)blk + 2) * tile_blk_bytes);
+                }
                 float sc_arr[16];
                 for (int r = 0; r < 16; r++) sc_arr[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2));
                 __m256 sc_lo = _mm256_loadu_ps(sc_arr + 0);
                 __m256 sc_hi = _mm256_loadu_ps(sc_arr + 8);
 
-                if (is_asym) {
+                if (need_sum) {
                     float bi_arr[16];
                     for (int r = 0; r < 16; r++) bi_arr[r] = fp16_to_fp32(read_u16_le(bptr + 32 + (size_t)r * 2));
                     __m256 bi_lo = _mm256_loadu_ps(bi_arr + 0);
@@ -3063,20 +4072,28 @@ NEON_API int gemm_bitserial_tile16_batch(
                     __m256 sx0 = _mm256_set1_ps(blk_xsum[0 * n_blks + blk]);
                     acc0_lo = _mm256_fmadd_ps(bi_lo, sx0, acc0_lo);
                     acc0_hi = _mm256_fmadd_ps(bi_hi, sx0, acc0_hi);
-                    if (kc >= 2) {
-                        __m256 sx1 = _mm256_set1_ps(blk_xsum[1 * n_blks + blk]);
-                        acc1_lo = _mm256_fmadd_ps(bi_lo, sx1, acc1_lo);
-                        acc1_hi = _mm256_fmadd_ps(bi_hi, sx1, acc1_hi);
-                    }
-                    if (kc >= 3) {
-                        __m256 sx2 = _mm256_set1_ps(blk_xsum[2 * n_blks + blk]);
-                        acc2_lo = _mm256_fmadd_ps(bi_lo, sx2, acc2_lo);
-                        acc2_hi = _mm256_fmadd_ps(bi_hi, sx2, acc2_hi);
-                    }
-                    if (kc == 4) {
-                        __m256 sx3 = _mm256_set1_ps(blk_xsum[3 * n_blks + blk]);
-                        acc3_lo = _mm256_fmadd_ps(bi_lo, sx3, acc3_lo);
-                        acc3_hi = _mm256_fmadd_ps(bi_hi, sx3, acc3_hi);
+                    if (dual) {
+                        if (kc == 2) {
+                            __m256 sx1 = _mm256_set1_ps(blk_xsum[1 * n_blks + blk]);
+                            acc2_lo = _mm256_fmadd_ps(bi_lo, sx1, acc2_lo);
+                            acc2_hi = _mm256_fmadd_ps(bi_hi, sx1, acc2_hi);
+                        }
+                    } else {
+                        if (kc >= 2) {
+                            __m256 sx1 = _mm256_set1_ps(blk_xsum[1 * n_blks + blk]);
+                            acc1_lo = _mm256_fmadd_ps(bi_lo, sx1, acc1_lo);
+                            acc1_hi = _mm256_fmadd_ps(bi_hi, sx1, acc1_hi);
+                        }
+                        if (kc >= 3) {
+                            __m256 sx2 = _mm256_set1_ps(blk_xsum[2 * n_blks + blk]);
+                            acc2_lo = _mm256_fmadd_ps(bi_lo, sx2, acc2_lo);
+                            acc2_hi = _mm256_fmadd_ps(bi_hi, sx2, acc2_hi);
+                        }
+                        if (kc == 4) {
+                            __m256 sx3 = _mm256_set1_ps(blk_xsum[3 * n_blks + blk]);
+                            acc3_lo = _mm256_fmadd_ps(bi_lo, sx3, acc3_lo);
+                            acc3_hi = _mm256_fmadd_ps(bi_hi, sx3, acc3_hi);
+                        }
                     }
                 }
 
@@ -3091,9 +4108,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                         __m256i a2 = _mm256_setzero_si256();
                         __m256i a3 = _mm256_setzero_si256();
                         const int8_t* l0 = luts + 0 * luts_stride;
-                        const int8_t* l1 = (kc >= 2) ? (luts + 1 * luts_stride) : l0;
-                        const int8_t* l2 = (kc >= 3) ? (luts + 2 * luts_stride) : l0;
-                        const int8_t* l3 = (kc == 4) ? (luts + 3 * luts_stride) : l0;
+                        const int8_t* l1 = (slots >= 2) ? (luts + 1 * luts_stride) : l0;
+                        const int8_t* l2 = (slots >= 3) ? (luts + 2 * luts_stride) : l0;
+                        const int8_t* l3 = (slots == 4) ? (luts + 3 * luts_stride) : l0;
                         for (int bo = 0; bo < 8; bo++) {
                             size_t loff = ((size_t)g_sub * 8 + (size_t)bo) * 32;
                             __m128i bv = _mm_loadu_si128((const __m128i*)(pptr + ((size_t)sb * 8 + (size_t)bo) * 16));
@@ -3104,17 +4121,17 @@ NEON_API int gemm_bitserial_tile16_batch(
                                 __m128i rl = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l0 + loff + 16)), nlo);
                                 a0 = _mm256_add_epi16(a0, _mm256_add_epi16(_mm256_cvtepi8_epi16(rh), _mm256_cvtepi8_epi16(rl)));
                             }
-                            if (kc >= 2) {
+                            if (slots >= 2) {
                                 __m128i rh = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l1 + loff)), nhi);
                                 __m128i rl = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l1 + loff + 16)), nlo);
                                 a1 = _mm256_add_epi16(a1, _mm256_add_epi16(_mm256_cvtepi8_epi16(rh), _mm256_cvtepi8_epi16(rl)));
                             }
-                            if (kc >= 3) {
+                            if (slots >= 3) {
                                 __m128i rh = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l2 + loff)), nhi);
                                 __m128i rl = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l2 + loff + 16)), nlo);
                                 a2 = _mm256_add_epi16(a2, _mm256_add_epi16(_mm256_cvtepi8_epi16(rh), _mm256_cvtepi8_epi16(rl)));
                             }
-                            if (kc == 4) {
+                            if (slots == 4) {
                                 __m128i rh = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l3 + loff)), nhi);
                                 __m128i rl = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)(l3 + loff + 16)), nlo);
                                 a3 = _mm256_add_epi16(a3, _mm256_add_epi16(_mm256_cvtepi8_epi16(rh), _mm256_cvtepi8_epi16(rl)));
@@ -3127,21 +4144,21 @@ NEON_API int gemm_bitserial_tile16_batch(
                             acc0_lo = _mm256_fmadd_ps(sc_lo, f_lo, acc0_lo);
                             acc0_hi = _mm256_fmadd_ps(sc_hi, f_hi, acc0_hi);
                         }
-                        if (kc >= 2) {
+                        if (slots >= 2) {
                             __m256 m1 = _mm256_set1_ps(sub_scales[1 * n_subs + g_sub] * weight_p);
                             __m256 f_lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(a1))), m1);
                             __m256 f_hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(a1, 1))), m1);
                             acc1_lo = _mm256_fmadd_ps(sc_lo, f_lo, acc1_lo);
                             acc1_hi = _mm256_fmadd_ps(sc_hi, f_hi, acc1_hi);
                         }
-                        if (kc >= 3) {
+                        if (slots >= 3) {
                             __m256 m2 = _mm256_set1_ps(sub_scales[2 * n_subs + g_sub] * weight_p);
                             __m256 f_lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(a2))), m2);
                             __m256 f_hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(a2, 1))), m2);
                             acc2_lo = _mm256_fmadd_ps(sc_lo, f_lo, acc2_lo);
                             acc2_hi = _mm256_fmadd_ps(sc_hi, f_hi, acc2_hi);
                         }
-                        if (kc == 4) {
+                        if (slots == 4) {
                             __m256 m3 = _mm256_set1_ps(sub_scales[3 * n_subs + g_sub] * weight_p);
                             __m256 f_lo = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(a3))), m3);
                             __m256 f_hi = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(a3, 1))), m3);
@@ -3149,6 +4166,15 @@ NEON_API int gemm_bitserial_tile16_batch(
                             acc3_hi = _mm256_fmadd_ps(sc_hi, f_hi, acc3_hi);
                         }
                     }
+                }
+            }
+
+            if (dual) {
+                acc0_lo = _mm256_add_ps(acc0_lo, acc1_lo);
+                acc0_hi = _mm256_add_ps(acc0_hi, acc1_hi);
+                if (kc == 2) {
+                    acc1_lo = _mm256_add_ps(acc2_lo, acc3_lo);
+                    acc1_hi = _mm256_add_ps(acc2_hi, acc3_hi);
                 }
             }
 
@@ -3176,7 +4202,7 @@ NEON_API int gemm_bitserial_tile16_batch(
             for (int kk = 0; kk < 4; kk++) for (int r = 0; r < 16; r++) acc[kk][r] = 0.0f;
 
             for (int blk = 0; blk < n_blks; blk++) {
-                if (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) {
+                if (need_norm) {
                     float max_xnorm = 0.0f;
                     for (int kk = 0; kk < kc; kk++) {
                         float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
@@ -3194,10 +4220,11 @@ NEON_API int gemm_bitserial_tile16_batch(
                     sc_arr[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2));
                     bi_arr[r] = is_asym ? fp16_to_fp32(read_u16_le(bptr + 32 + (size_t)r * 2)) : 0.0f;
                 }
-                if (is_asym) {
+                if (need_sum) {
                     for (int kk = 0; kk < kc; kk++) {
                         float sx = blk_xsum[(size_t)kk * (size_t)n_blks + (size_t)blk];
-                        for (int r = 0; r < 16; r++) acc[kk][r] += bi_arr[r] * sx;
+                        int dst_sl = dual ? (kk * 2) : kk;
+                        for (int r = 0; r < 16; r++) acc[dst_sl][r] += bi_arr[r] * sx;
                     }
                 }
                 const uint8_t* planes = bptr + hdr_bytes;
@@ -3206,9 +4233,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                     float weight_p = (float)(1u << p);
                     for (int sb = 0; sb < subs_per_blk; sb++) {
                         int g_sub = blk * subs_per_blk + sb;
-                        for (int kk = 0; kk < kc; kk++) {
-                            const int8_t* lk = luts + (size_t)kk * luts_stride;
-                            float mk = sub_scales[(size_t)kk * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                        for (int sl = 0; sl < slots; sl++) {
+                            const int8_t* lk = luts + (size_t)sl * luts_stride;
+                            float mk = sub_scales[(size_t)sl * (size_t)n_subs + (size_t)g_sub] * weight_p;
                             int32_t sums[16] = {0};
                             for (int bo = 0; bo < 8; bo++) {
                                 size_t loff = ((size_t)g_sub * 8 + (size_t)bo) * 32;
@@ -3221,7 +4248,7 @@ NEON_API int gemm_bitserial_tile16_batch(
                                 }
                             }
                             for (int r = 0; r < 16; r++) {
-                                acc[kk][r] += sc_arr[r] * (float)sums[r] * mk;
+                                acc[sl][r] += sc_arr[r] * (float)sums[r] * mk;
                             }
                         }
                     }
@@ -3231,7 +4258,11 @@ NEON_API int gemm_bitserial_tile16_batch(
             int valid = (base_r + 16 <= d_out) ? 16 : (d_out - base_r);
             for (int kk = 0; kk < kc; kk++) {
                 float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
-                for (int r = 0; r < valid; r++) yk[r] = acc[kk][r];
+                if (dual) {
+                    for (int r = 0; r < valid; r++) yk[r] = acc[kk * 2][r] + acc[kk * 2 + 1][r];
+                } else {
+                    for (int r = 0; r < valid; r++) yk[r] = acc[kk][r];
+                }
             }
 #endif
             if (tile_skips) tile_skips[t] = t_skip;
@@ -3271,6 +4302,247 @@ NEON_API int gemv_bitserial_tile16_mmap(
     );
 }
 
+NEON_API int inv_s_and_fwht_f32_c(
+    float* NEON_RESTRICT x,
+    const float* NEON_RESTRICT inv_s,
+    int k_tokens,
+    int d_in,
+    int bsize
+) {
+    if (!x || k_tokens < 0 || d_in <= 0) return -1;
+    if (k_tokens == 0) return 0;
+    if (bsize != 1) {
+        if (bsize < 8 || (bsize & (bsize - 1)) != 0 || (d_in % bsize) != 0) return -1;
+    }
+
+    if (inv_s != NULL) {
+        for (int tok = 0; tok < k_tokens; tok++) {
+            float* row = x + (size_t)tok * (size_t)d_in;
+            int j = 0;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+            for (; j + 4 <= d_in; j += 4) {
+                vst1q_f32(row + j, vmulq_f32(vld1q_f32(row + j), vld1q_f32(inv_s + j)));
+            }
+#elif HAS_AVX2
+            for (; j + 8 <= d_in; j += 8) {
+                _mm256_storeu_ps(row + j, _mm256_mul_ps(_mm256_loadu_ps(row + j), _mm256_loadu_ps(inv_s + j)));
+            }
+#endif
+            for (; j < d_in; j++) {
+                row[j] *= inv_s[j];
+            }
+        }
+    }
+
+    if (bsize >= 8) {
+        const float inv_sqrt = 1.0f / neon_sqrtf((float)bsize);
+        const int n_blocks = (k_tokens * d_in) / bsize;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+        const float32x4_t vscale = vdupq_n_f32(inv_sqrt);
+#elif HAS_AVX2
+        const __m256 vscale = _mm256_set1_ps(inv_sqrt);
+#endif
+        for (int blk = 0; blk < n_blocks; blk++) {
+            float* chunk = x + (size_t)blk * (size_t)bsize;
+            for (int i = 0; i < bsize; i += 8) {
+                float* c = chunk + i;
+                float a0 = c[0] + c[1], a1 = c[0] - c[1];
+                float a2 = c[2] + c[3], a3 = c[2] - c[3];
+                float a4 = c[4] + c[5], a5 = c[4] - c[5];
+                float a6 = c[6] + c[7], a7 = c[6] - c[7];
+                float b0 = a0 + a2, b1 = a1 + a3, b2 = a0 - a2, b3 = a1 - a3;
+                float b4 = a4 + a6, b5 = a5 + a7, b6 = a4 - a6, b7 = a5 - a7;
+                c[0] = b0 + b4; c[1] = b1 + b5; c[2] = b2 + b6; c[3] = b3 + b7;
+                c[4] = b0 - b4; c[5] = b1 - b5; c[6] = b2 - b6; c[7] = b3 - b7;
+            }
+            for (int len = 8; len < bsize; len *= 2) {
+                const int step = len * 2;
+                for (int i = 0; i < bsize; i += step) {
+                    float* left = chunk + i;
+                    float* right = left + len;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+                    for (int j = 0; j < len; j += 4) {
+                        float32x4_t u = vld1q_f32(left + j);
+                        float32x4_t v = vld1q_f32(right + j);
+                        vst1q_f32(left + j, vaddq_f32(u, v));
+                        vst1q_f32(right + j, vsubq_f32(u, v));
+                    }
+#elif HAS_AVX2
+                    for (int j = 0; j < len; j += 8) {
+                        __m256 u = _mm256_loadu_ps(left + j);
+                        __m256 v = _mm256_loadu_ps(right + j);
+                        _mm256_storeu_ps(left + j, _mm256_add_ps(u, v));
+                        _mm256_storeu_ps(right + j, _mm256_sub_ps(u, v));
+                    }
+#else
+                    for (int j = 0; j < len; j++) {
+                        float u = left[j];
+                        float v = right[j];
+                        left[j] = u + v;
+                        right[j] = u - v;
+                    }
+#endif
+                }
+            }
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+            for (int j = 0; j < bsize; j += 4) {
+                vst1q_f32(chunk + j, vmulq_f32(vld1q_f32(chunk + j), vscale));
+            }
+#elif HAS_AVX2
+            for (int j = 0; j < bsize; j += 8) {
+                _mm256_storeu_ps(chunk + j, _mm256_mul_ps(_mm256_loadu_ps(chunk + j), vscale));
+            }
+#else
+            for (int j = 0; j < bsize; j++) {
+                chunk[j] *= inv_sqrt;
+            }
+#endif
+        }
+    }
+    return 0;
+}
+
+NEON_API int int8_lowrank_add_batch_c(
+    const int8_t* NEON_RESTRICT u_i8,
+    const float* NEON_RESTRICT su,
+    const int8_t* NEON_RESTRICT v_i8,
+    const float* NEON_RESTRICT sv,
+    const float* NEON_RESTRICT x_raw,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int rank,
+    int k_tokens,
+    int num_threads
+) {
+    if (rank < 0 || d_out <= 0 || d_in <= 0 || k_tokens < 0) return -1;
+    if (rank == 0 || k_tokens == 0) return 0;
+    if (!u_i8 || !su || !v_i8 || !sv || !x_raw || !y) return -1;
+
+    float* z = (float*)neon_alloc((size_t)k_tokens * (size_t)rank * sizeof(float));
+    if (!z) return -1;
+
+    for (int tok = 0; tok < k_tokens; tok++) {
+        const float* xk = x_raw + (size_t)tok * (size_t)d_in;
+        float* zk = z + (size_t)tok * (size_t)rank;
+        for (int k = 0; k < rank; k++) {
+            const int8_t* vrow = v_i8 + (size_t)k * (size_t)d_in;
+            float acc = 0.0f;
+            int j = 0;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+            float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+            float32x4_t a2 = vdupq_n_f32(0.0f), a3 = vdupq_n_f32(0.0f);
+            for (; j + 16 <= d_in; j += 16) {
+                int8x16_t v16 = vld1q_s8(vrow + j);
+                int16x8_t v0_16 = vmovl_s8(vget_low_s8(v16));
+                int16x8_t v1_16 = vmovl_high_s8(v16);
+                a0 = vfmaq_f32(a0, vcvtq_f32_s32(vmovl_s16(vget_low_s16(v0_16))),  vld1q_f32(xk + j + 0));
+                a1 = vfmaq_f32(a1, vcvtq_f32_s32(vmovl_high_s16(v0_16)),             vld1q_f32(xk + j + 4));
+                a2 = vfmaq_f32(a2, vcvtq_f32_s32(vmovl_s16(vget_low_s16(v1_16))),  vld1q_f32(xk + j + 8));
+                a3 = vfmaq_f32(a3, vcvtq_f32_s32(vmovl_high_s16(v1_16)),             vld1q_f32(xk + j + 12));
+            }
+            acc = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
+#elif HAS_AVX2
+            __m256 va0 = _mm256_setzero_ps(), va1 = _mm256_setzero_ps();
+            for (; j + 16 <= d_in; j += 16) {
+                __m256 vf0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)(vrow + j))));
+                __m256 vf1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)(vrow + j + 8))));
+                va0 = _mm256_fmadd_ps(vf0, _mm256_loadu_ps(xk + j), va0);
+                va1 = _mm256_fmadd_ps(vf1, _mm256_loadu_ps(xk + j + 8), va1);
+            }
+            for (; j + 8 <= d_in; j += 8) {
+                __m256 vf = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)(vrow + j))));
+                va0 = _mm256_fmadd_ps(vf, _mm256_loadu_ps(xk + j), va0);
+            }
+            acc = hsum256_ps(_mm256_add_ps(va0, va1));
+#endif
+            for (; j < d_in; j++) {
+                acc += (float)vrow[j] * xk[j];
+            }
+            zk[k] = acc * sv[k];
+        }
+    }
+
+#if HAS_OMP
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+#else
+    (void)num_threads;
+#endif
+
+    int row;
+#if HAS_OMP
+    #pragma omp parallel for schedule(static) if(d_out >= 512)
+#endif
+    for (row = 0; row < d_out; row++) {
+        const int8_t* urow = u_i8 + (size_t)row * (size_t)rank;
+        const float s_row = su[row];
+        for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+            const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+            const float* zk0 = z + (size_t)(k0 + 0) * (size_t)rank;
+            const float* zk1 = (kc >= 2) ? (z + (size_t)(k0 + 1) * (size_t)rank) : zk0;
+            const float* zk2 = (kc >= 3) ? (z + (size_t)(k0 + 2) * (size_t)rank) : zk0;
+            const float* zk3 = (kc == 4) ? (z + (size_t)(k0 + 3) * (size_t)rank) : zk0;
+            float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+            int k = 0;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+            float32x4_t va0 = vdupq_n_f32(0.0f), va1 = vdupq_n_f32(0.0f);
+            float32x4_t va2 = vdupq_n_f32(0.0f), va3 = vdupq_n_f32(0.0f);
+            for (; k + 8 <= rank; k += 8) {
+                int16x8_t u16 = vmovl_s8(vld1_s8(urow + k));
+                float32x4_t u_lo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(u16)));
+                float32x4_t u_hi = vcvtq_f32_s32(vmovl_high_s16(u16));
+                va0 = vfmaq_f32(va0, u_lo, vld1q_f32(zk0 + k));
+                va0 = vfmaq_f32(va0, u_hi, vld1q_f32(zk0 + k + 4));
+                if (kc >= 2) {
+                    va1 = vfmaq_f32(va1, u_lo, vld1q_f32(zk1 + k));
+                    va1 = vfmaq_f32(va1, u_hi, vld1q_f32(zk1 + k + 4));
+                }
+                if (kc >= 3) {
+                    va2 = vfmaq_f32(va2, u_lo, vld1q_f32(zk2 + k));
+                    va2 = vfmaq_f32(va2, u_hi, vld1q_f32(zk2 + k + 4));
+                }
+                if (kc == 4) {
+                    va3 = vfmaq_f32(va3, u_lo, vld1q_f32(zk3 + k));
+                    va3 = vfmaq_f32(va3, u_hi, vld1q_f32(zk3 + k + 4));
+                }
+            }
+            acc0 = vaddvq_f32(va0);
+            if (kc >= 2) acc1 = vaddvq_f32(va1);
+            if (kc >= 3) acc2 = vaddvq_f32(va2);
+            if (kc == 4) acc3 = vaddvq_f32(va3);
+#elif HAS_AVX2
+            __m256 va0 = _mm256_setzero_ps(), va1 = _mm256_setzero_ps();
+            __m256 va2 = _mm256_setzero_ps(), va3 = _mm256_setzero_ps();
+            for (; k + 8 <= rank; k += 8) {
+                __m256 uf = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_loadl_epi64((const __m128i*)(urow + k))));
+                va0 = _mm256_fmadd_ps(uf, _mm256_loadu_ps(zk0 + k), va0);
+                if (kc >= 2) va1 = _mm256_fmadd_ps(uf, _mm256_loadu_ps(zk1 + k), va1);
+                if (kc >= 3) va2 = _mm256_fmadd_ps(uf, _mm256_loadu_ps(zk2 + k), va2);
+                if (kc == 4) va3 = _mm256_fmadd_ps(uf, _mm256_loadu_ps(zk3 + k), va3);
+            }
+            acc0 = hsum256_ps(va0);
+            if (kc >= 2) acc1 = hsum256_ps(va1);
+            if (kc >= 3) acc2 = hsum256_ps(va2);
+            if (kc == 4) acc3 = hsum256_ps(va3);
+#endif
+            for (; k < rank; k++) {
+                float uk = (float)urow[k];
+                acc0 += uk * zk0[k];
+                if (kc >= 2) acc1 += uk * zk1[k];
+                if (kc >= 3) acc2 += uk * zk2[k];
+                if (kc == 4) acc3 += uk * zk3[k];
+            }
+            y[(size_t)(k0 + 0) * (size_t)d_out + (size_t)row] += acc0 * s_row;
+            if (kc >= 2) y[(size_t)(k0 + 1) * (size_t)d_out + (size_t)row] += acc1 * s_row;
+            if (kc >= 3) y[(size_t)(k0 + 2) * (size_t)d_out + (size_t)row] += acc2 * s_row;
+            if (kc == 4) y[(size_t)(k0 + 3) * (size_t)d_out + (size_t)row] += acc3 * s_row;
+        }
+    }
+
+    neon_free(z);
+    return 0;
+}
+
 static int gate_e_test_config(
     int d_out, int d_in, int bsize, int n_bits, int is_asym, int k_tokens, int test_cs_skip
 ) {
@@ -3278,7 +4550,12 @@ static int gate_e_test_config(
     const int n_blks = d_in / bsize;
     const int hdr = is_asym ? 64 : 32;
     const int plane_b = (bsize / 8) * 16;
-    const size_t tblk = (size_t)hdr + (size_t)n_bits * (size_t)plane_b;
+    const int quintets = (bsize + 4) / 5;
+    const size_t tblk = (n_bits == 5)
+        ? ((size_t)32 + (size_t)quintets * (size_t)16)
+        : (n_bits == 8)
+            ? ((size_t)32 + (size_t)bsize * 16u)
+            : ((size_t)hdr + (size_t)n_bits * (size_t)plane_b);
 
     uint8_t* packed = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk);
     uint16_t* norms = (uint16_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * sizeof(uint16_t));
@@ -3320,22 +4597,52 @@ static int gate_e_test_config(
                 if (is_asym) write_u16_le(bp + 32 + (size_t)r * 2, b16);
                 float s = fp16_to_fp32(s16);
                 float b = is_asym ? fp16_to_fp32(b16) : 0.0f;
-                for (int bo = 0; bo < bsize / 8; bo++) {
-                    for (int p = 0; p < n_bits; p++) {
-                        rng = rng * 6364136223846793005ULL + 1ULL;
-                        pl[(size_t)p * (size_t)plane_b + (size_t)bo * 16 + (size_t)r] = (uint8_t)(rng >> 24);
-                    }
-                }
                 float wn2 = 0.0f;
-                for (int j = 0; j < bsize; j++) {
-                    float wv = b;
-                    for (int p = 0; p < n_bits; p++) {
-                        uint8_t byte_v = pl[(size_t)p * (size_t)plane_b + (size_t)(j / 8) * 16 + (size_t)r];
-                        int bit = (byte_v >> (7 - (j % 8))) & 1;
-                        wv += s * (float)(1u << p) * (bit ? 1.0f : -1.0f);
+                if (n_bits == 5) {
+                    for (int g = 0; g < quintets; g++) {
+                        int code = 0, p3 = 1;
+                        for (int k = 0; k < 5; k++) {
+                            int col = g * 5 + k;
+                            int tr = 0;
+                            if (col < bsize) {
+                                rng = rng * 6364136223846793005ULL + 1ULL;
+                                tr = (int)((rng >> 32) % 3u) - 1;
+                                float wv = s * (float)tr;
+                                w_ref[(size_t)gr * (size_t)d_in + (size_t)blk * (size_t)bsize + (size_t)col] = wv;
+                                wn2 += wv * wv;
+                            }
+                            code += (tr + 1) * p3;
+                            p3 *= 3;
+                        }
+                        bp[32 + (size_t)g * 16 + (size_t)r] = (uint8_t)code;
                     }
-                    w_ref[(size_t)gr * (size_t)d_in + (size_t)blk * (size_t)bsize + (size_t)j] = wv;
-                    wn2 += wv * wv;
+                } else if (n_bits == 8) {
+                    int8_t* qp8 = (int8_t*)(bp + 32);
+                    for (int j = 0; j < bsize; j++) {
+                        rng = rng * 6364136223846793005ULL + 1ULL;
+                        int8_t qv = (int8_t)((int32_t)((rng >> 24) % 253u) - 126);
+                        qp8[(size_t)j * 16u + (size_t)r] = qv;
+                        float wv = s * (float)qv;
+                        w_ref[(size_t)gr * (size_t)d_in + (size_t)blk * (size_t)bsize + (size_t)j] = wv;
+                        wn2 += wv * wv;
+                    }
+                } else {
+                    for (int bo = 0; bo < bsize / 8; bo++) {
+                        for (int p = 0; p < n_bits; p++) {
+                            rng = rng * 6364136223846793005ULL + 1ULL;
+                            pl[(size_t)p * (size_t)plane_b + (size_t)bo * 16 + (size_t)r] = (uint8_t)(rng >> 24);
+                        }
+                    }
+                    for (int j = 0; j < bsize; j++) {
+                        float wv = b;
+                        for (int p = 0; p < n_bits; p++) {
+                            uint8_t byte_v = pl[(size_t)p * (size_t)plane_b + (size_t)(j / 8) * 16 + (size_t)r];
+                            int bit = (byte_v >> (7 - (j % 8))) & 1;
+                            wv += s * (float)(1u << p) * (bit ? 1.0f : -1.0f);
+                        }
+                        w_ref[(size_t)gr * (size_t)d_in + (size_t)blk * (size_t)bsize + (size_t)j] = wv;
+                        wn2 += wv * wv;
+                    }
                 }
                 if (wn2 > max_wn2) max_wn2 = wn2;
             }
@@ -3394,6 +4701,223 @@ static int gate_e_test_config(
     neon_free(packed); neon_free(norms); neon_free(w_ref);
     neon_free(x); neon_free(y_ref); neon_free(y_got);
     return ok;
+}
+
+/* ----------------------------------------------------------------------------
+ * ARMv8 TBI [63:56] Flat-Pointer Helpers + Cuneiform 8D (S^7) Pattern Router
+ * ---------------------------------------------------------------------------- */
+static inline const uint8_t* tbi_deref_u8(uint64_t tagged_ptr) {
+#if defined(__aarch64__) && defined(__linux__)
+    /* Linux AArch64 EL0 configures TCR_EL1.TBI0=1 so [63:56] are ignored by MMU */
+    return (const uint8_t*)(uintptr_t)tagged_ptr;
+#else
+    return (const uint8_t*)(uintptr_t)(tagged_ptr & 0x00FFFFFFFFFFFFFFULL);
+#endif
+}
+
+NEON_API int tbi_hardware_active_c(void) {
+#if defined(__aarch64__) && defined(__linux__)
+    volatile uint32_t sentinel = 0x43384442u;
+    uint64_t raw = (uint64_t)(uintptr_t)&sentinel;
+    uint64_t tp = (((uint64_t)0xA7u) << 56) | (raw & 0x00FFFFFFFFFFFFFFULL);
+    volatile const uint32_t* p = (volatile const uint32_t*)(uintptr_t)tp;
+    return (*p == 0x43384442u && (uint8_t)(tp >> 56) == 0xA7u) ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+NEON_API uint64_t tbi_tag_ptr_c(uint64_t raw_ptr, uint8_t tag) {
+    return (((uint64_t)tag) << 56) | (raw_ptr & 0x00FFFFFFFFFFFFFFULL);
+}
+
+NEON_API uint64_t tbi_untag_ptr_c(uint64_t tagged_ptr) {
+    return tagged_ptr & 0x00FFFFFFFFFFFFFFULL;
+}
+
+NEON_API uint8_t tbi_extract_tag_c(uint64_t tagged_ptr) {
+    return (uint8_t)(tagged_ptr >> 56);
+}
+
+NEON_API int cuneiform_s7_route_batch_c(
+    const float* x,
+    const float* centroids,
+    int k_tokens,
+    int d_in,
+    int n_experts,
+    int top_k,
+    float temperature,
+    int* out_idx,
+    float* out_weights
+) {
+    if (!x || !centroids || !out_idx || !out_weights) return -1;
+    if (k_tokens <= 0 || d_in < 8 || n_experts <= 0 || n_experts > 64) return -1;
+    if (top_k <= 0 || top_k > n_experts || top_k > 8 || temperature <= 0.0f) return -1;
+
+    const int k_blocks = d_in / 8;
+    const float inv_blocks = 1.0f / (float)k_blocks;
+    const float inv_temp = 1.0f / temperature;
+
+    for (int t = 0; t < k_tokens; t++) {
+        const float* xr = x + (size_t)t * (size_t)d_in;
+        float sum8[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+#if HAS_NEON
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        for (int b = 0; b < k_blocks; b++) {
+            const float* bp = xr + (size_t)b * 8u;
+            acc0 = vaddq_f32(acc0, vld1q_f32(bp));
+            acc1 = vaddq_f32(acc1, vld1q_f32(bp + 4));
+        }
+        vst1q_f32(sum8, acc0);
+        vst1q_f32(sum8 + 4, acc1);
+#elif HAS_AVX2
+        __m256 acc = _mm256_setzero_ps();
+        for (int b = 0; b < k_blocks; b++) {
+            acc = _mm256_add_ps(acc, _mm256_loadu_ps(xr + (size_t)b * 8u));
+        }
+        _mm256_storeu_ps(sum8, acc);
+#else
+        for (int b = 0; b < k_blocks; b++) {
+            const float* bp = xr + (size_t)b * 8u;
+            for (int j = 0; j < 8; j++) sum8[j] += bp[j];
+        }
+#endif
+        for (int j = 0; j < 8; j++) sum8[j] *= inv_blocks;
+        float u_bar[8];
+        fwht8(sum8, u_bar);
+
+        float sq = 0.0f;
+        for (int j = 0; j < 8; j++) sq += u_bar[j] * u_bar[j];
+        float nrm = neon_sqrtf(sq);
+        float inv_nrm = 1.0f / (nrm > 1e-9f ? nrm : 1e-9f);
+        float g_hat[8];
+        for (int j = 0; j < 8; j++) g_hat[j] = u_bar[j] * inv_nrm;
+
+        float logits[64];
+        for (int e = 0; e < n_experts; e++) {
+            const float* ce = centroids + (size_t)e * 8u;
+            float dot = 0.0f;
+            for (int j = 0; j < 8; j++) dot += g_hat[j] * ce[j];
+            logits[e] = dot * inv_temp;
+        }
+
+        int sel[8];
+        uint8_t used[64];
+        memset(used, 0, (size_t)n_experts);
+        for (int k = 0; k < top_k; k++) {
+            int best_e = -1;
+            float best_v = -1e30f;
+            for (int e = 0; e < n_experts; e++) {
+                if (!used[e] && (best_e < 0 || logits[e] > best_v)) {
+                    best_e = e;
+                    best_v = logits[e];
+                }
+            }
+            sel[k] = best_e;
+            used[best_e] = 1u;
+        }
+
+        float max_l = logits[sel[0]];
+        for (int k = 1; k < top_k; k++) {
+            if (logits[sel[k]] > max_l) max_l = logits[sel[k]];
+        }
+        float w_unnorm[8];
+        float w_sum = 0.0f;
+        for (int k = 0; k < top_k; k++) {
+            float wv = neon_expf(logits[sel[k]] - max_l);
+            w_unnorm[k] = wv;
+            w_sum += wv;
+        }
+        float inv_w = (w_sum > 1e-12f) ? (1.0f / w_sum) : (1.0f / (float)top_k);
+        for (int k = 0; k < top_k; k++) {
+            out_idx[t * top_k + k] = sel[k];
+            out_weights[t * top_k + k] = (w_sum > 1e-12f) ? (w_unnorm[k] * inv_w) : inv_w;
+        }
+    }
+    return 0;
+}
+
+NEON_API int cuneiform_bank_apply_batch_c(
+    const uint64_t* expert_ptrs_tagged,
+    const float* centroids,
+    const float* x_raw,
+    float* y,
+    int d_out,
+    int d_in,
+    int rank,
+    int n_experts,
+    int top_k,
+    float temperature,
+    float gate_scale,
+    int k_tokens,
+    int num_threads,
+    uint8_t* out_active_tags
+) {
+    if (!expert_ptrs_tagged || !centroids || !x_raw || !y) return -1;
+    if (d_out <= 0 || d_in < 8 || rank <= 0 || k_tokens <= 0) return -1;
+    if (n_experts <= 0 || n_experts > 64 || top_k <= 0 || top_k > n_experts || top_k > 8 || temperature <= 0.0f) return -1;
+
+    int* idx_buf = (int*)neon_alloc((size_t)k_tokens * (size_t)top_k * sizeof(int));
+    float* w_buf = (float*)neon_alloc((size_t)k_tokens * (size_t)top_k * sizeof(float));
+    float* x_scaled = (float*)neon_alloc((size_t)d_in * sizeof(float));
+    if (!idx_buf || !w_buf || !x_scaled) {
+        neon_free(idx_buf); neon_free(w_buf); neon_free(x_scaled);
+        return -1;
+    }
+
+    int rc = cuneiform_s7_route_batch_c(x_raw, centroids, k_tokens, d_in, n_experts, top_k, temperature, idx_buf, w_buf);
+    if (rc != 0) {
+        neon_free(idx_buf); neon_free(w_buf); neon_free(x_scaled);
+        return rc;
+    }
+
+    const size_t su_bytes = (size_t)d_out * sizeof(float);
+    const size_t sv_bytes = (size_t)rank * sizeof(float);
+    const size_t u_bytes = (size_t)d_out * (size_t)rank;
+
+    for (int t = 0; t < k_tokens; t++) {
+        const float* xt = x_raw + (size_t)t * (size_t)d_in;
+        float* yt = y + (size_t)t * (size_t)d_out;
+        for (int k = 0; k < top_k; k++) {
+            int e = idx_buf[t * top_k + k];
+            uint64_t tp = expert_ptrs_tagged[e];
+            if (out_active_tags) out_active_tags[t * top_k + k] = tbi_extract_tag_c(tp);
+            if (tp == 0ULL) {
+                neon_free(idx_buf); neon_free(w_buf); neon_free(x_scaled);
+                return -1;
+            }
+            float alpha = gate_scale * w_buf[t * top_k + k];
+            if (neon_fabsf(alpha) < 1e-12f) continue;
+
+            int j = 0;
+#if HAS_NEON
+            float32x4_t av = vdupq_n_f32(alpha);
+            for (; j + 4 <= d_in; j += 4) {
+                vst1q_f32(x_scaled + j, vmulq_f32(vld1q_f32(xt + j), av));
+            }
+#elif HAS_AVX2
+            __m256 av = _mm256_set1_ps(alpha);
+            for (; j + 8 <= d_in; j += 8) {
+                _mm256_storeu_ps(x_scaled + j, _mm256_mul_ps(_mm256_loadu_ps(xt + j), av));
+            }
+#endif
+            for (; j < d_in; j++) x_scaled[j] = xt[j] * alpha;
+
+            const uint8_t* base = tbi_deref_u8(tp);
+            const float* su = (const float*)base;
+            const float* sv = (const float*)(base + su_bytes);
+            const int8_t* u_i8 = (const int8_t*)(base + su_bytes + sv_bytes);
+            const int8_t* v_i8 = (const int8_t*)(base + su_bytes + sv_bytes + u_bytes);
+            if (int8_lowrank_add_batch_c(u_i8, su, v_i8, sv, x_scaled, yt, d_out, d_in, rank, 1, num_threads) != 0) {
+                neon_free(idx_buf); neon_free(w_buf); neon_free(x_scaled);
+                return -1;
+            }
+        }
+    }
+
+    neon_free(idx_buf); neon_free(w_buf); neon_free(x_scaled);
+    return 0;
 }
 
 /* ----------------------------------------------------------------------------
@@ -3489,11 +5013,416 @@ NEON_API int neon_accelerator_self_test(void) {
         }
     }
 
-    /* Gate E: Tile-16 Bit-Serial GEMV/GEMM (1..4-bit, sym/asym, b=64/128/256, tail d_out, CS skip) */
+    /* Gate E: Tile-16 Bit-Serial GEMV/GEMM (1..4-bit + 5-trit ternary, sym/asym, b=64/128/256, tail d_out, CS skip) */
     if (!gate_e_test_config(37, 256, 128, 1, 1, 1, 1)) return 0;
     if (!gate_e_test_config(32, 192,  64, 2, 0, 4, 0)) return 0;
     if (!gate_e_test_config(37, 256, 256, 3, 1, 5, 0)) return 0;
     if (!gate_e_test_config(16, 128, 128, 4, 0, 1, 0)) return 0;
+    if (!gate_e_test_config(19, 128,  64, 5, 0, 1, 1)) return 0;
+    if (!gate_e_test_config(37, 256, 128, 5, 0, 4, 0)) return 0;
+    if (!gate_e_test_config(37, 512, 256, 5, 0, 5, 1)) return 0;
+    if (!gate_e_test_config(37, 256,  64, 8, 0, 1, 1)) return 0;
+    if (!gate_e_test_config(37, 512, 128, 8, 0, 5, 1)) return 0;
+    {
+        float xd[64] = {0.0f}, yd[16] = {0.0f};
+        uint8_t pd[240] = {0u};
+        if (gemm_bitserial_tile16_batch(pd, NULL, xd, yd, 16, 64, 64, 5, 1, 1, 0.0f, 1, NULL) != -1) return 0;
+        if (gemm_bitserial_tile16_batch(pd, NULL, xd, yd, 16, 64, 64, 8, 1, 1, 0.0f, 1, NULL) != -1) return 0;
+    }
+
+    /* Gate F: Native inv_s + FWHT parity & involution */
+    {
+        const int k_t = 3, d_in = 256, bsz = 128;
+        float* fx = (float*)neon_alloc((size_t)k_t * (size_t)d_in * sizeof(float));
+        float* fx_orig = (float*)neon_alloc((size_t)k_t * (size_t)d_in * sizeof(float));
+        float* finv = (float*)neon_alloc((size_t)d_in * sizeof(float));
+        float* fref = (float*)neon_alloc((size_t)k_t * (size_t)d_in * sizeof(float));
+        if (!fx || !fx_orig || !finv || !fref) {
+            neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref);
+            return 0;
+        }
+        if (inv_s_and_fwht_f32_c(NULL, NULL, 1, 64, 64) != -1) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        if (inv_s_and_fwht_f32_c(fx, NULL, 1, 64, 4) != -1) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        if (inv_s_and_fwht_f32_c(fx, NULL, 1, 96, 64) != -1) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        if (inv_s_and_fwht_f32_c(fx, NULL, 0, 64, 64) != 0) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+
+        uint64_t rng = 13579246801ULL;
+        for (int j = 0; j < d_in; j++) {
+            rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+            finv[j] = 0.5f + (float)((rng >> 32) & 255u) / 255.0f;
+        }
+        for (int i = 0; i < k_t * d_in; i++) {
+            rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+            float v = (float)((int32_t)((rng >> 33) & 0xFFFFu) - 32768) / 16384.0f;
+            fx[i] = v;
+            fx_orig[i] = v;
+        }
+        /* bsize=1 skips FWHT, scales only */
+        if (inv_s_and_fwht_f32_c(fx, finv, k_t, 67, 1) != 0) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        for (int tok = 0; tok < k_t; tok++) {
+            for (int j = 0; j < 67; j++) {
+                float exp_v = fx_orig[tok * 67 + j] * finv[j];
+                if (neon_fabsf(fx[tok * 67 + j] - exp_v) > 1e-5f) {
+                    neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref);
+                    return 0;
+                }
+            }
+        }
+        /* Full bsize=128 FWHT + inv_s vs FP64 Sylvester Hadamard reference */
+        for (int i = 0; i < k_t * d_in; i++) fx[i] = fx_orig[i];
+        if (inv_s_and_fwht_f32_c(fx, finv, k_t, d_in, bsz) != 0) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        double inv_sq = 1.0 / (double)neon_sqrtf((float)bsz);
+        for (int tok = 0; tok < k_t; tok++) {
+            for (int b = 0; b < d_in / bsz; b++) {
+                int base = tok * d_in + b * bsz;
+                for (int r = 0; r < bsz; r++) {
+                    double acc = 0.0;
+                    for (int c = 0; c < bsz; c++) {
+                        uint32_t mask = (uint32_t)(r & c);
+                        int par = 0;
+                        while (mask) { par ^= (int)(mask & 1u); mask >>= 1; }
+                        double x_eq = (double)fx_orig[base + c] * (double)finv[b * bsz + c];
+                        acc += par ? -x_eq : x_eq;
+                    }
+                    fref[base + r] = (float)(acc * inv_sq);
+                }
+            }
+        }
+        for (int i = 0; i < k_t * d_in; i++) {
+            if (neon_fabsf(fx[i] - fref[i]) > 1e-4f) {
+                neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref);
+                return 0;
+            }
+        }
+        /* H * H = I involution recovers scaled input */
+        if (inv_s_and_fwht_f32_c(fx, NULL, k_t, d_in, bsz) != 0) { neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref); return 0; }
+        for (int tok = 0; tok < k_t; tok++) {
+            for (int j = 0; j < d_in; j++) {
+                float scaled = fx_orig[tok * d_in + j] * finv[j];
+                if (neon_fabsf(fx[tok * d_in + j] - scaled) > 1e-4f) {
+                    neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref);
+                    return 0;
+                }
+            }
+        }
+        neon_free(fx); neon_free(fx_orig); neon_free(finv); neon_free(fref);
+    }
+
+    /* Gate G: Native INT8 low-rank residual projection parity (odd dims + OMP threshold) */
+    {
+        const int lr_cases[2][4] = {{37, 131, 13, 5}, {600, 64, 16, 3}};
+        for (int ci = 0; ci < 2; ci++) {
+            const int d_o = lr_cases[ci][0];
+            const int d_i = lr_cases[ci][1];
+            const int rk  = lr_cases[ci][2];
+            const int kt  = lr_cases[ci][3];
+            int8_t* u8 = (int8_t*)neon_alloc((size_t)d_o * (size_t)rk);
+            int8_t* v8 = (int8_t*)neon_alloc((size_t)rk * (size_t)d_i);
+            float* su = (float*)neon_alloc((size_t)d_o * sizeof(float));
+            float* sv = (float*)neon_alloc((size_t)rk * sizeof(float));
+            float* lx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+            float* ly = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+            float* lref = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+            if (!u8 || !v8 || !su || !sv || !lx || !ly || !lref) {
+                neon_free(u8); neon_free(v8); neon_free(su); neon_free(sv); neon_free(lx); neon_free(ly); neon_free(lref);
+                return 0;
+            }
+            if (int8_lowrank_add_batch_c(NULL, su, v8, sv, lx, ly, d_o, d_i, rk, kt, 2) != -1) {
+                neon_free(u8); neon_free(v8); neon_free(su); neon_free(sv); neon_free(lx); neon_free(ly); neon_free(lref);
+                return 0;
+            }
+            uint64_t rng = 24681357901ULL + (uint64_t)ci * 97u;
+            for (int i = 0; i < d_o * rk; i++) { rng = rng * 6364136223846793005ULL + 1ULL; u8[i] = (int8_t)((int32_t)((rng >> 32) % 251u) - 125); }
+            for (int i = 0; i < rk * d_i; i++) { rng = rng * 6364136223846793005ULL + 1ULL; v8[i] = (int8_t)((int32_t)((rng >> 32) % 251u) - 125); }
+            for (int i = 0; i < d_o; i++) { rng = rng * 6364136223846793005ULL + 1ULL; su[i] = 0.002f * (float)((int32_t)((rng >> 32) % 41u) - 20); }
+            for (int i = 0; i < rk; i++)  { rng = rng * 6364136223846793005ULL + 1ULL; sv[i] = 0.003f * (float)((int32_t)((rng >> 32) % 41u) - 20); }
+            for (int i = 0; i < kt * d_i; i++) { rng = rng * 6364136223846793005ULL + 1ULL; lx[i] = (float)((int32_t)((rng >> 33) & 1023u) - 512) / 256.0f; }
+            for (int i = 0; i < kt * d_o; i++) { float init = 0.05f * (float)((i % 11) - 5); ly[i] = init; lref[i] = init; }
+
+            if (int8_lowrank_add_batch_c(u8, su, v8, sv, lx, ly, d_o, d_i, rk, kt, 2) != 0) {
+                neon_free(u8); neon_free(v8); neon_free(su); neon_free(sv); neon_free(lx); neon_free(ly); neon_free(lref);
+                return 0;
+            }
+            for (int tok = 0; tok < kt; tok++) {
+                for (int r = 0; r < d_o; r++) {
+                    double acc = 0.0;
+                    for (int k = 0; k < rk; k++) {
+                        double vx = 0.0;
+                        for (int j = 0; j < d_i; j++) vx += (double)v8[k * d_i + j] * (double)lx[tok * d_i + j];
+                        acc += (double)u8[r * rk + k] * (vx * (double)sv[k]);
+                    }
+                    lref[tok * d_o + r] += (float)(acc * (double)su[r]);
+                }
+            }
+            for (int i = 0; i < kt * d_o; i++) {
+                if (neon_fabsf(ly[i] - lref[i]) > 1e-3f) {
+                    neon_free(u8); neon_free(v8); neon_free(su); neon_free(sv); neon_free(lx); neon_free(ly); neon_free(lref);
+                    return 0;
+                }
+            }
+            neon_free(u8); neon_free(v8); neon_free(su); neon_free(sv); neon_free(lx); neon_free(ly); neon_free(lref);
+        }
+    }
+
+    /* Gate H: Exhaustive 243-code unpack5 + k=2 Dual-Plane + Spiky Outlier Dual-Plane parity */
+    if (!gate_e_test_config(37, 256, 128, 1, 1, 2, 1)) return 0;
+    if (!gate_e_test_config(37, 256, 128, 5, 0, 2, 1)) return 0;
+    {
+        /* Exhaustive 0..242 quintet unpack verification */
+        const int d_o = 243, d_i = 64, bsz = 64;
+        const int n_tiles = (d_o + 15) / 16;
+        const int quintets = (bsz + 4) / 5;
+        const size_t tblk = (size_t)32 + (size_t)quintets * 16u;
+        uint8_t* p5 = (uint8_t*)neon_alloc((size_t)n_tiles * tblk);
+        float* x5 = (float*)neon_alloc((size_t)d_i * sizeof(float));
+        float* y5_got = (float*)neon_alloc((size_t)d_o * sizeof(float));
+        if (!p5 || !x5 || !y5_got) { neon_free(p5); neon_free(x5); neon_free(y5_got); return 0; }
+        memset(p5, 121, (size_t)n_tiles * tblk);
+        memset(x5, 0, (size_t)d_i * sizeof(float));
+        x5[0] = 1.0f; x5[1] = 2.0f; x5[2] = 4.0f; x5[3] = 8.0f; x5[4] = 16.0f;
+        uint16_t one_h = fp32_to_fp16(1.0f);
+        for (int t = 0; t < n_tiles; t++) {
+            uint8_t* bp = p5 + (size_t)t * tblk;
+            for (int r = 0; r < 16; r++) {
+                int gr = t * 16 + r;
+                write_u16_le(bp + (size_t)r * 2u, (gr < d_o) ? one_h : 0u);
+                if (gr < d_o) bp[32 + r] = (uint8_t)gr;
+            }
+        }
+        int ok243 = (gemm_bitserial_tile16_batch(p5, NULL, x5, y5_got, d_o, d_i, bsz, 5, 0, 1, 0.0f, 1, NULL) == 0);
+        for (int c = 0; c < d_o && ok243; c++) {
+            int v = c;
+            float exp_c = 0.0f;
+            float p2 = 1.0f;
+            for (int k = 0; k < 5; k++) { exp_c += (float)((v % 3) - 1) * p2; v /= 3; p2 *= 2.0f; }
+            /* Dual-plane INT8 NEON achieves ~1.5e-5 rel precision (~0.00043 on |31|); wrong trit shifts >= 1.0 */
+            if (neon_fabsf(y5_got[c] - exp_c) > 1e-3f) ok243 = 0;
+        }
+        neon_free(p5); neon_free(x5); neon_free(y5_got);
+        if (!ok243) return 0;
+    }
+    {
+        /* Spiky Outlier Dual-Plane parity (1000.0f spike on zero-contrib cols + 0.03f payload, k=2) */
+        const int d_o = 32, d_i = 128, bsz = 64, kt = 2;
+        const int n_blks = d_i / bsz, n_tiles = d_o / 16;
+        const int quintets = (bsz + 4) / 5;
+        const size_t tblk5 = (size_t)32 + (size_t)quintets * 16u;
+        const size_t tblk1 = (size_t)64 + (size_t)(bsz / 8) * 16u;
+        uint8_t* p5 = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk5);
+        uint8_t* p1 = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk1);
+        float* sx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+        float* sy5 = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* sy1 = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* ref5 = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* ref1 = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        if (!p5 || !p1 || !sx || !sy5 || !sy1 || !ref5 || !ref1) {
+            neon_free(p5); neon_free(p1); neon_free(sx); neon_free(sy5); neon_free(sy1); neon_free(ref5); neon_free(ref1);
+            return 0;
+        }
+        uint64_t rng = 31415926535ULL;
+        for (int tok = 0; tok < kt; tok++) {
+            for (int j = 0; j < d_i; j++) {
+                int local = j % 64;
+                if (local < 2) {
+                    sx[tok * d_i + j] = (tok == 0) ? 1000.0f : -1000.0f;
+                } else {
+                    rng = rng * 6364136223846793005ULL + 1ULL;
+                    sx[tok * d_i + j] = 0.04f * (float)((int32_t)((rng >> 33) & 255u) - 128) / 128.0f;
+                }
+            }
+        }
+        memset(ref5, 0, (size_t)kt * (size_t)d_o * sizeof(float));
+        memset(ref1, 0, (size_t)kt * (size_t)d_o * sizeof(float));
+        uint16_t s_h = fp32_to_fp16(0.25f), b_h = fp32_to_fp16(-0.02f);
+        float s_f = fp16_to_fp32(s_h), b_f = fp16_to_fp32(b_h);
+        for (int t = 0; t < n_tiles; t++) {
+            for (int blk = 0; blk < n_blks; blk++) {
+                uint8_t* bp5 = p5 + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk5;
+                uint8_t* bp1 = p1 + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk1;
+                for (int r = 0; r < 16; r++) {
+                    int gr = t * 16 + r;
+                    write_u16_le(bp5 + (size_t)r * 2u, s_h);
+                    write_u16_le(bp1 + (size_t)r * 2u, s_h);
+                    write_u16_le(bp1 + 32 + (size_t)r * 2u, b_h);
+                    for (int g = 0; g < quintets; g++) {
+                        int code = 0, p3 = 1;
+                        for (int k = 0; k < 5; k++) {
+                            int col = g * 5 + k;
+                            int tr = 0;
+                            if (col < bsz) {
+                                if (col >= 2) {
+                                    rng = rng * 6364136223846793005ULL + 1ULL;
+                                    tr = (int)((rng >> 32) % 3u) - 1;
+                                }
+                                float wv = s_f * (float)tr;
+                                for (int tok = 0; tok < kt; tok++) {
+                                    ref5[tok * d_o + gr] += wv * sx[tok * d_i + blk * bsz + col];
+                                }
+                            }
+                            code += (tr + 1) * p3;
+                            p3 *= 3;
+                        }
+                        bp5[32 + (size_t)g * 16u + (size_t)r] = (uint8_t)code;
+                    }
+                    for (int bo = 0; bo < bsz / 8; bo++) {
+                        rng = rng * 6364136223846793005ULL + 1ULL;
+                        uint8_t bv = (uint8_t)(rng >> 24);
+                        if (bo == 0) bv = (uint8_t)((bv & 0x3Fu) | 0x80u); /* bit0=+1, bit1=-1 so spike cancels cleanly */
+                        bp1[64 + (size_t)bo * 16u + (size_t)r] = bv;
+                        for (int bit = 0; bit < 8; bit++) {
+                            int col = bo * 8 + bit;
+                            float wv = b_f + s_f * (((bv >> (7 - bit)) & 1) ? 1.0f : -1.0f);
+                            for (int tok = 0; tok < kt; tok++) {
+                                ref1[tok * d_o + gr] += wv * sx[tok * d_i + blk * bsz + col];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int ok_dual = (gemm_bitserial_tile16_batch(p5, NULL, sx, sy5, d_o, d_i, bsz, 5, 0, kt, 0.0f, 2, NULL) == 0)
+                   && (gemm_bitserial_tile16_batch(p1, NULL, sx, sy1, d_o, d_i, bsz, 1, 1, kt, 0.0f, 2, NULL) == 0);
+        for (int pass = 0; pass < 2 && ok_dual; pass++) {
+            const float* yg = (pass == 0) ? sy5 : sy1;
+            const float* yr = (pass == 0) ? ref5 : ref1;
+            for (int tok = 0; tok < kt; tok++) {
+                double dot = 0.0, na = 0.0, nb = 0.0;
+                for (int r = 0; r < d_o; r++) {
+                    double vr = yr[tok * d_o + r], vg = yg[tok * d_o + r];
+                    dot += vr * vg; na += vr * vr; nb += vg * vg;
+                }
+                double cos_v = dot / ((double)neon_sqrtf((float)na) * (double)neon_sqrtf((float)nb) + 1e-12);
+                if (cos_v < 0.9999) ok_dual = 0;
+            }
+        }
+        neon_free(p5); neon_free(p1); neon_free(sx); neon_free(sy5); neon_free(sy1); neon_free(ref5); neon_free(ref1);
+        if (!ok_dual) return 0;
+    }
+
+    /* Gate I: ARMv8 TBI [63:56] flat pointer tagging + Cuneiform 8D (S^7) sparse expert apply parity */
+    {
+        uint64_t dummy_va = 0x0000123456789AB0ULL;
+        uint64_t tp_test = tbi_tag_ptr_c(dummy_va, 0xD5u);
+        if (tbi_extract_tag_c(tp_test) != 0xD5u) return 0;
+        if (tbi_untag_ptr_c(tp_test) != dummy_va) return 0;
+#if defined(__aarch64__) && defined(__linux__)
+        if (!tbi_hardware_active_c()) return 0;
+#endif
+        const int d_o = 40, d_i = 64, rk = 5, n_exp = 4, top_k = 2, kt = 2;
+        const float temp = 0.5f, gscale = 0.75f;
+        float* cents = (float*)neon_alloc((size_t)n_exp * 8u * sizeof(float));
+        float* cx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+        float* cy = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* cref = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        void* exp_raw[4] = {NULL, NULL, NULL, NULL};
+        uint64_t exp_ptrs[4] = {0ULL, 0ULL, 0ULL, 0ULL};
+        uint8_t tags[4] = {0, 0, 0, 0};
+        if (!cents || !cx || !cy || !cref) {
+            neon_free(cents); neon_free(cx); neon_free(cy); neon_free(cref);
+            return 0;
+        }
+        const size_t su_b = (size_t)d_o * sizeof(float);
+        const size_t sv_b = (size_t)rk * sizeof(float);
+        const size_t u_b = (size_t)d_o * (size_t)rk;
+        const size_t v_b = (size_t)rk * (size_t)d_i;
+        const size_t exp_bytes = su_b + sv_b + u_b + v_b;
+        int alloc_ok = 1;
+        uint64_t rng = 9876543210123ULL;
+        for (int e = 0; e < n_exp; e++) {
+            float n2 = 0.0f;
+            for (int j = 0; j < 8; j++) {
+                float cval = (j == e) ? 1.0f : (0.15f * (float)(((e * 7 + j * 3) % 5) - 2));
+                cents[e * 8 + j] = cval;
+                n2 += cval * cval;
+            }
+            float inv_n = 1.0f / neon_sqrtf(n2);
+            for (int j = 0; j < 8; j++) cents[e * 8 + j] *= inv_n;
+
+            exp_raw[e] = neon_alloc(exp_bytes);
+            if (!exp_raw[e]) { alloc_ok = 0; break; }
+            uint8_t* ep = (uint8_t*)exp_raw[e];
+            float* su = (float*)ep;
+            float* sv = (float*)(ep + su_b);
+            int8_t* ui = (int8_t*)(ep + su_b + sv_b);
+            int8_t* vi = (int8_t*)(ep + su_b + sv_b + u_b);
+            for (int r = 0; r < d_o; r++) { rng = rng * 6364136223846793005ULL + 1ULL; su[r] = 0.002f * (float)((int32_t)((rng >> 32) % 31u) - 15); }
+            for (int k = 0; k < rk; k++) { rng = rng * 6364136223846793005ULL + 1ULL; sv[k] = 0.003f * (float)((int32_t)((rng >> 32) % 31u) - 15); }
+            for (size_t i = 0; i < u_b; i++) { rng = rng * 6364136223846793005ULL + 1ULL; ui[i] = (int8_t)((int32_t)((rng >> 32) % 201u) - 100); }
+            for (size_t i = 0; i < v_b; i++) { rng = rng * 6364136223846793005ULL + 1ULL; vi[i] = (int8_t)((int32_t)((rng >> 32) % 201u) - 100); }
+            exp_ptrs[e] = tbi_tag_ptr_c((uint64_t)(uintptr_t)ep, (uint8_t)(0xC0u + e));
+        }
+        if (!alloc_ok) {
+            for (int e = 0; e < n_exp; e++) neon_free(exp_raw[e]);
+            neon_free(cents); neon_free(cx); neon_free(cy); neon_free(cref);
+            return 0;
+        }
+        for (int t = 0; t < kt; t++) {
+            for (int j = 0; j < d_i; j++) {
+                rng = rng * 6364136223846793005ULL + 1ULL;
+                cx[t * d_i + j] = (float)((int32_t)((rng >> 33) & 511u) - 256) / 256.0f + ((j % 8 == t) ? 0.5f : 0.0f);
+            }
+        }
+        for (int i = 0; i < kt * d_o; i++) { float init = 0.02f * (float)((i % 9) - 4); cy[i] = init; cref[i] = init; }
+
+        /* Fail-closed checks */
+        int ok_c8d = (cuneiform_s7_route_batch_c(NULL, cents, kt, d_i, n_exp, top_k, temp, (int*)tags, cy) == -1)
+                  && (cuneiform_bank_apply_batch_c(exp_ptrs, cents, cx, cy, d_o, 4, rk, n_exp, top_k, temp, gscale, kt, 1, tags) == -1);
+        if (ok_c8d) {
+            ok_c8d = (cuneiform_bank_apply_batch_c(exp_ptrs, cents, cx, cy, d_o, d_i, rk, n_exp, top_k, temp, gscale, kt, 2, tags) == 0);
+        }
+        for (int t = 0; t < kt && ok_c8d; t++) {
+            double mean8[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+            int kb = d_i / 8;
+            for (int b = 0; b < kb; b++) for (int j = 0; j < 8; j++) mean8[j] += (double)cx[t * d_i + b * 8 + j];
+            float mf[8], ubar[8];
+            for (int j = 0; j < 8; j++) mf[j] = (float)(mean8[j] / (double)kb);
+            fwht8(mf, ubar);
+            double sq = 0.0;
+            for (int j = 0; j < 8; j++) sq += (double)ubar[j] * (double)ubar[j];
+            float inv_n = 1.0f / neon_sqrtf((float)sq);
+            double sc[4];
+            for (int e = 0; e < n_exp; e++) {
+                double d = 0.0;
+                for (int j = 0; j < 8; j++) d += (double)(ubar[j] * inv_n) * (double)cents[e * 8 + j];
+                sc[e] = d / (double)temp;
+            }
+            int sel[2] = {-1, -1};
+            for (int k = 0; k < top_k; k++) {
+                for (int e = 0; e < n_exp; e++) {
+                    if (k == 1 && e == sel[0]) continue;
+                    if (sel[k] < 0 || sc[e] > sc[sel[k]]) sel[k] = e;
+                }
+                if (tags[t * top_k + k] != (uint8_t)(0xC0u + sel[k])) ok_c8d = 0;
+            }
+            double mx = sc[sel[0]] > sc[sel[1]] ? sc[sel[0]] : sc[sel[1]];
+            double w0 = (double)neon_expf((float)(sc[sel[0]] - mx));
+            double w1 = (double)neon_expf((float)(sc[sel[1]] - mx));
+            double ws = w0 + w1;
+            double wt[2] = {(double)gscale * (w0 / ws), (double)gscale * (w1 / ws)};
+            for (int k = 0; k < top_k && ok_c8d; k++) {
+                const uint8_t* ep = (const uint8_t*)exp_raw[sel[k]];
+                const float* su = (const float*)ep;
+                const float* sv = (const float*)(ep + su_b);
+                const int8_t* ui = (const int8_t*)(ep + su_b + sv_b);
+                const int8_t* vi = (const int8_t*)(ep + su_b + sv_b + u_b);
+                for (int r = 0; r < d_o; r++) {
+                    double acc = 0.0;
+                    for (int rr = 0; rr < rk; rr++) {
+                        double vx = 0.0;
+                        for (int c = 0; c < d_i; c++) vx += (double)vi[rr * d_i + c] * (double)cx[t * d_i + c];
+                        acc += (double)ui[r * rk + rr] * (vx * (double)sv[rr]);
+                    }
+                    cref[t * d_o + r] += (float)(wt[k] * (double)su[r] * acc);
+                }
+            }
+        }
+        for (int i = 0; i < kt * d_o && ok_c8d; i++) {
+            if (neon_fabsf(cy[i] - cref[i]) > 1e-3f) ok_c8d = 0;
+        }
+        for (int e = 0; e < n_exp; e++) neon_free(exp_raw[e]);
+        neon_free(cents); neon_free(cx); neon_free(cy); neon_free(cref);
+        if (!ok_c8d) return 0;
+    }
 
     return 1;
 }

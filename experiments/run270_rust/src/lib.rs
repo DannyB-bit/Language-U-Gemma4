@@ -1,8 +1,11 @@
+pub mod assistant;
 pub mod codec;
+pub mod cuneiform_tbi;
 pub mod json;
 pub mod math;
 pub mod packed;
 pub mod safetensors;
 pub mod sha256;
+pub mod speculative;
 pub mod t16c;
 pub mod tokenizer;

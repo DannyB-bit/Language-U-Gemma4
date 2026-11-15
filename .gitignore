@@ -17,3 +17,5 @@ neon_runner/neon_stream_accelerator_v2
 tests/retrieval/_tmp_octonion_experts/
 experiments/run270_rust/calib/work/
 experiments/run270_rust/calib/31b/state_31b/
+.lake/
+**/.lake/

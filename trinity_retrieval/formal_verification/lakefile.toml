@@ -1,0 +1,5 @@
+name = "TrinityGates"
+defaultTargets = ["TrinityGates"]
+
+[[lean_lib]]
+name = "TrinityGates"

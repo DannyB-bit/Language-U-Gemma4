@@ -30,6 +30,7 @@ Frontier 31-billion-parameter models hit **three hard physical walls** on an 8 G
 | Bottleneck / Component | Target Hardware | Measured Proof on Physical Silicon | Raw Telemetry / Evidence |
 | :--- | :--- | :--- | :--- |
 | **1. 31B Full RAM Residency (`T16C v1`, `5.71 GiB`)** | **Pi 4 (8 GB)** | **`60/60` layers pinned**, **`VmSwap: 0 kB`**, **`ssd_read_bytes = 0`**, `VmHWM = 6,238,800 kB`, **`1.291 s/tok`** (`k=4` batch), **`26.32x` NEON FFI prefill speedup** (`33.78s` vs `889.23s` pure Rust; logit `cos = 0.999299`, top-1 `(715, 715)`) | [run31b_cal_v2_2plus2.log](experiments/run270_rust/evidence/run31b/run31b_cal_v2_2plus2.log)<br>[run31b_cal_v2_2plus2_proc.log](experiments/run270_rust/evidence/run31b/run31b_cal_v2_2plus2_proc.log)<br>[run31b_cal_v2_ffi_parity.txt](experiments/run270_rust/evidence/run31b/run31b_cal_v2_ffi_parity.txt) |
+| **1b. 31B V3 + Cell 60 (`C8DB`) + Speculative `k=4`** | **Pi 4 (8 GB)** | `gemma4_31b_v3_c8d.c8d` (`91.68 MB`, `63` entries): Cell 60 `val_cos 0.7571 -> 0.8447`; FFI parity **`cos = 0.999935`** (**`28.52x`** prefill `38.08s` vs `1085.90s`); `8`-prompt `k=1` **`5.429 s/tok`** ILT (`VmSwap=0`, `ssd_read=0`); Seed-only `k=4` **`3.773 s/tok`** (**`8/8`** bit-exact vs `k=1`); CS LM-head **`8/8` exact** (`0.00%` pruned on unit-norm tied BF16 vocab) | [run31b_v3_verified.json](experiments/run270_rust/evidence/run31b/run31b_v3_verified.json)<br>[run31b_v3_prompt_battery_k1.log](experiments/run270_rust/evidence/run31b/run31b_v3_prompt_battery_k1.log)<br>[run31b_v3_speculative_k4.log](experiments/run270_rust/evidence/run31b/run31b_v3_speculative_k4.log)<br>[run31b_v3_cs_lmhead_bench.log](experiments/run270_rust/evidence/run31b/run31b_v3_cs_lmhead_bench.log) |
 | **31B Coherent Generation (`QAT pin10` + NEON)** | **Pi 4 (8 GB)** | Emits **`"William Shakespeare wrote the play *Hamlet*.<turn|>"`**, **`cos = 0.999995`**, `rel_l2 = 0.003402`, exact top-1 & top-5 match vs FP32 reference, `VmHWM = 4,725,968 kB` (`4.51 GiB`) | [a_hamlet_q8emb_pin10_neon.log](experiments/run270_rust/evidence/run31b/a_hamlet_q8emb_pin10_neon.log)<br>[run31b_parity_2plus2.json](experiments/run270_rust/evidence/run31b/run31b_parity_2plus2.json) |
 | **31B Minimal-RAM Streaming (`QAT pin0`)** | **Pi 4 (8 GB)** | Emits exact **`"4"`** on `2 + 2` in **`485,348 kB` (`474.0 MiB`) peak HWM** / `372,696 kB` RSS via zero-copy `mmap` | [b1_stream_2plus2.log](experiments/run270_rust/evidence/run31b/b1_stream_2plus2.log) |
 | **31B Coherent `packed92` (`2.875 bpw`)** | **Pi 4 (8 GB)** | **`"2 + 2 = 4<turn|>"`** from `10.52 GB` (`9.80 GiB`) mmap container (`prefill 426.85s`, `8` tok decode `56.6-61.4s/step`) | [c_packed92_chat_2plus2.log](experiments/run270_rust/evidence/run31b/c_packed92_chat_2plus2.log) |
@@ -123,6 +124,16 @@ python neon_runner/build_native.py
 
 ### 3. Run Gemma 4 31B Inference (`run31b`)
 ```bash
+# V3 + Cell 60 C8DB + N-gram seed speculative k=4 on Pi 4 (0 MB assistant overhead, VmSwap=0):
+./experiments/run270_rust/target/release/run31b \
+  --t16c /mnt/SHE-VAULT/gemma4_31b_v3.t16c \
+  --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json \
+  --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json \
+  --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d --cuneiform-cold-va \
+  --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so \
+  --speculative --batch-k 4 --spec-seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm \
+  --threads 4 --max-tokens 8
+
 # Full-RAM T16C 31B inference on Pi 4 (pass --no-native-ffi to benchmark pure-Rust fallback):
 ./experiments/run270_rust/target/release/run31b \
   --t16c /mnt/SHE-VAULT/gemma4_31b_cal.t16c \

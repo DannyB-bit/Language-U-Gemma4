@@ -40,11 +40,13 @@ try:
     from .codebooks import CodebookRegistryV2, LoadedCodebookV2
     from .build_native import build_shared_library
     from .pi4_stream import validate_projection, checked_layout
+    from .container_sniff import sniff_container
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from neon_runner.codebooks import CodebookRegistryV2, LoadedCodebookV2
     from neon_runner.build_native import build_shared_library
     from neon_runner.pi4_stream import validate_projection, checked_layout
+    from neon_runner.container_sniff import sniff_container
 
 
 BRIDGE_VERSION = "2.1.0"
@@ -744,6 +746,8 @@ class NeonRunnerBridgeV2:
         actual_size = sp.stat().st_size
         if actual_size < LANU_HEADER_BYTES:
             raise ValueError(f"Stream '{sp}' truncated ({actual_size} B < {LANU_HEADER_BYTES} B)")
+        if verify_size_law:
+            sniff_container(sp, layout_path=self.layout_path)
 
         self._memmap = np.memmap(str(sp), dtype=np.uint8, mode="r")
         self._mmap_ptr = int(self._memmap.ctypes.data_as(ctypes.c_void_p).value or 0)

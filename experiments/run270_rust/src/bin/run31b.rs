@@ -12,6 +12,8 @@ use run270_rust::json;
 use run270_rust::math::{attn_decode, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
+use run270_rust::assistant::AssistantRuntime;
+use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDraftController, FastNGramProposalEngine};
 use run270_rust::tokenizer::Tokenizer;
 use std::collections::HashMap;
 use std::fs;
@@ -457,12 +459,97 @@ struct Runtime31B {
     pinned: Vec<PinnedLayer>,
     t16c_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
     native_t16c: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
+    c8d_bank: Option<run270_rust::cuneiform_tbi::CuneiformBank>,
+    cs_skip_thresh: f32,
+    cs_down_norms: Vec<Option<Vec<u16>>>,
+    cs_skipped_blocks: u64,
     kv: Vec<LayerKv>,
     threads: usize,
     ssd_bytes_read: u64,
 }
 
 impl Runtime31B {
+    fn kv_len(&self) -> usize {
+        if self.kv.is_empty() || self.cfg.layer_full.is_empty() {
+            return 0;
+        }
+        let is_full = self.cfg.layer_full[0];
+        let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
+        let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
+        let stride = n_kv * hd;
+        if stride == 0 {
+            0
+        } else {
+            self.kv[0].k.len() / stride
+        }
+    }
+
+    fn truncate_kv(&mut self, keep_tokens: usize) -> Result<(), String> {
+        for (l, layer_kv) in self.kv.iter_mut().enumerate() {
+            let is_full = self.cfg.layer_full[l];
+            let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
+            let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
+            let target = keep_tokens * n_kv * hd;
+            if layer_kv.k.len() < target || layer_kv.v.len() < target {
+                return Err(format!(
+                    "truncate_kv layer {l}: keep_tokens={keep_tokens} (elems={target}) exceeds kv len ({}, {})",
+                    layer_kv.k.len(),
+                    layer_kv.v.len()
+                ));
+            }
+            layer_kv.k.truncate(target);
+            layer_kv.v.truncate(target);
+        }
+        Ok(())
+    }
+
+    fn assistant_kv_layers(&self) -> Result<(usize, usize), String> {
+        let slide_l = self
+            .cfg
+            .layer_full
+            .iter()
+            .rposition(|&f| !f)
+            .ok_or("no sliding_attention layer in model for assistant KV sharing")?;
+        let full_l = self
+            .cfg
+            .layer_full
+            .iter()
+            .rposition(|&f| f)
+            .ok_or("no full_attention layer in model for assistant KV sharing")?;
+        Ok((slide_l, full_l))
+    }
+
+    fn enable_cs_skip(&mut self, thresh: f32) -> Result<(usize, usize), String> {
+        if !thresh.is_finite() || thresh < 0.0 {
+            return Err(format!("invalid --cs-skip threshold {thresh}"));
+        }
+        self.cs_skip_thresh = thresh;
+        self.cs_down_norms.clear();
+        if thresh == 0.0 {
+            return Ok((0, 0));
+        }
+        let mats = self
+            .t16c_mats
+            .as_ref()
+            .ok_or("--cs-skip requires --t16c resident quantized runtime")?;
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        self.cs_down_norms.reserve(self.cfg.n_layers);
+        for l in 0..self.cfg.n_layers {
+            let k1 = format!("model.language_model.layers.{l}.mlp.down_proj.weight");
+            let k2 = format!("model.layers.{l}.mlp.down_proj.weight");
+            if let Some(m) = mats.get(&k1).or_else(|| mats.get(&k2)) {
+                let norms = m.compute_tile_norms_fp16();
+                bytes += norms.len() * 2;
+                count += 1;
+                self.cs_down_norms.push(Some(norms));
+            } else {
+                self.cs_down_norms.push(None);
+            }
+        }
+        Ok((count, bytes))
+    }
+
     fn norm(&self, key: &str) -> Result<&[f32], String> {
         self.norms
             .get(key)
@@ -552,10 +639,14 @@ impl Runtime31B {
         let scalars = &self.scalars;
         let pinned = &self.pinned;
         let t16c_mats = &self.t16c_mats;
+        let all_pinned = t16c_mats.is_some();
         let native_t16c = &self.native_t16c;
+        let cs_down_norms = &self.cs_down_norms;
+        let cs_skip_thresh = self.cs_skip_thresh;
         let kv = &mut self.kv;
         let threads = self.threads;
         let mut read_bytes = 0u64;
+        let mut cs_skipped_step = 0u64;
 
         let get_norm = |key: &str| -> Result<&[f32], String> {
             norms
@@ -596,11 +687,34 @@ impl Runtime31B {
             let mut run_proj = |layer: usize, proj_suffix: &'static str, x_batch: &[f32]| -> Result<Vec<f32>, String> {
                 if let Some(mats) = t16c_mats {
                     let k1 = format!("model.language_model.layers.{layer}.{proj_suffix}.weight");
+                    let k2 = format!("model.layers.{layer}.{proj_suffix}.weight");
                     let mat = mats
                         .get(&k1)
-                        .or_else(|| mats.get(&format!("model.layers.{layer}.{proj_suffix}.weight")))
+                        .or_else(|| mats.get(&k2))
                         .ok_or_else(|| format!("T16C missing {k1}"))?;
-                    return mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads);
+                    let mut out = if proj_suffix == "mlp.down_proj" && cs_skip_thresh > 0.0 {
+                        let d_norms = cs_down_norms.get(layer).and_then(|o| o.as_deref());
+                        let (y_cs, skipped) = mat.project_batch_cs(
+                            x_batch,
+                            seq_len,
+                            native_t16c.as_deref(),
+                            threads,
+                            d_norms,
+                            cs_skip_thresh,
+                        )?;
+                        if skipped > 0 {
+                            cs_skipped_step += skipped as u64;
+                        }
+                        y_cs
+                    } else {
+                        mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
+                    };
+                    if let Some(ref bank) = self.c8d_bank {
+                        if let Some(entry) = bank.entries.get(&k1).or_else(|| bank.entries.get(&k2)) {
+                            entry.apply_batch_into(x_batch, seq_len, &mut out, bank.native.as_ref(), threads, None)?;
+                        }
+                    }
+                    return Ok(out);
                 }
 
                 if layer < pinned.len() {
@@ -742,24 +856,33 @@ impl Runtime31B {
                     }
                 }
                 if verbose_layers && (l == 0 || l == 5 || l % 15 == 14 || l + 1 == cfg.n_layers) {
-                    eprintln!("[run31b] layer {l:02}/{} done in {:.2}s (pinned={})", cfg.n_layers, tl.elapsed().as_secs_f64(), l < pinned.len());
+                    eprintln!("[run31b] layer {l:02}/{} done in {:.2}s (pinned={})", cfg.n_layers, tl.elapsed().as_secs_f64(), all_pinned || l < pinned.len());
                 }
             }
             Ok(())
         })?;
         self.ssd_bytes_read += read_bytes;
+        self.cs_skipped_blocks += cs_skipped_step;
 
         let fn_gain = self.norm("model.language_model.norm.weight")?;
-        if all_final {
+        let mut out = if all_final {
             let mut all_out = Vec::with_capacity(seq_len * d);
             for t in 0..seq_len {
                 all_out.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(fn_gain), eps));
             }
-            Ok(all_out)
+            all_out
         } else {
             let last_state = &states[(seq_len - 1) * d..seq_len * d];
-            Ok(rmsn_raw(last_state, Some(fn_gain), eps))
+            rmsn_raw(last_state, Some(fn_gain), eps)
+        };
+        let n_out_tok = out.len() / d;
+        if let Some(ref bank) = self.c8d_bank {
+            if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
+                let x_in = out.clone();
+                entry.apply_batch_into(&x_in, n_out_tok, &mut out, bank.native.as_ref(), self.threads, None)?;
+            }
         }
+        Ok(out)
     }
 
     fn compute_logits(&mut self, hidden: &[f32]) -> Result<Vec<f32>, String> {
@@ -912,6 +1035,10 @@ fn load_runtime_31b(
             pinned,
             t16c_mats: None,
             native_t16c: None,
+            c8d_bank: None,
+            cs_skip_thresh: 0.0,
+            cs_down_norms: Vec::new(),
+            cs_skipped_blocks: 0,
             kv,
             threads,
             ssd_bytes_read: 0,
@@ -1016,6 +1143,10 @@ fn load_runtime_31b_t16c(
             pinned: Vec::new(),
             t16c_mats: Some(t16c.mats),
             native_t16c,
+            c8d_bank: None,
+            cs_skip_thresh: 0.0,
+            cs_down_norms: Vec::new(),
+            cs_skipped_blocks: 0,
             kv,
             threads,
             ssd_bytes_read: 0,
@@ -1023,6 +1154,52 @@ fn load_runtime_31b_t16c(
         body_bytes + norm_bytes,
         embed_bytes,
     ))
+}
+
+/// Suppress already-closed Gemma-4 thought control tokens and repetitive stutter without altering raw prefill parity dumps.
+fn apply_degeneracy_guard(logits: &mut [f32], prompt_ids: &[u32], generated: &[u32]) {
+    let thought_closed = prompt_ids.ends_with(&[100, 45518, 107, 101]);
+    if thought_closed {
+        for &tid in &[100usize, 101usize, 45518usize] {
+            if tid < logits.len() {
+                logits[tid] = -1.0e9;
+            }
+        }
+        if generated.is_empty() {
+            for &tid in &[107usize, 108usize, 109usize, 715usize, 642usize, 1807usize, 236783usize] {
+                if tid < logits.len() {
+                    logits[tid] = -1.0e9;
+                }
+            }
+        }
+    }
+    let rep_penalty = 1.15f32;
+    for &tid_u32 in generated {
+        let tid = tid_u32 as usize;
+        if tid < logits.len() && tid != 1 && tid != 106 {
+            if logits[tid] > 0.0 {
+                logits[tid] /= rep_penalty;
+            } else {
+                logits[tid] *= rep_penalty;
+            }
+        }
+    }
+    if let Some(&last_tok) = generated.last() {
+        if !(236770..=236820).contains(&last_tok) && last_tok != 1 && last_tok != 106 && (last_tok as usize) < logits.len() {
+            logits[last_tok as usize] -= 8.0;
+        }
+    }
+    if generated.len() >= 3 {
+        let last_a = generated[generated.len() - 1];
+        for i in 0..(generated.len() - 2) {
+            if generated[i] == last_a {
+                let repeated_b = generated[i + 1] as usize;
+                if repeated_b < logits.len() && repeated_b != 1 && repeated_b != 106 {
+                    logits[repeated_b] -= 5.0;
+                }
+            }
+        }
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -1036,13 +1213,41 @@ fn run() -> Result<(), String> {
         return Err("missing --model (or pass --t16c <path>)".into());
     }
     let so_arg = get("--so");
+    let c8d_arg = get("--cuneiform-bank");
+    let c8d_cold_va = args.iter().any(|a| a == "--cuneiform-cold-va");
     let disable_native = args.iter().any(|a| a == "--no-native-ffi");
-    let batch_k: usize = match get("--batch-k") {
+    let speculative = args.iter().any(|a| a == "--speculative");
+    let batch_k_arg = get("--batch-k");
+    let batch_k: usize = match batch_k_arg {
         Some(s) => s.parse().map_err(|_| format!("invalid --batch-k '{s}'"))?,
-        None => 1,
+        None => if speculative { 4 } else { 1 },
     };
     if batch_k == 0 {
         return Err("--batch-k must be >= 1".into());
+    }
+    if speculative && batch_k < 2 {
+        return Err("--speculative requires --batch-k >= 2 (or omit --batch-k for default 4)".into());
+    }
+    let spec_ngram: usize = match get("--spec-ngram") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --spec-ngram '{s}'"))?,
+        None => 4,
+    };
+    let spec_min_count: u32 = match get("--spec-min-count") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --spec-min-count '{s}'"))?,
+        None => 1,
+    };
+    let spec_seed_arg = get("--spec-seed");
+    let spec_assistant_arg = get("--spec-assistant");
+    let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos");
+    let cs_skip_thresh: f32 = match get("--cs-skip") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --cs-skip '{s}'"))?,
+        None => 0.0,
+    };
+    if !cs_skip_thresh.is_finite() || cs_skip_thresh < 0.0 {
+        return Err(format!("--cs-skip must be finite and >= 0.0, got {cs_skip_thresh}"));
+    }
+    if (spec_seed_arg.is_some() || spec_assistant_arg.is_some()) && !speculative {
+        return Err("--spec-seed and --spec-assistant require --speculative".into());
     }
     let cfgp = get("--config").ok_or("missing --config")?;
     let tkp = get("--tokenizer").ok_or("missing --tokenizer")?;
@@ -1085,6 +1290,67 @@ fn run() -> Result<(), String> {
     } else {
         load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, threads)?
     };
+    if let Some(cp) = c8d_arg.as_deref() {
+        let native_hint = so_arg
+            .as_deref()
+            .or_else(|| rt.native_t16c.as_ref().map(|n| n.path.as_str()));
+        let bank = run270_rust::cuneiform_tbi::CuneiformBank::load(
+            Path::new(cp),
+            native_hint.map(Path::new),
+            disable_native,
+            !c8d_cold_va,
+        )?;
+        for (k, v) in &bank.norms {
+            rt.norms.insert(k.clone(), v.clone());
+        }
+        eprintln!(
+            "[run31b] loaded C8DB {}: entries={} norms={} payload_bytes={} cold_va={} native_tbi_hw={}",
+            cp,
+            bank.entries.len(),
+            bank.norms.len(),
+            bank.total_payload_bytes,
+            c8d_cold_va,
+            bank.native.as_ref().is_some_and(|n| n.tbi_hw_active),
+        );
+        rt.c8d_bank = Some(bank);
+    }
+    if cs_skip_thresh > 0.0 {
+        let (cs_mats, cs_bytes) = rt.enable_cs_skip(cs_skip_thresh)?;
+        eprintln!(
+            "[run31b] enabled Cauchy-Schwarz down_proj tile skip: thresh={cs_skip_thresh:.2e} mats={cs_mats} norms_bytes={cs_bytes}"
+        );
+    }
+    let assistant_state: Option<(AssistantRuntime, usize, usize)> = if let Some(ap) = spec_assistant_arg.as_deref() {
+        let native_hint = so_arg
+            .as_deref()
+            .or_else(|| rt.native_t16c.as_ref().map(|n| n.path.as_str()));
+        let ast = AssistantRuntime::load_31b(
+            std::path::Path::new(ap),
+            native_hint.map(std::path::Path::new),
+            disable_native,
+            threads,
+            rt.cfg.n_kv,
+            rt.cfg.n_global_kv,
+            rt.cfg.window,
+        )?;
+        if ast.cfg.backbone_hidden != rt.cfg.d || ast.cfg.vocab != rt.cfg.vocab {
+            return Err(format!(
+                "assistant {} dims ({}x{}) incompatible with 31B ({}x{})",
+                ap, ast.cfg.backbone_hidden, ast.cfg.vocab, rt.cfg.d, rt.cfg.vocab
+            ));
+        }
+        let (sl_l, fl_l) = rt.assistant_kv_layers()?;
+        eprintln!(
+            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
+            ap,
+            ast.cfg.n_layers,
+            ast.cfg.d,
+            ast.resident_bytes() as f64 / (1024.0 * 1024.0)
+        );
+        Some((ast, sl_l, fl_l))
+    } else {
+        None
+    };
     let active_pinned_layers = if rt.t16c_mats.is_some() { rt.cfg.n_layers } else { rt.pinned.len() };
     eprintln!(
         "[run31b] loaded in {:.2}s pinned_layers={}/{} pinned_bytes={} embed_bytes={} vm={:?}",
@@ -1114,17 +1380,19 @@ fn run() -> Result<(), String> {
     eprintln!("[run31b] prompt {} tokens ids={ids:?}", ids.len());
 
     let t_pf = std::time::Instant::now();
-    let mut hidden = rt.forward_batch(&ids, 0, true)?;
-    let mut logits = rt.compute_logits(&hidden)?;
+    let mut last_backbone_h = rt.forward_batch(&ids, 0, true)?;
+    let mut prefill_logits = rt.compute_logits(&last_backbone_h)?;
     let prefill_s = t_pf.elapsed().as_secs_f64();
     eprintln!("[run31b] prefill done in {prefill_s:.2}s ssd_read_mb={:.1} vm={:?}", rt.ssd_bytes_read as f64 / 1e6, proc_status_kb());
 
     if let Some(dp) = dump_logits {
-        let bytes: Vec<u8> = logits.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let bytes: Vec<u8> = prefill_logits.iter().flat_map(|v| v.to_le_bytes()).collect();
         fs::write(&dp, bytes).map_err(|e| format!("write {dp}: {e}"))?;
     }
 
-    let mut top5: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+    apply_degeneracy_guard(&mut prefill_logits, &ids, &[]);
+
+    let mut top5: Vec<(usize, f32)> = prefill_logits.iter().copied().enumerate().collect();
     top5.select_nth_unstable_by(4, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     top5.truncate(5);
     top5.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1135,29 +1403,178 @@ fn run() -> Result<(), String> {
     println!("PREFILL_TOP5 [{}]", top5_str.join(", "));
 
     let eos: [u32; 2] = [1, 106];
+    let closed_thought_bans: &[u32] = if ids.ends_with(&[100, 45518, 107, 101]) {
+        &[100, 101, 45518]
+    } else {
+        &[]
+    };
     let mut generated = Vec::new();
     let t_dec = std::time::Instant::now();
-    for step in 0..max_tokens {
-        let nxt = logits
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map_or(0, |(i, _)| i) as u32;
-        generated.push(nxt);
-        let tok_txt = tk.decode(&[nxt]);
-        println!("[STEP {step}] id={nxt} text={tok_txt:?}");
-        if eos.contains(&nxt) {
-            break;
-        }
-        if step + 1 < max_tokens {
+    if speculative {
+        let mut history = ids.clone();
+        let mut ngram = FastNGramProposalEngine::new(spec_ngram).with_min_count(spec_min_count);
+        let seed_entries = if let Some(sp) = spec_seed_arg.as_deref() {
+            let n = ngram.load_seed_file(std::path::Path::new(sp))?;
+            eprintln!("[run31b] loaded CNGM spec seed {sp}: transitions={n}");
+            n
+        } else {
+            0
+        };
+        ngram.train_tokens(&history);
+        let max_draft = (batch_k - 1).max(1);
+        let mut ctrl = AdaptiveDraftController::new(1, max_draft);
+        let mut pending = if max_tokens > 0 { Some(argmax_f32(&prefill_logits)) } else { None };
+        let mut spec_drafted = 0usize;
+        let mut spec_accepted = 0usize;
+        let mut spec_batches = 0usize;
+        let mut spec_fallback_k1 = 0usize;
+        let vocab = rt.cfg.vocab;
+        let d_hidden = rt.cfg.d;
+
+        while let Some(y0) = pending.take() {
+            let step_idx = generated.len();
+            generated.push(y0);
+            ngram.observe_transition(&history, y0);
+            history.push(y0);
+            println!("[STEP {step_idx}] id={y0} text={:?}", tk.decode(&[y0]));
+            if eos.contains(&y0) || generated.len() >= max_tokens {
+                break;
+            }
+
+            let cur_kv_len = rt.kv_len();
+            let expected_kv_len = ids.len() + generated.len() - 1;
+            if cur_kv_len != expected_kv_len {
+                return Err(format!("KV desync before spec step: kv_len={cur_kv_len} != expected={expected_kv_len}"));
+            }
+
+            let rem = max_tokens - generated.len();
+            let draft_budget = ctrl.current_k().min(rem.saturating_sub(1));
+            let drafts = if draft_budget > 0 {
+                if let Some((ref ast, sl_l, fl_l)) = assistant_state {
+                    let kv_tmp = std::mem::take(&mut rt.kv);
+                    let ast_res = ast.draft_sequence_masked(
+                        y0,
+                        |tok| rt.embed_batch(&[tok]),
+                        &last_backbone_h,
+                        &kv_tmp[sl_l].k,
+                        &kv_tmp[sl_l].v,
+                        &kv_tmp[fl_l].k,
+                        &kv_tmp[fl_l].v,
+                        cur_kv_len,
+                        cur_kv_len,
+                        draft_budget,
+                        assistant_step_pos,
+                        &eos,
+                        closed_thought_bans,
+                    );
+                    rt.kv = kv_tmp;
+                    let d = ast_res?;
+                    if d.is_empty() {
+                        ngram.propose_sequence(&history, draft_budget)
+                    } else {
+                        d
+                    }
+                } else {
+                    ngram.propose_sequence(&history, draft_budget)
+                }
+            } else {
+                Vec::new()
+            };
+
             let td = std::time::Instant::now();
-            hidden = rt.forward_batch(&[nxt], ids.len() + step, false)?;
-            logits = rt.compute_logits(&hidden)?;
-            eprintln!("[run31b] decode step {step} in {:.2}s vm={:?}", td.elapsed().as_secs_f64(), proc_status_kb());
+            if drafts.is_empty() {
+                spec_fallback_k1 += 1;
+                let h = rt.forward_batch(&[y0], cur_kv_len, false)?;
+                let mut l = rt.compute_logits(&h)?;
+                apply_degeneracy_guard(&mut l, &ids, &generated);
+                last_backbone_h = h;
+                pending = Some(argmax_f32(&l));
+                eprintln!(
+                    "[run31b] spec fallback k=1 step={} in {:.2}s k_window={} vm={:?}",
+                    step_idx,
+                    td.elapsed().as_secs_f64(),
+                    ctrl.current_k(),
+                    proc_status_kb()
+                );
+            } else {
+                spec_batches += 1;
+                spec_drafted += drafts.len();
+                let mut batch = Vec::with_capacity(1 + drafts.len());
+                batch.push(y0);
+                batch.extend_from_slice(&drafts);
+                let h_batch = rt.forward_batch_mode(&batch, cur_kv_len, false, true)?;
+                let mut l_batch = rt.compute_logits_batch(&h_batch, batch.len())?;
+                // Apply the identical degeneracy guard sequentially across verification slots
+                // so greedy speculative verification stays 100% bit-exact with k=1.
+                let mut sim_gen = generated.clone();
+                for (slot_i, slot_logits) in l_batch.chunks_exact_mut(vocab).enumerate() {
+                    apply_degeneracy_guard(slot_logits, &ids, &sim_gen);
+                    if let Some(&d_tok) = drafts.get(slot_i) {
+                        let pred = argmax_f32(slot_logits);
+                        if pred != d_tok {
+                            break;
+                        }
+                        sim_gen.push(pred);
+                    }
+                }
+                let outcome = verify_greedy_draft_batch(&drafts, &l_batch, vocab, &eos, rem)?;
+                let acc = outcome.accepted_drafts.len();
+                spec_accepted += acc;
+                ctrl.observe(acc, drafts.len());
+                rt.truncate_kv(cur_kv_len + 1 + acc)?;
+                last_backbone_h = h_batch[acc * d_hidden..(acc + 1) * d_hidden].to_vec();
+                for &tok in &outcome.accepted_drafts {
+                    let s_idx = generated.len();
+                    generated.push(tok);
+                    ngram.observe_transition(&history, tok);
+                    history.push(tok);
+                    println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
+                }
+                pending = if outcome.hit_stop { None } else { outcome.next_pending };
+                eprintln!(
+                    "[run31b] spec batch={} drafted={} accepted={} next_k={} ewma={:.2} in {:.2}s vm={:?}",
+                    spec_batches,
+                    drafts.len(),
+                    acc,
+                    ctrl.current_k(),
+                    ctrl.acceptance_ewma(),
+                    td.elapsed().as_secs_f64(),
+                    proc_status_kb()
+                );
+            }
+        }
+        let spec_s = t_dec.elapsed().as_secs_f64();
+        let dec_steps_after_prefill = generated.len().saturating_sub(1);
+        let accept_rate = if spec_drafted > 0 { spec_accepted as f64 / spec_drafted as f64 } else { 0.0 };
+        let eff_s_tok = if dec_steps_after_prefill > 0 { spec_s / dec_steps_after_prefill as f64 } else { 0.0 };
+        let ast_mb = assistant_state
+            .as_ref()
+            .map_or(0.0, |(a, _, _)| a.resident_bytes() as f64 / (1024.0 * 1024.0));
+        println!(
+            "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} step_pos={assistant_step_pos} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
+            generated.len()
+        );
+    } else {
+        let mut logits = prefill_logits;
+        for step in 0..max_tokens {
+            let nxt = argmax_f32(&logits);
+            generated.push(nxt);
+            let tok_txt = tk.decode(&[nxt]);
+            println!("[STEP {step}] id={nxt} text={tok_txt:?}");
+            if eos.contains(&nxt) {
+                break;
+            }
+            if step + 1 < max_tokens {
+                let td = std::time::Instant::now();
+                let step_hidden = rt.forward_batch(&[nxt], ids.len() + step, false)?;
+                logits = rt.compute_logits(&step_hidden)?;
+                apply_degeneracy_guard(&mut logits, &ids, &generated);
+                eprintln!("[run31b] decode step {step} in {:.2}s vm={:?}", td.elapsed().as_secs_f64(), proc_status_kb());
+            }
         }
     }
     let decode_s = t_dec.elapsed().as_secs_f64();
-    if batch_k > 1 {
+    if batch_k > 1 && !speculative {
         let vocab = rt.cfg.vocab;
         let batch_ids: Vec<u32> = (0..batch_k).map(|i| generated[i % generated.len().max(1)]).collect();
         let tb = std::time::Instant::now();
@@ -1186,8 +1603,8 @@ fn run() -> Result<(), String> {
     println!("GEN31B ids={generated:?}");
     println!("GEN31B text={:?}", tk.decode(&generated));
     println!(
-        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
-        rt.ssd_bytes_read
+        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
+        rt.ssd_bytes_read, rt.cs_skipped_blocks
     );
     Ok(())
 }
@@ -1283,5 +1700,83 @@ mod tests {
                 assert!((y[tok * d_out + r] - want).abs() < 1e-3);
             }
         }
+    }
+
+    #[test]
+    fn cuneiform_bank_integrates_with_t16c_proj() {
+        use run270_rust::cuneiform_tbi::{
+            Cuneiform6DRadicals, CuneiformBank, CuneiformBankEntryInput, CuneiformExpertInput,
+        };
+        use run270_rust::t16c::T16CMat;
+
+        let (d_out, d_in, bsize, nb, rk) = (32usize, 64usize, 64usize, 1u8, 4usize);
+        let sc = vec![0.02f32; d_out];
+        let bi = vec![0.0f32; d_out];
+        let idx: Vec<u8> = (0..d_out * d_in).map(|i| (i & 1) as u8).collect();
+        let mname = "model.language_model.layers.39.mlp.down_proj.weight".to_string();
+        let mat = T16CMat::pack_from_components(mname.clone(), d_out, d_in, bsize, nb, true, false, &sc, Some(&bi), &idx, None, None).unwrap();
+
+        let n_exp = 4usize;
+        let mut cents = vec![0.0f32; n_exp * 8];
+        for e in 0..n_exp {
+            cents[e * 8 + e] = 1.0;
+        }
+        let su: Vec<f32> = (0..d_out).map(|r| 0.01 * (r as f32 + 1.0)).collect();
+        let sv = vec![0.02f32; rk];
+        let u: Vec<i8> = (0..d_out * rk).map(|i| ((i as i32 % 17) - 8) as i8).collect();
+        let v: Vec<i8> = (0..rk * d_in).map(|i| ((i as i32 % 15) - 7) as i8).collect();
+        let rad = Cuneiform6DRadicals::from_axes(10, 14, 0, 7, 10, 0, 0);
+        let experts: Vec<CuneiformExpertInput<'_>> = (0..n_exp)
+            .map(|e| CuneiformExpertInput {
+                radicals: Cuneiform6DRadicals::from_axes(10, 14, 0, 7, 10, 0, e as u8),
+                su: &su,
+                sv: &sv,
+                u_i8: &u,
+                v_i8: &v,
+            })
+            .collect();
+
+        let tmp = std::env::temp_dir().join("run31b_c8d_integration.c8d");
+        let ein = CuneiformBankEntryInput {
+            name: mname.clone(),
+            d_out,
+            d_in,
+            rank: rk,
+            top_k: 2,
+            c6d: rad,
+            temperature: 0.5,
+            gate_scale: 1.0,
+            centroids: &cents,
+            experts,
+        };
+        CuneiformBank::write_file(&tmp, &[], &[ein]).unwrap();
+        let bank = CuneiformBank::load(&tmp, None, true, true).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let k = 2usize;
+        let x: Vec<f32> = (0..k * d_in).map(|i| ((i as f32) * 0.21).cos()).collect();
+        let y_base = mat.project_batch(&x, k, None, 2).unwrap();
+        let mut y_plus = y_base.clone();
+        bank.entries.get(&mname).unwrap().apply_batch_into(&x, k, &mut y_plus, None, 2, None).unwrap();
+        let delta: f32 = y_plus.iter().zip(y_base.iter()).map(|(a, b)| (a - b).abs()).sum();
+        assert!(delta > 1e-3, "expected non-zero routed delta from C8DB bank");
+    }
+
+    #[test]
+    fn degeneracy_guard_blocks_closed_thought_and_stutter() {
+        let prompt_ids = vec![2u32, 105, 2364, 100, 45518, 107, 101];
+        let mut logits = vec![0.0f32; 50000];
+        logits[101] = 30.0;
+        logits[107] = 28.0;
+        logits[45518] = 25.0;
+        logits[23681] = 20.0;
+        apply_degeneracy_guard(&mut logits, &prompt_ids, &[]);
+        assert_eq!(argmax_f32(&logits), 23681);
+
+        let mut logits2 = vec![0.0f32; 50000];
+        logits2[23681] = 20.0;
+        logits2[23682] = 18.0;
+        apply_degeneracy_guard(&mut logits2, &prompt_ids, &[23681]);
+        assert_eq!(argmax_f32(&logits2), 23682);
     }
 }

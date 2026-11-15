@@ -1,0 +1,11 @@
+Run31B V3 + Cell60 Post-Norm NEON FFI vs Pure-Rust Prefill Logit Parity (Prompt: What is 2 + 2?)
+vocab_len=262144
+cosine_similarity=0.99993494
+max_abs_diff=0.274357
+rmse=0.063951
+neon_top1=818 logit=25.693884
+rust_top1=818 logit=25.649101
+top1_exact_match=True
+top10_overlap=9/10
+neon_top10=[np.int64(818), np.int64(1018), np.int64(79629), np.int64(236778), np.int64(100), np.int64(22515), np.int64(2859), np.int64(4694), np.int64(759), np.int64(902)]
+rust_top10=[np.int64(818), np.int64(1018), np.int64(79629), np.int64(236778), np.int64(100), np.int64(22515), np.int64(2859), np.int64(4694), np.int64(759), np.int64(15938)]

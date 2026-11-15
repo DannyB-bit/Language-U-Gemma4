@@ -337,10 +337,11 @@ NEON_API int paged_bf16_attention_gqa_c(
 );
 
 /**
- * Packed Tile-16 Bit-Serial GEMV / GEMM (1..4-bit, symmetric or asymmetric,
- * block_size in {64, 128, 256}) using zero-spill ARMv8 NEON `vqtbl1q_s8`
- * (`sub64` L1-budget LUT), x86-64 AVX2 `vpshufb`, or scalar fallback, with
- * optional bounded Cauchy-Schwarz tile-block skip (`tile_norm_fp16`).
+ * Packed Tile-16 Bit-Serial / Ternary-5 / Int8 GEMV / GEMM (n_bits in 1..4
+ * bit-serial sym/asym, n_bits=5 5-trit ternary sym, or n_bits=8 signed int8
+ * sym; block_size in {64, 128, 256}) using zero-spill ARMv8 NEON, x86-64 AVX2,
+ * or scalar fallback, with optional bounded Cauchy-Schwarz tile-block skip
+ * (`tile_norm_fp16`).
  *
  * Returns 0 on success, -1 on invalid arguments or allocation failure.
  */
@@ -373,6 +374,79 @@ NEON_API int gemv_bitserial_tile16_mmap(
     float cs_skip_thresh,
     int num_threads,
     int64_t* NEON_RESTRICT out_skipped
+);
+
+/**
+ * Vectorized optional input channel equalization (`x *= inv_s`, skipped when
+ * `inv_s == NULL`) fused with orthonormal Fast Walsh-Hadamard block rotation
+ * (`bsize == 1` skips FWHT; otherwise power-of-two `bsize >= 8` dividing `d_in`).
+ *
+ * Returns 0 on success, -1 on invalid arguments.
+ */
+NEON_API int inv_s_and_fwht_f32_c(
+    float* NEON_RESTRICT x,
+    const float* NEON_RESTRICT inv_s,
+    int k_tokens,
+    int d_in,
+    int bsize
+);
+
+/**
+ * Vectorized INT8 low-rank residual projection:
+ *   y[t, r] += su[r] * sum_{k=0..rank-1} u_i8[r, k] * (sv[k] * sum_j v_i8[k, j] * x_raw[t, j])
+ * Uses a single parallel sweep over output rows across all `k_tokens`.
+ *
+ * Returns 0 on success, -1 on invalid arguments or allocation failure.
+ */
+NEON_API int int8_lowrank_add_batch_c(
+    const int8_t* NEON_RESTRICT u_i8,
+    const float* NEON_RESTRICT su,
+    const int8_t* NEON_RESTRICT v_i8,
+    const float* NEON_RESTRICT sv,
+    const float* NEON_RESTRICT x_raw,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int rank,
+    int k_tokens,
+    int num_threads
+);
+
+/* ARMv8 Top-Byte Ignore (bits [63:56]) flat-pointer helpers & probe */
+NEON_API int tbi_hardware_active_c(void);
+NEON_API uint64_t tbi_tag_ptr_c(uint64_t raw_ptr, uint8_t tag);
+NEON_API uint64_t tbi_untag_ptr_c(uint64_t tagged_ptr);
+NEON_API uint8_t tbi_extract_tag_c(uint64_t tagged_ptr);
+
+/* Cuneiform 8D (H8 -> S^7) sparse top-k router over k_tokens x d_in inputs */
+NEON_API int cuneiform_s7_route_batch_c(
+    const float* x,
+    const float* centroids,
+    int k_tokens,
+    int d_in,
+    int n_experts,
+    int top_k,
+    float temperature,
+    int* out_idx,
+    float* out_weights
+);
+
+/* Apply top-k S^7-routed INT8 low-rank experts via TBI-tagged 64-bit pointers */
+NEON_API int cuneiform_bank_apply_batch_c(
+    const uint64_t* expert_ptrs_tagged,
+    const float* centroids,
+    const float* x_raw,
+    float* y,
+    int d_out,
+    int d_in,
+    int rank,
+    int n_experts,
+    int top_k,
+    float temperature,
+    float gate_scale,
+    int k_tokens,
+    int num_threads,
+    uint8_t* out_active_tags
 );
 
 #ifdef __cplusplus

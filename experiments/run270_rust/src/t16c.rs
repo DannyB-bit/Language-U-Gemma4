@@ -10,9 +10,14 @@
 use crate::codec::{fp16_to_f32, fp32_to_fp16};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::Read;
+#[cfg(not(unix))]
+use std::io::BufReader;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::ptr;
+#[cfg(unix)]
+use std::sync::Arc;
 
 pub const T16C_MAGIC: &[u8; 4] = b"T16C";
 pub const T16C_VERSION: u32 = 1;
@@ -163,6 +168,37 @@ pub fn fwht_block_inplace(x: &mut [f32], bsize: usize) -> Result<(), String> {
     Ok(())
 }
 
+const fn build_tern5_lut() -> [[i8; 5]; 243] {
+    let mut lut = [[0i8; 5]; 243];
+    let mut c = 0usize;
+    while c < 243 {
+        let mut v = c;
+        let mut k = 0usize;
+        while k < 5 {
+            lut[c][k] = (v % 3) as i8 - 1;
+            v /= 3;
+            k += 1;
+        }
+        c += 1;
+    }
+    lut
+}
+
+const TERN5_LUT: [[i8; 5]; 243] = build_tern5_lut();
+
+/// Packed byte size of a single `16 x block_size` tile-block.
+pub fn tile16_blk_bytes(block_size: usize, n_bits: u8, is_asym: bool) -> usize {
+    if n_bits == 5 {
+        32 + block_size.div_ceil(5) * 16
+    } else if n_bits == 8 {
+        32 + block_size * 16
+    } else {
+        let hdr_bytes = if is_asym { 64 } else { 32 };
+        let plane_bytes = (block_size / 8) * 16;
+        hdr_bytes + (n_bits as usize) * plane_bytes
+    }
+}
+
 pub fn expected_tile16_bytes(d_out: usize, d_in: usize, block_size: usize, n_bits: u8, is_asym: bool) -> Result<usize, String> {
     if d_out == 0 || d_in == 0 {
         return Err("d_out and d_in must be non-zero".into());
@@ -170,14 +206,47 @@ pub fn expected_tile16_bytes(d_out: usize, d_in: usize, block_size: usize, n_bit
     if !(block_size == 64 || block_size == 128 || block_size == 256) || d_in % block_size != 0 {
         return Err(format!("invalid tile16 block_size={block_size} for d_in={d_in}"));
     }
-    if n_bits == 0 || n_bits > 4 {
+    if n_bits == 0 || (n_bits > 5 && n_bits != 8) {
         return Err(format!("invalid tile16 n_bits={n_bits}"));
+    }
+    if (n_bits == 5 || n_bits == 8) && is_asym {
+        return Err(format!("invalid tile16 n_bits={n_bits} with is_asym=true"));
     }
     let n_tiles = d_out.div_ceil(16);
     let n_blks = d_in / block_size;
-    let hdr_bytes = if is_asym { 64 } else { 32 };
-    let plane_bytes = (block_size / 8) * 16;
-    Ok(n_tiles * n_blks * (hdr_bytes + (n_bits as usize) * plane_bytes))
+    Ok(n_tiles * n_blks * tile16_blk_bytes(block_size, n_bits, is_asym))
+}
+
+#[cfg(unix)]
+struct MappedFile {
+    ptr: *const u8,
+    len: usize,
+}
+
+#[cfg(unix)]
+unsafe impl Send for MappedFile {}
+#[cfg(unix)]
+unsafe impl Sync for MappedFile {}
+
+#[cfg(unix)]
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && self.len > 0 {
+            unsafe {
+                sys::munmap(self.ptr as *mut std::ffi::c_void, self.len);
+            }
+        }
+    }
+}
+
+enum PackedStorage {
+    Owned(Vec<Aligned64>),
+    #[cfg(unix)]
+    Mmap {
+        map: Arc<MappedFile>,
+        offset: usize,
+        len: usize,
+    },
 }
 
 pub struct T16CMat {
@@ -189,7 +258,7 @@ pub struct T16CMat {
     pub is_asym: bool,
     pub has_fwht: bool,
     pub packed_bytes_len: usize,
-    packed: Vec<Aligned64>,
+    packed: PackedStorage,
     pub inv_s: Option<Vec<f32>>,
     pub low_rank: Option<Int8LowRank>,
 }
@@ -202,7 +271,13 @@ impl T16CMat {
     }
 
     pub fn packed_slice(&self) -> &[u8] {
-        aligned_as_slice(&self.packed, self.packed_bytes_len)
+        match &self.packed {
+            PackedStorage::Owned(buf) => aligned_as_slice(buf, self.packed_bytes_len),
+            #[cfg(unix)]
+            PackedStorage::Mmap { map, offset, len } => unsafe {
+                std::slice::from_raw_parts(map.ptr.add(*offset), *len)
+            },
+        }
     }
 
     pub fn pack_from_components(
@@ -250,8 +325,15 @@ impl T16CMat {
         let hdr_bytes = if is_asym { 64 } else { 32 };
         let bytes_per_row_blk = block_size / 8;
         let plane_bytes = bytes_per_row_blk * 16;
-        let tblk_bytes = hdr_bytes + (n_bits as usize) * plane_bytes;
-        let max_level = (1u8 << n_bits) - 1;
+        let tblk_bytes = tile16_blk_bytes(block_size, n_bits, is_asym);
+        let quintets = block_size.div_ceil(5);
+        let max_level = if n_bits == 5 {
+            2
+        } else if n_bits == 8 {
+            255
+        } else {
+            (1u8 << n_bits) - 1
+        };
 
         for t in 0..n_tiles {
             for blk in 0..n_blks {
@@ -276,16 +358,35 @@ impl T16CMat {
                             return Err(format!("idx value {v} exceeds max_level {max_level}"));
                         }
                     }
-                    for p in 0..(n_bits as usize) {
-                        let p_off = off + hdr_bytes + p * plane_bytes;
-                        for bo in 0..bytes_per_row_blk {
-                            let mut byte = 0u8;
-                            for bit in 0..8 {
-                                if ((row_blk[bo * 8 + bit] >> p) & 1) != 0 {
-                                    byte |= 1u8 << (7 - bit);
-                                }
+                    if n_bits == 5 {
+                        for g in 0..quintets {
+                            let base = g * 5;
+                            let mut code = 0u16;
+                            let mut p3 = 1u16;
+                            for k in 0..5 {
+                                let col = base + k;
+                                let d = if col < block_size { row_blk[col] } else { 1u8 };
+                                code += (d as u16) * p3;
+                                p3 *= 3;
                             }
-                            dst[p_off + bo * 16 + r] = byte;
+                            dst[off + 32 + g * 16 + r] = code as u8;
+                        }
+                    } else if n_bits == 8 {
+                        for c in 0..block_size {
+                            dst[off + 32 + c * 16 + r] = row_blk[c];
+                        }
+                    } else {
+                        for p in 0..(n_bits as usize) {
+                            let p_off = off + hdr_bytes + p * plane_bytes;
+                            for bo in 0..bytes_per_row_blk {
+                                let mut byte = 0u8;
+                                for bit in 0..8 {
+                                    if ((row_blk[bo * 8 + bit] >> p) & 1) != 0 {
+                                        byte |= 1u8 << (7 - bit);
+                                    }
+                                }
+                                dst[p_off + bo * 16 + r] = byte;
+                            }
                         }
                     }
                 }
@@ -301,7 +402,7 @@ impl T16CMat {
             is_asym,
             has_fwht,
             packed_bytes_len: pbytes,
-            packed,
+            packed: PackedStorage::Owned(packed),
             inv_s,
             low_rank,
         })
@@ -317,7 +418,8 @@ impl T16CMat {
         let hdr_bytes = if self.is_asym { 64 } else { 32 };
         let bytes_per_row_blk = bsize / 8;
         let plane_bytes = bytes_per_row_blk * 16;
-        let tblk_bytes = hdr_bytes + (self.n_bits as usize) * plane_bytes;
+        let tblk_bytes = tile16_blk_bytes(bsize, self.n_bits, self.is_asym);
+        let quintets = bsize.div_ceil(5);
         let t = row / 16;
         let r = row % 16;
         let src = self.packed_slice();
@@ -332,17 +434,39 @@ impl T16CMat {
                 0.0f32
             };
             let w_blk = &mut w[blk * bsize..(blk + 1) * bsize];
-            for v in w_blk.iter_mut() {
-                *v = bi;
-            }
-            for p in 0..(self.n_bits as usize) {
-                let wp = sc * ((1u32 << p) as f32);
-                let p_off = off + hdr_bytes + p * plane_bytes;
-                for bo in 0..bytes_per_row_blk {
-                    let b = src[p_off + bo * 16 + r];
-                    for bit in 0..8 {
-                        let sgn = if ((b >> (7 - bit)) & 1) != 0 { 1.0f32 } else { -1.0f32 };
-                        w_blk[bo * 8 + bit] += wp * sgn;
+            if self.n_bits == 5 {
+                for g in 0..quintets {
+                    let code = src[off + 32 + g * 16 + r] as usize;
+                    if code >= 243 {
+                        return Err(format!("{}: invalid ternary5 code {code} at row={row} blk={blk} g={g}", self.name));
+                    }
+                    let t5 = TERN5_LUT[code];
+                    let base = g * 5;
+                    for k in 0..5 {
+                        let col = base + k;
+                        if col < bsize {
+                            w_blk[col] = sc * (t5[k] as f32);
+                        }
+                    }
+                }
+            } else if self.n_bits == 8 {
+                for c in 0..bsize {
+                    let q = src[off + 32 + c * 16 + r] as i8;
+                    w_blk[c] = sc * (q as f32);
+                }
+            } else {
+                for v in w_blk.iter_mut() {
+                    *v = bi;
+                }
+                for p in 0..(self.n_bits as usize) {
+                    let wp = sc * ((1u32 << p) as f32);
+                    let p_off = off + hdr_bytes + p * plane_bytes;
+                    for bo in 0..bytes_per_row_blk {
+                        let b = src[p_off + bo * 16 + r];
+                        for bit in 0..8 {
+                            let sgn = if ((b >> (7 - bit)) & 1) != 0 { 1.0f32 } else { -1.0f32 };
+                            w_blk[bo * 8 + bit] += wp * sgn;
+                        }
                     }
                 }
             }
@@ -377,6 +501,99 @@ impl T16CMat {
         native: Option<&NativeTile16Kernel>,
         threads: usize,
     ) -> Result<Vec<f32>, String> {
+        self.project_batch_cs(x_raw, k_tokens, native, threads, None, 0.0)
+            .map(|(y, _)| y)
+    }
+
+    /// Precompute FP16 max-row Cauchy-Schwarz L2 block norms `[n_tiles, n_blks]` from packed tiles.
+    pub fn compute_tile_norms_fp16(&self) -> Vec<u16> {
+        let d_out = self.d_out;
+        let d_in = self.d_in;
+        let bsize = self.block_size;
+        let n_blks = d_in / bsize;
+        let n_tiles = d_out.div_ceil(16);
+        let hdr_bytes = if self.is_asym { 64 } else { 32 };
+        let bytes_per_row_blk = bsize / 8;
+        let plane_bytes = bytes_per_row_blk * 16;
+        let tblk_bytes = tile16_blk_bytes(bsize, self.n_bits, self.is_asym);
+        let quintets = bsize.div_ceil(5);
+        let src = self.packed_slice();
+
+        let mut out = vec![0u16; n_tiles * n_blks];
+        let mut w_blk = [0.0f32; 256];
+        for t in 0..n_tiles {
+            for blk in 0..n_blks {
+                let off = (t * n_blks + blk) * tblk_bytes;
+                let mut max_n2 = 0.0f32;
+                for r in 0..16 {
+                    let row = t * 16 + r;
+                    if row >= d_out {
+                        break;
+                    }
+                    let sc = fp16_to_f32(u16::from_le_bytes([src[off + r * 2], src[off + r * 2 + 1]]));
+                    if self.n_bits == 5 {
+                        w_blk[..bsize].fill(0.0);
+                        for g in 0..quintets {
+                            let code = src[off + 32 + g * 16 + r] as usize;
+                            if code < 243 {
+                                let t5 = TERN5_LUT[code];
+                                let base = g * 5;
+                                for k in 0..5 {
+                                    let col = base + k;
+                                    if col < bsize {
+                                        w_blk[col] = sc * (t5[k] as f32);
+                                    }
+                                }
+                            }
+                        }
+                    } else if self.n_bits == 8 {
+                        for c in 0..bsize {
+                            let q = src[off + 32 + c * 16 + r] as i8;
+                            w_blk[c] = sc * (q as f32);
+                        }
+                    } else {
+                        let bi = if self.is_asym {
+                            fp16_to_f32(u16::from_le_bytes([src[off + 32 + r * 2], src[off + 32 + r * 2 + 1]]))
+                        } else {
+                            0.0f32
+                        };
+                        w_blk[..bsize].fill(bi);
+                        for p in 0..(self.n_bits as usize) {
+                            let wp = sc * ((1u32 << p) as f32);
+                            let p_off = off + hdr_bytes + p * plane_bytes;
+                            for bo in 0..bytes_per_row_blk {
+                                let b = src[p_off + bo * 16 + r];
+                                for bit in 0..8 {
+                                    let sgn = if ((b >> (7 - bit)) & 1) != 0 { 1.0f32 } else { -1.0f32 };
+                                    w_blk[bo * 8 + bit] += wp * sgn;
+                                }
+                            }
+                        }
+                    }
+                    let mut n2 = 0.0f32;
+                    for &v in &w_blk[..bsize] {
+                        n2 += v * v;
+                    }
+                    if n2 > max_n2 {
+                        max_n2 = n2;
+                    }
+                }
+                out[t * n_blks + blk] = fp32_to_fp16(max_n2.sqrt());
+            }
+        }
+        out
+    }
+
+    /// Execute tile-16 GEMV/GEMM with optional Cauchy-Schwarz block-tile pruning, returning `(y, skipped_blocks)`.
+    pub fn project_batch_cs(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+        tile_norms_fp16: Option<&[u16]>,
+        cs_skip_thresh: f32,
+    ) -> Result<(Vec<f32>, i64), String> {
         let d_out = self.d_out;
         let d_in = self.d_in;
         if x_raw.len() != k_tokens * d_in {
@@ -389,21 +606,52 @@ impl T16CMat {
             ));
         }
         if k_tokens == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
+        let expected_norms = d_out.div_ceil(16) * (d_in / self.block_size);
+        let active_norms = match tile_norms_fp16 {
+            Some(norms) => {
+                if norms.len() != expected_norms {
+                    return Err(format!(
+                        "{}: tile_norms_fp16 len {} != expected {expected_norms}",
+                        self.name,
+                        norms.len()
+                    ));
+                }
+                if cs_skip_thresh > 0.0 {
+                    Some(norms)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
 
         let mut x_work: Option<Vec<f32>> = if self.inv_s.is_some() || self.has_fwht {
             let mut buf = x_raw.to_vec();
-            if let Some(ref inv_s) = self.inv_s {
-                for tok in 0..k_tokens {
-                    let row = &mut buf[tok * d_in..(tok + 1) * d_in];
-                    for j in 0..d_in {
-                        row[j] *= inv_s[j];
+            let used_native_prep = if let Some(inv_fn) = native.and_then(|k| k.inv_s_fwht_fn) {
+                let inv_ptr = self.inv_s.as_ref().map_or(ptr::null(), |v| v.as_ptr());
+                let bsz = if self.has_fwht { self.block_size as i32 } else { 1i32 };
+                let rc = unsafe { inv_fn(buf.as_mut_ptr(), inv_ptr, k_tokens as i32, d_in as i32, bsz) };
+                if rc != 0 {
+                    return Err(format!("native inv_s_and_fwht_f32_c failed rc={rc} on {}", self.name));
+                }
+                true
+            } else {
+                false
+            };
+            if !used_native_prep {
+                if let Some(ref inv_s) = self.inv_s {
+                    for tok in 0..k_tokens {
+                        let row = &mut buf[tok * d_in..(tok + 1) * d_in];
+                        for j in 0..d_in {
+                            row[j] *= inv_s[j];
+                        }
                     }
                 }
-            }
-            if self.has_fwht {
-                fwht_block_inplace(&mut buf, self.block_size)?;
+                if self.has_fwht {
+                    fwht_block_inplace(&mut buf, self.block_size)?;
+                }
             }
             Some(buf)
         } else {
@@ -415,11 +663,16 @@ impl T16CMat {
         };
 
         let mut y = vec![0f32; k_tokens * d_out];
+        let mut skipped: i64 = 0;
         if let Some(kern) = native {
+            let (norm_ptr, eff_thresh) = match active_norms {
+                Some(n) => (n.as_ptr(), cs_skip_thresh),
+                None => (ptr::null(), 0.0f32),
+            };
             let rc = unsafe {
                 (kern.gemm_fn)(
                     self.packed_slice().as_ptr(),
-                    ptr::null(),
+                    norm_ptr,
                     x_mat.as_ptr(),
                     y.as_mut_ptr(),
                     d_out as i32,
@@ -428,25 +681,54 @@ impl T16CMat {
                     self.n_bits as i32,
                     if self.is_asym { 1 } else { 0 },
                     k_tokens as i32,
-                    0.0f32,
+                    eff_thresh,
                     threads.max(1) as i32,
-                    ptr::null_mut(),
+                    &mut skipped as *mut i64,
                 )
             };
             if rc != 0 {
                 return Err(format!("native gemm_bitserial_tile16_batch failed rc={rc} on {}", self.name));
             }
         } else {
-            self.matmul_rust(x_mat, k_tokens, &mut y, threads);
+            skipped = self.matmul_rust(x_mat, k_tokens, &mut y, threads, active_norms, cs_skip_thresh);
         }
 
         if let Some(ref lr) = self.low_rank {
-            lr.add_batch_into(x_raw, k_tokens, &mut y, threads);
+            if let Some(lr_fn) = native.and_then(|k| k.lowrank_add_fn) {
+                let rc = unsafe {
+                    lr_fn(
+                        lr.u_i8.as_ptr(),
+                        lr.su.as_ptr(),
+                        lr.v_i8.as_ptr(),
+                        lr.sv.as_ptr(),
+                        x_raw.as_ptr(),
+                        y.as_mut_ptr(),
+                        lr.d_out as i32,
+                        lr.d_in as i32,
+                        lr.rank as i32,
+                        k_tokens as i32,
+                        threads.max(1) as i32,
+                    )
+                };
+                if rc != 0 {
+                    return Err(format!("native int8_lowrank_add_batch_c failed rc={rc} on {}", self.name));
+                }
+            } else {
+                lr.add_batch_into(x_raw, k_tokens, &mut y, threads);
+            }
         }
-        Ok(y)
+        Ok((y, skipped))
     }
 
-    fn matmul_rust(&self, x_mat: &[f32], k_tokens: usize, y: &mut [f32], threads: usize) {
+    fn matmul_rust(
+        &self,
+        x_mat: &[f32],
+        k_tokens: usize,
+        y: &mut [f32],
+        threads: usize,
+        tile_norms_fp16: Option<&[u16]>,
+        cs_skip_thresh: f32,
+    ) -> i64 {
         let d_out = self.d_out;
         let d_in = self.d_in;
         let bsize = self.block_size;
@@ -455,19 +737,33 @@ impl T16CMat {
         let hdr_bytes = if self.is_asym { 64 } else { 32 };
         let bytes_per_row_blk = bsize / 8;
         let plane_bytes = bytes_per_row_blk * 16;
-        let tblk_bytes = hdr_bytes + (self.n_bits as usize) * plane_bytes;
+        let tblk_bytes = tile16_blk_bytes(bsize, self.n_bits, self.is_asym);
+        let quintets = bsize.div_ceil(5);
         let packed = self.packed_slice();
         let is_asym = self.is_asym;
         let n_bits = self.n_bits as usize;
+        let total_skipped = std::sync::atomic::AtomicI64::new(0);
 
         let nthreads = threads.max(1).min(d_out);
         let chunk = d_out.div_ceil(nthreads).max(1);
         for tok in 0..k_tokens {
             let xk = &x_mat[tok * d_in..(tok + 1) * d_in];
+            let x_blk_norms: Vec<f32> = if tile_norms_fp16.is_some() && cs_skip_thresh > 0.0 {
+                (0..n_blks)
+                    .map(|blk| {
+                        let xb = &xk[blk * bsize..(blk + 1) * bsize];
+                        xb.iter().map(|&v| v * v).sum::<f32>().sqrt()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let yk = &mut y[tok * d_out..(tok + 1) * d_out];
             std::thread::scope(|s| {
                 for (bi, yslice) in yk.chunks_mut(chunk).enumerate() {
                     let r_start = bi * chunk;
+                    let xbn = &x_blk_norms;
+                    let skip_ref = &total_skipped;
                     s.spawn(move || {
                         let _ = n_tiles;
                         for (dr, yv) in yslice.iter_mut().enumerate() {
@@ -476,31 +772,64 @@ impl T16CMat {
                             let r = row % 16;
                             let mut acc = 0.0f64;
                             for blk in 0..n_blks {
+                                if let Some(norms) = tile_norms_fp16 {
+                                    let wn = fp16_to_f32(norms[t * n_blks + blk]);
+                                    if wn * xbn[blk] <= cs_skip_thresh {
+                                        if r == 0 {
+                                            skip_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        }
+                                        continue;
+                                    }
+                                }
                                 let off = (t * n_blks + blk) * tblk_bytes;
                                 let sc = fp16_to_f32(u16::from_le_bytes([packed[off + r * 2], packed[off + r * 2 + 1]])) as f64;
-                                let bi_v = if is_asym {
-                                    fp16_to_f32(u16::from_le_bytes([packed[off + 32 + r * 2], packed[off + 32 + r * 2 + 1]])) as f64
-                                } else {
-                                    0.0f64
-                                };
                                 let xb = &xk[blk * bsize..(blk + 1) * bsize];
-                                if is_asym {
-                                    let sx: f64 = xb.iter().map(|&v| v as f64).sum();
-                                    acc += bi_v * sx;
-                                }
-                                for p in 0..n_bits {
-                                    let wp = sc * ((1u32 << p) as f64);
-                                    let p_off = off + hdr_bytes + p * plane_bytes;
-                                    let mut isum = 0.0f64;
-                                    for bo in 0..bytes_per_row_blk {
-                                        let b = packed[p_off + bo * 16 + r];
-                                        let base = bo * 8;
-                                        for bit in 0..8 {
-                                            let v = xb[base + bit] as f64;
-                                            isum += if ((b >> (7 - bit)) & 1) != 0 { v } else { -v };
+                                if n_bits == 5 {
+                                    let mut bsum = 0.0f64;
+                                    for g in 0..quintets {
+                                        let code = packed[off + 32 + g * 16 + r] as usize;
+                                        debug_assert!(code < 243);
+                                        let t5 = TERN5_LUT.get(code).copied().unwrap_or([0; 5]);
+                                        let base = g * 5;
+                                        for k in 0..5 {
+                                            let col = base + k;
+                                            if col < bsize && t5[k] != 0 {
+                                                bsum += (t5[k] as f64) * (xb[col] as f64);
+                                            }
                                         }
                                     }
-                                    acc += wp * isum;
+                                    acc += sc * bsum;
+                                } else if n_bits == 8 {
+                                    let mut wsum = 0.0f64;
+                                    for c in 0..bsize {
+                                        let q = packed[off + 32 + c * 16 + r] as i8;
+                                        wsum += (q as f64) * (xb[c] as f64);
+                                    }
+                                    acc += sc * wsum;
+                                } else {
+                                    let bi_v = if is_asym {
+                                        fp16_to_f32(u16::from_le_bytes([packed[off + 32 + r * 2], packed[off + 32 + r * 2 + 1]])) as f64
+                                    } else {
+                                        0.0f64
+                                    };
+                                    if is_asym {
+                                        let sx: f64 = xb.iter().map(|&v| v as f64).sum();
+                                        acc += bi_v * sx;
+                                    }
+                                    for p in 0..n_bits {
+                                        let wp = sc * ((1u32 << p) as f64);
+                                        let p_off = off + hdr_bytes + p * plane_bytes;
+                                        let mut isum = 0.0f64;
+                                        for bo in 0..bytes_per_row_blk {
+                                            let b = packed[p_off + bo * 16 + r];
+                                            let base = bo * 8;
+                                            for bit in 0..8 {
+                                                let v = xb[base + bit] as f64;
+                                                isum += if ((b >> (7 - bit)) & 1) != 0 { v } else { -v };
+                                            }
+                                        }
+                                        acc += wp * isum;
+                                    }
                                 }
                             }
                             *yv = acc as f32;
@@ -509,6 +838,7 @@ impl T16CMat {
                 }
             });
         }
+        total_skipped.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -528,10 +858,34 @@ pub type GemmTile16BatchFn = unsafe extern "C" fn(
     out_skipped: *mut i64,
 ) -> i32;
 
+pub type InvSFwhtF32Fn = unsafe extern "C" fn(
+    x: *mut f32,
+    inv_s: *const f32,
+    k_tokens: i32,
+    d_in: i32,
+    bsize: i32,
+) -> i32;
+
+pub type Int8LowRankAddBatchFn = unsafe extern "C" fn(
+    u_i8: *const i8,
+    su: *const f32,
+    v_i8: *const i8,
+    sv: *const f32,
+    x_raw: *const f32,
+    y: *mut f32,
+    d_out: i32,
+    d_in: i32,
+    rank: i32,
+    k_tokens: i32,
+    num_threads: i32,
+) -> i32;
+
 pub struct NativeTile16Kernel {
     handle: usize,
     pub path: String,
     pub gemm_fn: GemmTile16BatchFn,
+    pub inv_s_fwht_fn: Option<InvSFwhtF32Fn>,
+    pub lowrank_add_fn: Option<Int8LowRankAddBatchFn>,
 }
 
 unsafe impl Send for NativeTile16Kernel {}
@@ -541,10 +895,24 @@ unsafe impl Sync for NativeTile16Kernel {}
 mod sys {
     use std::ffi::c_void;
     pub const RTLD_NOW: i32 = 2;
+    pub const PROT_READ: i32 = 1;
+    pub const MAP_SHARED: i32 = 1;
+    pub const MADV_WILLNEED: i32 = 3;
+    pub const MAP_FAILED: *mut c_void = !0usize as *mut c_void;
     extern "C" {
-        pub fn dlopen(filename: *const i8, flag: i32) -> *mut c_void;
-        pub fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+        pub fn dlopen(filename: *const std::ffi::c_char, flag: i32) -> *mut c_void;
+        pub fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
         pub fn dlclose(handle: *mut c_void) -> i32;
+        pub fn mmap(
+            addr: *mut c_void,
+            length: usize,
+            prot: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut c_void;
+        pub fn munmap(addr: *mut c_void, length: usize) -> i32;
+        pub fn madvise(addr: *mut c_void, length: usize, advice: i32) -> i32;
     }
 }
 
@@ -568,17 +936,35 @@ impl NativeTile16Kernel {
             let s = path.to_str().ok_or("non-utf8 path")?;
             let mut c_path = s.as_bytes().to_vec();
             c_path.push(0);
-            let h = sys::dlopen(c_path.as_ptr() as *const i8, sys::RTLD_NOW);
+            let h = sys::dlopen(c_path.as_ptr() as *const std::ffi::c_char, sys::RTLD_NOW);
             if h.is_null() {
                 return Err(format!("dlopen failed for {}", path.display()));
             }
-            let sym = sys::dlsym(h, b"gemm_bitserial_tile16_batch\0".as_ptr() as *const i8);
+            let sym = sys::dlsym(h, b"gemm_bitserial_tile16_batch\0".as_ptr() as *const std::ffi::c_char);
             if sym.is_null() {
                 sys::dlclose(h);
                 return Err(format!("missing gemm_bitserial_tile16_batch in {}", path.display()));
             }
             let gemm_fn: GemmTile16BatchFn = std::mem::transmute(sym);
-            Ok(Self { handle: h as usize, path: s.to_string(), gemm_fn })
+            let inv_sym = sys::dlsym(h, b"inv_s_and_fwht_f32_c\0".as_ptr() as *const std::ffi::c_char);
+            let inv_s_fwht_fn: Option<InvSFwhtF32Fn> = if inv_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, InvSFwhtF32Fn>(inv_sym))
+            };
+            let lr_sym = sys::dlsym(h, b"int8_lowrank_add_batch_c\0".as_ptr() as *const std::ffi::c_char);
+            let lowrank_add_fn: Option<Int8LowRankAddBatchFn> = if lr_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, Int8LowRankAddBatchFn>(lr_sym))
+            };
+            Ok(Self {
+                handle: h as usize,
+                path: s.to_string(),
+                gemm_fn,
+                inv_s_fwht_fn,
+                lowrank_add_fn,
+            })
         }
         #[cfg(windows)]
         unsafe {
@@ -595,7 +981,25 @@ impl NativeTile16Kernel {
                 return Err(format!("missing gemm_bitserial_tile16_batch in {}", path.display()));
             }
             let gemm_fn: GemmTile16BatchFn = std::mem::transmute(sym);
-            Ok(Self { handle: h as usize, path: path.display().to_string(), gemm_fn })
+            let inv_sym = sys::GetProcAddress(h, b"inv_s_and_fwht_f32_c\0".as_ptr() as *const i8);
+            let inv_s_fwht_fn: Option<InvSFwhtF32Fn> = if inv_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, InvSFwhtF32Fn>(inv_sym))
+            };
+            let lr_sym = sys::GetProcAddress(h, b"int8_lowrank_add_batch_c\0".as_ptr() as *const i8);
+            let lowrank_add_fn: Option<Int8LowRankAddBatchFn> = if lr_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, Int8LowRankAddBatchFn>(lr_sym))
+            };
+            Ok(Self {
+                handle: h as usize,
+                path: path.display().to_string(),
+                gemm_fn,
+                inv_s_fwht_fn,
+                lowrank_add_fn,
+            })
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -652,6 +1056,67 @@ pub struct T16CModel {
     pub native: Option<NativeTile16Kernel>,
 }
 
+trait T16CSource: Read {
+    fn read_packed(&mut self, len: usize, pos: &mut usize, name: &str) -> Result<PackedStorage, String>;
+}
+
+#[cfg(not(unix))]
+impl T16CSource for BufReader<File> {
+    fn read_packed(&mut self, len: usize, pos: &mut usize, name: &str) -> Result<PackedStorage, String> {
+        let mut packed = make_aligned_buf(len);
+        self.read_exact(aligned_as_mut_slice(&mut packed, len))
+            .map_err(|e| format!("read {name} packed bytes ({len}): {e}"))?;
+        *pos += len;
+        Ok(PackedStorage::Owned(packed))
+    }
+}
+
+#[cfg(unix)]
+struct MmapCursor {
+    map: Arc<MappedFile>,
+    offset: usize,
+}
+
+#[cfg(unix)]
+impl Read for MmapCursor {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let rem = self.map.len.saturating_sub(self.offset);
+        let n = rem.min(buf.len());
+        if n > 0 {
+            unsafe {
+                ptr::copy_nonoverlapping(self.map.ptr.add(self.offset), buf.as_mut_ptr(), n);
+            }
+            self.offset += n;
+        }
+        Ok(n)
+    }
+}
+
+#[cfg(unix)]
+impl T16CSource for MmapCursor {
+    fn read_packed(&mut self, len: usize, pos: &mut usize, name: &str) -> Result<PackedStorage, String> {
+        let end = self.offset.checked_add(len).ok_or_else(|| format!("{name}: packed length overflow"))?;
+        if end > self.map.len {
+            return Err(format!("{name}: eof in mmap packed bytes ({end} > {})", self.map.len));
+        }
+        let ptr_addr = (self.map.ptr as usize) + self.offset;
+        if ptr_addr % 64 != 0 {
+            return Err(format!(
+                "{name}: mmap packed offset {} (ptr {ptr_addr:#x}) is not 64-byte aligned",
+                self.offset
+            ));
+        }
+        let off = self.offset;
+        self.offset = end;
+        *pos += len;
+        Ok(PackedStorage::Mmap {
+            map: Arc::clone(&self.map),
+            offset: off,
+            len,
+        })
+    }
+}
+
 fn read_u8<R: Read>(r: &mut R, pos: &mut usize) -> Result<u8, String> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b).map_err(|e| format!("eof reading u8 at {pos}: {e}"))?;
@@ -684,9 +1149,11 @@ fn read_f32_vec<R: Read>(r: &mut R, pos: &mut usize, n: usize) -> Result<Vec<f32
 }
 
 impl T16CModel {
-    pub fn load(path: &Path, native_lib: Option<&Path>, disable_native: bool) -> Result<Self, String> {
-        let f = File::open(path).map_err(|e| format!("open T16C {}: {e}", path.display()))?;
-        let mut r = BufReader::with_capacity(4 * 1024 * 1024, f);
+    fn load_from_source<S: T16CSource>(
+        r: &mut S,
+        native_lib: Option<&Path>,
+        disable_native: bool,
+    ) -> Result<Self, String> {
         let mut pos = 0usize;
         let mut hdr = [0u8; 24];
         r.read_exact(&mut hdr).map_err(|e| format!("read T16C header: {e}"))?;
@@ -704,30 +1171,30 @@ impl T16CModel {
 
         let mut norms = HashMap::with_capacity(n_norms);
         for _ in 0..n_norms {
-            let nlen = read_u16(&mut r, &mut pos)? as usize;
+            let nlen = read_u16(r, &mut pos)? as usize;
             let mut nbuf = vec![0u8; nlen];
             r.read_exact(&mut nbuf).map_err(|e| format!("read norm name: {e}"))?;
             pos += nlen;
             let name = String::from_utf8(nbuf).map_err(|e| format!("utf8 norm name: {e}"))?;
-            let len = read_u32(&mut r, &mut pos)? as usize;
-            let data = read_f32_vec(&mut r, &mut pos, len)?;
+            let len = read_u32(r, &mut pos)? as usize;
+            let data = read_f32_vec(r, &mut pos, len)?;
             norms.insert(name, data);
         }
 
         let mut mats = HashMap::with_capacity(n_mats);
         let mut total_mat_bytes = 0usize;
         for _ in 0..n_mats {
-            let nlen = read_u16(&mut r, &mut pos)? as usize;
-            let d_out = read_u32(&mut r, &mut pos)? as usize;
-            let d_in = read_u32(&mut r, &mut pos)? as usize;
-            let block_size = read_u16(&mut r, &mut pos)? as usize;
-            let n_bits = read_u8(&mut r, &mut pos)?;
-            let is_asym_u8 = read_u8(&mut r, &mut pos)?;
-            let has_fwht_u8 = read_u8(&mut r, &mut pos)?;
-            let inv_s_kind = read_u8(&mut r, &mut pos)?;
-            let low_rank_u16 = read_u16(&mut r, &mut pos)? as usize;
-            let packed_bytes = read_u64(&mut r, &mut pos)? as usize;
-            let lr_bytes = read_u64(&mut r, &mut pos)? as usize;
+            let nlen = read_u16(r, &mut pos)? as usize;
+            let d_out = read_u32(r, &mut pos)? as usize;
+            let d_in = read_u32(r, &mut pos)? as usize;
+            let block_size = read_u16(r, &mut pos)? as usize;
+            let n_bits = read_u8(r, &mut pos)?;
+            let is_asym_u8 = read_u8(r, &mut pos)?;
+            let has_fwht_u8 = read_u8(r, &mut pos)?;
+            let inv_s_kind = read_u8(r, &mut pos)?;
+            let low_rank_u16 = read_u16(r, &mut pos)? as usize;
+            let packed_bytes = read_u64(r, &mut pos)? as usize;
+            let lr_bytes = read_u64(r, &mut pos)? as usize;
 
             if is_asym_u8 > 1 || has_fwht_u8 > 1 || inv_s_kind > 2 {
                 return Err(format!("invalid flags is_asym={is_asym_u8} has_fwht={has_fwht_u8} inv_s_kind={inv_s_kind}"));
@@ -751,14 +1218,11 @@ impl T16CModel {
             if packed_bytes != exp_p {
                 return Err(format!("{name}: packed_bytes {packed_bytes} != expected {exp_p}"));
             }
-            let mut packed = make_aligned_buf(packed_bytes);
-            r.read_exact(aligned_as_mut_slice(&mut packed, packed_bytes))
-                .map_err(|e| format!("read {name} packed bytes ({packed_bytes}): {e}"))?;
-            pos += packed_bytes;
+            let packed = r.read_packed(packed_bytes, &mut pos, &name)?;
 
             let inv_s = match inv_s_kind {
                 0 => None,
-                1 => Some(read_f32_vec(&mut r, &mut pos, d_in)?),
+                1 => Some(read_f32_vec(r, &mut pos, d_in)?),
                 2 => {
                     let mut raw = vec![0u8; d_in * 2];
                     r.read_exact(&mut raw).map_err(|e| format!("read {name} inv_s fp16: {e}"))?;
@@ -774,8 +1238,8 @@ impl T16CModel {
                 if lr_bytes != exp_lr {
                     return Err(format!("{name}: lr_bytes {lr_bytes} != expected {exp_lr}"));
                 }
-                let su = read_f32_vec(&mut r, &mut pos, d_out)?;
-                let sv = read_f32_vec(&mut r, &mut pos, rk)?;
+                let su = read_f32_vec(r, &mut pos, d_out)?;
+                let sv = read_f32_vec(r, &mut pos, rk)?;
                 let mut uraw = vec![0u8; d_out * rk];
                 r.read_exact(&mut uraw).map_err(|e| format!("read {name} u_i8: {e}"))?;
                 pos += uraw.len();
@@ -815,6 +1279,42 @@ impl T16CModel {
             NativeTile16Kernel::discover(native_lib)
         };
         Ok(Self { arch_flags, norms, mats, total_mat_bytes, native })
+    }
+
+    pub fn load(path: &Path, native_lib: Option<&Path>, disable_native: bool) -> Result<Self, String> {
+        let f = File::open(path).map_err(|e| format!("open T16C {}: {e}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let meta = f.metadata().map_err(|e| format!("stat T16C {}: {e}", path.display()))?;
+            let file_len = usize::try_from(meta.len())
+                .map_err(|_| format!("T16C too large for address space: {}", meta.len()))?;
+            if file_len < 24 {
+                return Err(format!("T16C file truncated ({file_len} bytes): {}", path.display()));
+            }
+            let raw_ptr = unsafe {
+                sys::mmap(ptr::null_mut(), file_len, sys::PROT_READ, sys::MAP_SHARED, f.as_raw_fd(), 0)
+            };
+            if raw_ptr == sys::MAP_FAILED || raw_ptr.is_null() {
+                return Err(format!("mmap T16C {} ({file_len} B) failed", path.display()));
+            }
+            let map = Arc::new(MappedFile { ptr: raw_ptr as *const u8, len: file_len });
+            unsafe {
+                let _ = sys::madvise(raw_ptr, file_len, sys::MADV_WILLNEED);
+                let mut off = 0usize;
+                while off < file_len {
+                    let _ = std::ptr::read_volatile(map.ptr.add(off));
+                    off += 4096;
+                }
+            }
+            let mut cursor = MmapCursor { map, offset: 0 };
+            Self::load_from_source(&mut cursor, native_lib, disable_native)
+        }
+        #[cfg(not(unix))]
+        {
+            let mut r = BufReader::with_capacity(4 * 1024 * 1024, f);
+            Self::load_from_source(&mut r, native_lib, disable_native)
+        }
     }
 
     pub fn write_file(
@@ -973,6 +1473,279 @@ mod tests {
             }
             let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
             assert!(cos > 0.999, "native vs rust tile16 cos={cos}");
+        }
+    }
+
+    #[test]
+    fn tern5_expected_bytes_and_validation() {
+        assert_eq!(expected_tile16_bytes(19, 64, 64, 5, false).unwrap(), 2 * 240);
+        assert_eq!(expected_tile16_bytes(19, 128, 128, 5, false).unwrap(), 2 * 448);
+        assert_eq!(expected_tile16_bytes(19, 256, 256, 5, false).unwrap(), 2 * 864);
+        assert!(expected_tile16_bytes(19, 256, 256, 5, true).is_err());
+        assert!(expected_tile16_bytes(19, 256, 256, 6, false).is_err());
+    }
+
+    #[test]
+    fn tern5_roundtrip_decode_row_and_batch_parity() {
+        let native_k = NativeTile16Kernel::discover(None);
+        for &(bsize, d_in) in &[(64usize, 128usize), (128, 256), (256, 512)] {
+            let d_out = 19usize;
+            let n_blks = d_in / bsize;
+            let sc: Vec<f32> = (0..d_out * n_blks).map(|i| 0.02 + 0.003 * (i as f32 % 7.0)).collect();
+            let idx: Vec<u8> = (0..d_out * d_in).map(|i| ((i * 17 + 3) % 3) as u8).collect();
+            let inv_s: Vec<f32> = (0..d_in).map(|j| 0.75 + 0.0015 * (j as f32)).collect();
+            let rk = 4usize;
+            let lr = Int8LowRank {
+                rank: rk,
+                d_out,
+                d_in,
+                su: vec![0.012f32; d_out],
+                sv: vec![0.018f32; rk],
+                u_i8: (0..d_out * rk).map(|i| ((i * 11 % 199) as i32 - 99) as i8).collect(),
+                v_i8: (0..rk * d_in).map(|i| ((i * 7 % 199) as i32 - 99) as i8).collect(),
+            };
+            let mat = T16CMat::pack_from_components(
+                "test.tern5".into(), d_out, d_in, bsize, 5, false, true, &sc, None, &idx, Some(inv_s), Some(lr),
+            ).unwrap();
+
+            let tmp = std::env::temp_dir().join(format!("t16c_tern5_{bsize}.t16c"));
+            T16CModel::write_file(&tmp, ARCH_FLAG_GEMMA4, &[("n0".into(), vec![1.0, 2.0])], &[mat]).unwrap();
+            let loaded = T16CModel::load(&tmp, None, native_k.is_none()).unwrap();
+            let _ = std::fs::remove_file(&tmp);
+
+            let lm = loaded.mat("test.tern5").unwrap();
+            for &k_tokens in &[1usize, 3usize] {
+                let x: Vec<f32> = (0..k_tokens * d_in).map(|i| ((i as f32) * 0.23).sin()).collect();
+                let y_rust = lm.project_batch(&x, k_tokens, None, 2).unwrap();
+                for tok in 0..k_tokens {
+                    for r in 0..d_out {
+                        let row = lm.decode_row(r).unwrap();
+                        let dot: f32 = row.iter().zip(&x[tok * d_in..(tok + 1) * d_in]).map(|(w, v)| w * v).sum();
+                        let got = y_rust[tok * d_out + r];
+                        assert!((got - dot).abs() < 3e-3, "bsize={bsize} k={k_tokens} tok={tok} r={r}: {got} vs {dot}");
+                    }
+                }
+                if let Some(ref nk) = native_k {
+                    let y_nat = lm.project_batch(&x, k_tokens, Some(nk), 2).unwrap();
+                    let (mut dot, mut n1, mut n2) = (0.0f64, 0.0f64, 0.0f64);
+                    for (a, b) in y_rust.iter().zip(y_nat.iter()) {
+                        dot += (*a as f64) * (*b as f64);
+                        n1 += (*a as f64) * (*a as f64);
+                        n2 += (*b as f64) * (*b as f64);
+                    }
+                    let y_rms = (n1 / (y_rust.len().max(1) as f64)).sqrt() as f32;
+                    let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
+                    assert!(cos > 0.9999, "native tern5 cos={cos} (bsize={bsize} k={k_tokens})");
+                    let tol = if k_tokens <= 2 { 1e-3f32 } else { 2e-3f32 + 2e-4f32 * y_rms };
+                    for (idx_y, (a, b)) in y_rust.iter().zip(y_nat.iter()).enumerate() {
+                        assert!((a - b).abs() < tol, "native mismatch bsize={bsize} k={k_tokens} idx={idx_y}: rust={a} nat={b} tol={tol}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_ffi_inv_s_fwht_lowrank_and_spiky_dual_plane_parity() {
+        let native_k = NativeTile16Kernel::discover(None);
+        if let Some(ref nk) = native_k {
+            assert!(nk.inv_s_fwht_fn.is_some(), "expected inv_s_and_fwht_f32_c in {}", nk.path);
+            assert!(nk.lowrank_add_fn.is_some(), "expected int8_lowrank_add_batch_c in {}", nk.path);
+        }
+
+        for &(n_bits, is_asym) in &[(5u8, false), (1u8, true)] {
+            let (d_out, d_in, bsize, kt) = (32usize, 128usize, 64usize, 2usize);
+            let n_blks = d_in / bsize;
+            let sc = vec![0.25f32; d_out * n_blks];
+            let bi = if is_asym { Some(vec![-0.02f32; d_out * n_blks]) } else { None };
+            let mut idx = vec![0u8; d_out * d_in];
+            for r in 0..d_out {
+                for blk in 0..n_blks {
+                    for c in 0..bsize {
+                        let col = blk * bsize + c;
+                        let val = if n_bits == 5 {
+                            if c < 2 { 1u8 } else { ((r * 7 + col * 13) % 3) as u8 }
+                        } else if c == 0 {
+                            1u8
+                        } else if c == 1 {
+                            0u8
+                        } else {
+                            ((r * 11 + col * 5) % 2) as u8
+                        };
+                        idx[r * d_in + col] = val;
+                    }
+                }
+            }
+            let inv_s: Vec<f32> = (0..d_in).map(|j| 0.7 + 0.002 * (j as f32)).collect();
+            let rk = 16usize;
+            let lr = Int8LowRank {
+                rank: rk,
+                d_out,
+                d_in,
+                su: (0..d_out).map(|r| 0.01 + 0.0005 * (r as f32)).collect(),
+                sv: (0..rk).map(|k| 0.015 - 0.0003 * (k as f32)).collect(),
+                u_i8: (0..d_out * rk).map(|i| ((i * 19 % 211) as i32 - 105) as i8).collect(),
+                v_i8: (0..rk * d_in).map(|i| ((i * 23 % 211) as i32 - 105) as i8).collect(),
+            };
+            let mat = T16CMat::pack_from_components(
+                format!("spiky.b{n_bits}"),
+                d_out,
+                d_in,
+                bsize,
+                n_bits,
+                is_asym,
+                false,
+                &sc,
+                bi.as_deref(),
+                &idx,
+                Some(inv_s),
+                Some(lr),
+            )
+            .unwrap();
+
+            let tmp = std::env::temp_dir().join(format!("t16c_spiky_{n_bits}.t16c"));
+            T16CModel::write_file(&tmp, ARCH_FLAG_GEMMA4, &[("n0".into(), vec![1.0])], &[mat]).unwrap();
+            let loaded = T16CModel::load(&tmp, None, true).unwrap();
+            let _ = std::fs::remove_file(&tmp);
+            let lm = loaded.mat(&format!("spiky.b{n_bits}")).unwrap();
+
+            for &k_check in &[1usize, kt] {
+                let mut x = vec![0.0f32; k_check * d_in];
+                for tok in 0..k_check {
+                    for j in 0..d_in {
+                        let loc = j % 64;
+                        x[tok * d_in + j] = if loc < 2 {
+                            if tok == 0 { 800.0f32 } else { -800.0f32 }
+                        } else {
+                            0.04f32 * (((tok * 31 + j * 17) % 19) as f32 - 9.0) / 9.0
+                        };
+                    }
+                }
+                let y_rust = lm.project_batch(&x, k_check, None, 2).unwrap();
+                if let Some(ref nk) = native_k {
+                    let y_nat = lm.project_batch(&x, k_check, Some(nk), 2).unwrap();
+                    for tok in 0..k_check {
+                        let s = tok * d_out;
+                        let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+                        for r in 0..d_out {
+                            let a = y_rust[s + r] as f64;
+                            let b = y_nat[s + r] as f64;
+                            dot += a * b;
+                            na += a * a;
+                            nb += b * b;
+                        }
+                        let cos = dot / (na.sqrt() * nb.sqrt() + 1e-12);
+                        assert!(cos > 0.9999, "spiky n_bits={n_bits} k={k_check} tok={tok} cos={cos}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn int8_roundtrip_decode_row_and_spiky_batch_parity() {
+        assert_eq!(expected_tile16_bytes(19, 64, 64, 8, false).unwrap(), 2 * (32 + 64 * 16));
+        assert!(expected_tile16_bytes(19, 256, 256, 8, true).is_err());
+
+        let native_k = NativeTile16Kernel::discover(None);
+        for &(bsize, d_in) in &[(64usize, 128usize), (128, 256)] {
+            let d_out = 19usize;
+            let n_blks = d_in / bsize;
+            let sc: Vec<f32> = (0..d_out * n_blks).map(|i| 0.002 + 0.0004 * (i as f32 % 11.0)).collect();
+            let mut idx: Vec<u8> = Vec::with_capacity(d_out * d_in);
+            for r in 0..d_out {
+                for c in 0..d_in {
+                    let q_i8 = (((r * 19 + c * 37) % 253) as i32 - 126) as i8;
+                    idx.push(q_i8 as u8);
+                }
+            }
+            let mat = T16CMat::pack_from_components(
+                "test.int8".into(), d_out, d_in, bsize, 8, false, false, &sc, None, &idx, None, None,
+            ).unwrap();
+            let tmp = std::env::temp_dir().join(format!("t16c_int8_{bsize}.t16c"));
+            T16CModel::write_file(&tmp, ARCH_FLAG_GEMMA4, &[("n0".into(), vec![1.0])], &[mat]).unwrap();
+            let loaded = T16CModel::load(&tmp, None, native_k.is_none()).unwrap();
+            let _ = std::fs::remove_file(&tmp);
+
+            let lm = loaded.mat("test.int8").unwrap();
+            for &k_tokens in &[1usize, 2usize, 4usize] {
+                let mut x = vec![0.0f32; k_tokens * d_in];
+                for tok in 0..k_tokens {
+                    for j in 0..d_in {
+                        x[tok * d_in + j] = if j % 64 == 0 {
+                            if tok % 2 == 0 { 500.0 } else { -500.0 }
+                        } else {
+                            ((tok * 13 + j * 29) as f32 * 0.17).sin() * 0.25
+                        };
+                    }
+                }
+                let y_rust = lm.project_batch(&x, k_tokens, None, 2).unwrap();
+                for tok in 0..k_tokens {
+                    for r in 0..d_out {
+                        let row = lm.decode_row(r).unwrap();
+                        let dot: f32 = row.iter().zip(&x[tok * d_in..(tok + 1) * d_in]).map(|(w, v)| w * v).sum();
+                        let got = y_rust[tok * d_out + r];
+                        assert!((got - dot).abs() < 2e-3, "int8 bsize={bsize} k={k_tokens} tok={tok} r={r}: {got} vs {dot}");
+                    }
+                }
+                if let Some(ref nk) = native_k {
+                    let y_nat = lm.project_batch(&x, k_tokens, Some(nk), 2).unwrap();
+                    for tok in 0..k_tokens {
+                        let s = tok * d_out;
+                        let (mut dot, mut n1, mut n2) = (0.0f64, 0.0f64, 0.0f64);
+                        for r in 0..d_out {
+                            let a = y_rust[s + r] as f64;
+                            let b = y_nat[s + r] as f64;
+                            dot += a * b;
+                            n1 += a * a;
+                            n2 += b * b;
+                        }
+                        let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
+                        assert!(cos > 0.999, "native int8 cos={cos} (bsize={bsize} k={k_tokens} tok={tok})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cs_tile_skip_skips_orthogonal_zero_blocks_consistently() {
+        let d_out = 32usize;
+        let d_in = 128usize;
+        let bsize = 64usize;
+        let mut sc = vec![0.25f32; d_out * 2];
+        // Zero weight scale in block 1 for tile 1 (rows 16..32)
+        for r in 16..32 {
+            sc[r * 2 + 1] = 0.0;
+        }
+        let idx = vec![15u8; d_out * d_in];
+        let mat = T16CMat::pack_from_components("cs.test".into(), d_out, d_in, bsize, 4, false, false, &sc, None, &idx, None, None).unwrap();
+        let norms = mat.compute_tile_norms_fp16();
+        let mut x = vec![0.0f32; d_in];
+        for j in 0..bsize {
+            x[j] = 1.0f32; // block 0 active, block 1 zero
+        }
+        let (y_full, sk0) = mat.project_batch_cs(&x, 1, None, 2, Some(&norms), 0.0).unwrap();
+        let (y_cs, sk1) = mat.project_batch_cs(&x, 1, None, 2, Some(&norms), 1e-4).unwrap();
+        assert_eq!(sk0, 0);
+        assert!(sk1 >= 2, "expected both tile zero-activation blocks skipped, got {sk1}");
+        for (a, b) in y_full.iter().zip(y_cs.iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+        if let Some(nk) = NativeTile16Kernel::discover(None) {
+            let (y_nat_full, sk_nat0) = mat.project_batch_cs(&x, 1, Some(&nk), 2, Some(&norms), 0.0).unwrap();
+            let (y_nat, sk_nat) = mat.project_batch_cs(&x, 1, Some(&nk), 2, Some(&norms), 1e-4).unwrap();
+            assert_eq!(sk_nat0, 0);
+            assert!(sk_nat >= 2);
+            for (r_idx, ((a, b0), b)) in y_full.iter().zip(y_nat_full.iter()).zip(y_nat.iter()).enumerate() {
+                assert!((b0 - b).abs() < 1e-6, "CS skip altered native output row={r_idx}: {b0} vs {b}");
+                let tol = 1e-3f32 + 2e-4f32 * a.abs();
+                assert!(
+                    (a - b).abs() < tol,
+                    "cs_tile_skip mismatch row={r_idx}: y_full={a} vs y_nat={b} tol={tol} (path={})",
+                    nk.path
+                );
+            }
         }
     }
 }

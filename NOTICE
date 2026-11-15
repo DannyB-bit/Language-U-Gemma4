@@ -1,0 +1,34 @@
+Language-U-Gemma4
+Copyright 2026 DannyB-bit and contributors
+
+This repository is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software and empirical components adapted from the
+following third-party works:
+
+1. Competition Agent Bundle Baselines (agent/):
+   Licensed under Apache-2.0. Incorporates prior competition baselines and
+   empirical findings from:
+   - Wilmer E. Henao (verracodeguacas) — Budget-Fit Single Agent V5
+   - Igor Zharov (flexonafft) — Budget-Aware Coding Agent V10
+   - cubres (prvsiyan) — "Gemma and the Shape of Doubt" (E03, E05, BFV5)
+   See agent/NOTICE.txt and agent/LICENSE.txt for complete modification details.
+
+2. NanoQuant Initialization Component (experiments/packed_corrections/):
+   Adapted from SamsungLabs/NanoQuant (commit a9e0a430881ff80d83b622c3129e330dc33c04f5,
+   src/nanoquant/core/admm_nq.py), scoped strictly to initialization.
+   Copyright 2026 Samsung Electronics Co., Ltd.
+   Licensed under Apache-2.0.
+   Upstream NanoQuant also includes software developed by Benjamin Warner (optimi),
+   licensed under the MIT License (https://github.com/warner-benjamin/optimi).
+   See experiments/packed_corrections/third_party/NanoQuant/NOTICE and
+   experiments/packed_corrections/third_party/NanoQuant/LICENSE.
+
+External Pretrained Models (unbundled; not included in this repository):
+- Google Gemma 4 (`gemma-4-31b-it-qat-w4a16-ct`, `gemma-4-E4B-it`): Apache-2.0.
+  The competition submission bundle (`agent/`) targets `gemma-4-31b-it-qat-w4a16-ct`
+  exclusively.
+- Google Gemma 3 (`gemma-3-270m-it`) and EmbeddingGemma (`embeddinggemma-2`):
+  Ancillary upstream weights used only in optional local ablation/retrieval
+  experiments outside the competition submission; governed separately by
+  Google's Gemma Terms of Use when downloaded by the user.

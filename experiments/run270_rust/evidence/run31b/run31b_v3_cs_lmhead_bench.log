@@ -1,0 +1,24 @@
+
+=== BENCH [Gemma4-31B-LMHead-BF16-262144x5376] vocab=262144 d=5376 bf16_mb=2688.0 threads=4 setup_s=0.88 ===
+norm_range=[max=0.9946, p50=0.9837, min=0.9674], seed_rows=1012
+  tok[0] h_norm=480.694 full=(id=506 41.20092 732.29ms) cs=(id=506 41.20092 804.93ms) eval=262144/262144 (pruned=0.00%) speedup=0.91x match=EXACT
+  tok[1] h_norm=490.185 full=(id=715 39.75989 724.79ms) cs=(id=715 39.75989 818.20ms) eval=262144/262144 (pruned=0.00%) speedup=0.89x match=EXACT
+  tok[2] h_norm=248.672 full=(id=236771 39.48804 803.62ms) cs=(id=236771 39.48804 812.42ms) eval=262144/262144 (pruned=0.00%) speedup=0.99x match=EXACT
+  tok[3] h_norm=213.693 full=(id=1852 34.15816 737.07ms) cs=(id=1852 34.15816 813.66ms) eval=262144/262144 (pruned=0.00%) speedup=0.91x match=EXACT
+  tok[4] h_norm=288.918 full=(id=45518 31.61917 721.17ms) cs=(id=45518 31.61917 812.49ms) eval=262144/262144 (pruned=0.00%) speedup=0.89x match=EXACT
+  tok[5] h_norm=256.190 full=(id=100 30.96609 737.58ms) cs=(id=100 30.96609 804.86ms) eval=262144/262144 (pruned=0.00%) speedup=0.92x match=EXACT
+  tok[6] h_norm=399.444 full=(id=100 52.40723 722.98ms) cs=(id=100 52.40723 816.52ms) eval=262144/262144 (pruned=0.00%) speedup=0.89x match=EXACT
+  tok[7] h_norm=466.578 full=(id=3041 41.79774 725.39ms) cs=(id=3041 41.79774 812.60ms) eval=262144/262144 (pruned=0.00%) speedup=0.89x match=EXACT
+SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376] full_ms_per_tok=738.11 cs_ms_per_tok=811.96 speedup=0.91x avg_eval=262144.0/262144 pruned_pct=0.00% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=2758488 vm_rss_kb=2756680 vm_swap_kb=0
+
+=== BENCH [Gemma4-Assistant-LMHead-BF16-262144x1024] vocab=262144 d=1024 bf16_mb=512.0 threads=4 setup_s=0.24 ===
+norm_range=[max=1.0017, p50=1.0000, min=0.9982], seed_rows=1015
+  tok[0] h_norm=176.678 full=(id=200239 24.99730 144.43ms) cs=(id=200239 24.99730 227.08ms) eval=262144/262144 (pruned=0.00%) speedup=0.64x match=EXACT
+  tok[1] h_norm=183.438 full=(id=251236 19.11951 139.48ms) cs=(id=251236 19.11951 227.96ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[2] h_norm=177.889 full=(id=120333 24.34276 139.16ms) cs=(id=120333 24.34276 228.61ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[3] h_norm=263.855 full=(id=818 37.54269 139.36ms) cs=(id=818 37.54269 229.78ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[4] h_norm=213.279 full=(id=207217 26.01342 139.18ms) cs=(id=207217 26.01342 226.83ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[5] h_norm=175.971 full=(id=61008 24.00027 139.34ms) cs=(id=61008 24.00027 228.94ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[6] h_norm=177.923 full=(id=218051 21.61992 139.36ms) cs=(id=218051 21.61992 227.05ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+  tok[7] h_norm=171.038 full=(id=68693 20.26208 139.21ms) cs=(id=68693 20.26208 226.76ms) eval=262144/262144 (pruned=0.00%) speedup=0.61x match=EXACT
+SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024] full_ms_per_tok=139.94 cs_ms_per_tok=227.88 speedup=0.61x avg_eval=262144.0/262144 pruned_pct=0.00% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=2758488 vm_rss_kb=530580 vm_swap_kb=0
