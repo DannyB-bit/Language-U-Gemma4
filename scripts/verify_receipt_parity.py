@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -451,6 +452,42 @@ def _verify_run31b_receipts(root: Path, readme: str, frontier_md: str, errors: L
     return claims
 
 
+def _verify_submission_bundles(root: Path, readme: str, errors: List[str]) -> int:
+    expected_zips: List[Tuple[str, str]] = [
+        ("agent/submission.zip", "fb461a4e14a70fbefd2eb6522e2b3c1d0b2dabeebe23c4fa5af994df90125a3a"),
+        ("submissions/v2-measured/build/submission.zip", "c818504a3ab1f3f20989aeac5af97e7df6094f9c767f39be8a57553e81b33d4b"),
+        ("submissions/v3-converged/build/submission.zip", "034be75b90dbe6de348bb5fd1370c4e757fe42517796c410388c1bd36345f51f"),
+        ("submissions/v4-loop-guard/build/submission.zip", "4ea3b5c4b6d96f4b569e1796889215dd0bb108958469e79675e18d4382f4848b"),
+        ("submissions/v5-restored/build/submission.zip", "c505e65edb9dea18cc7be4e29ecb709920ee15af7b7281696d4ca438a90f05ad"),
+        ("submissions/v5-analyzer-coder/build/submission.zip", "1ef6b171987bdc1b761b0dbd6424c3d2d9bc5c6f21d17c8552be584c346ca609"),
+    ]
+    claims = 0
+    for rel, exp_sha in expected_zips:
+        p = root / rel
+        if not p.is_file():
+            errors.append(f"Missing declared competition bundle: {rel}")
+            continue
+        got_sha = hashlib.sha256(p.read_bytes()).hexdigest()
+        if got_sha != exp_sha:
+            errors.append(f"{rel}: SHA-256 {got_sha} != pinned {exp_sha}")
+        _assert_contains("README.md", readme, exp_sha, errors)
+        claims += 2
+
+    fleet_prompt = root / "fleet-consensus-v1" / "prompts" / "system.md"
+    exp_prompt_sha = "234969efed3a86a519d74be15beea0381f1b63e0d92c18a47cad82a15956bb74"
+    if not fleet_prompt.is_file():
+        errors.append("Missing fleet-consensus-v1/prompts/system.md")
+    else:
+        lf_bytes = fleet_prompt.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+        got_p_sha = hashlib.sha256(lf_bytes).hexdigest()
+        if got_p_sha != exp_prompt_sha:
+            errors.append(f"fleet-consensus-v1/prompts/system.md LF SHA-256 {got_p_sha} != {exp_prompt_sha}")
+        _assert_contains("README.md", readme, exp_prompt_sha, errors)
+        claims += 2
+
+    return claims
+
+
 def verify_repo_receipts(repo_root: Path) -> ParityReport:
     """Audit all JSON receipts, local Markdown links, and doc numerical claims."""
     root = repo_root.resolve()
@@ -477,6 +514,7 @@ def verify_repo_receipts(repo_root: Path) -> ParityReport:
     checked_claims += _verify_attention_and_optical(root, readme, errors)
     checked_claims += _verify_windows_and_270m_receipts(root, readme, receipts_md, frontier_md, errors)
     checked_claims += _verify_run31b_receipts(root, readme, frontier_md, errors)
+    checked_claims += _verify_submission_bundles(root, readme, errors)
 
     if errors:
         return ParityReport(

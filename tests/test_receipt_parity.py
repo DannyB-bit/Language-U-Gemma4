@@ -27,16 +27,30 @@ class TestReceiptParity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             copy_root = Path(tmp) / "repo"
             for item in (
+                "LICENSE",
+                "NOTICE",
                 "README.md",
+                "agent",
+                "fleet-consensus-v1",
+                "submissions",
+                "scripts",
+                "compiler",
+                "neon_runner",
                 "trinity_retrieval/README.md",
+                "trinity_retrieval/formal_verification",
                 "trinity_retrieval/swe_navigation_benchmark_results.json",
                 "docs",
-                "experiments/joint_glyphs/evidence",
+                "experiments/gemma270_luj",
+                "experiments/joint_glyphs",
+                "experiments/native_language",
+                "experiments/packed_corrections",
                 "experiments/run270_rust/RECEIPTS.md",
                 "experiments/run270_rust/FRONTIER_RECEIPTS.md",
                 "experiments/run270_rust/run270_exact_gen.log",
                 "experiments/run270_rust/run270_glyph_gen.log",
                 "experiments/run270_rust/ref_gemma3_native_arith.json",
+                "experiments/run270_rust/calib/31b/bench_cs_lmhead.c",
+                "experiments/run270_rust/src/t16c.rs",
                 "experiments/run270_rust/evidence",
             ):
                 src = REPO_ROOT / item
