@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
@@ -24,6 +25,7 @@ import shutil
 import sys
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
+import zipfile
 
 
 class ReceiptParityError(ValueError):
@@ -452,26 +454,72 @@ def _verify_run31b_receipts(root: Path, readme: str, frontier_md: str, errors: L
     return claims
 
 
+def _canonical_zip_digest(raw_zip: bytes) -> str:
+    """Compute an OS/zlib-invariant SHA-256 over sorted zip members and raw payloads."""
+    with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zf:
+        parts = []
+        for name in sorted(zf.namelist()):
+            data = zf.read(name)
+            parts.append(f"{name}:{len(data)}:{hashlib.sha256(data).hexdigest()}\n".encode("utf-8"))
+        return hashlib.sha256(b"".join(parts)).hexdigest()
+
+
 def _verify_submission_bundles(root: Path, readme: str, errors: List[str]) -> int:
-    expected_zips: List[Tuple[str, str]] = [
-        ("agent/submission.zip", "fb461a4e14a70fbefd2eb6522e2b3c1d0b2dabeebe23c4fa5af994df90125a3a"),
-        ("submissions/v2-measured/build/submission.zip", "c818504a3ab1f3f20989aeac5af97e7df6094f9c767f39be8a57553e81b33d4b"),
-        ("submissions/v3-converged/build/submission.zip", "034be75b90dbe6de348bb5fd1370c4e757fe42517796c410388c1bd36345f51f"),
-        ("submissions/v4-loop-guard/build/submission.zip", "4ea3b5c4b6d96f4b569e1796889215dd0bb108958469e79675e18d4382f4848b"),
-        ("submissions/v5-restored/build/submission.zip", "c505e65edb9dea18cc7be4e29ecb709920ee15af7b7281696d4ca438a90f05ad"),
-        ("submissions/v5-analyzer-coder/build/submission.zip", "1ef6b171987bdc1b761b0dbd6424c3d2d9bc5c6f21d17c8552be584c346ca609"),
+    expected_zips: List[Tuple[str, str, str, bool]] = [
+        (
+            "agent/submission.zip",
+            "fb461a4e14a70fbefd2eb6522e2b3c1d0b2dabeebe23c4fa5af994df90125a3a",
+            "707e5706a3e2ff5e7d9cb8ce271953614e15e6a533cdac11f5fbe1945ccccf1c",
+            True,
+        ),
+        (
+            "submissions/v2-measured/build/submission.zip",
+            "76d661670d0ad1c5ef64c6b8a277d0a4b8fa61a39c242f90748b4126eb53087b",
+            "e75f7d7e3e7937adc4e9e0a2ef463e4f8337c1bb467a0d6c79115922efde7a66",
+            False,
+        ),
+        (
+            "submissions/v3-converged/build/submission.zip",
+            "04cdcdfca4d23481618834a5f3facf4a134d023ec896f7aa8a4a5c40d4700e5e",
+            "8b344581edfe73aa264a18d551ada6437bb0044d5d27f330265af4f5af33da0f",
+            False,
+        ),
+        (
+            "submissions/v4-loop-guard/build/submission.zip",
+            "7e89e9c072b57c4c25b0d52d0732614c3ab93baf83db529af13fb5a1a546b4ef",
+            "5f1b9880dffbfbd3e2759867820ffc7b10a868ac70c2770478018147ab7ac512",
+            False,
+        ),
+        (
+            "submissions/v5-restored/build/submission.zip",
+            "0b32f172f496d5ffe1e055e107de5bee05364175d15564a14c79db7b2a3171d2",
+            "1e21642b879b959f5d1c1fcfe864fe55dfe04f7d49136c315c07607dbd249f46",
+            False,
+        ),
+        (
+            "submissions/v5-analyzer-coder/build/submission.zip",
+            "60b98087c13b9b2bd370f31ca98f5c0cd02b7b557cb7c65036ee0da624386d0c",
+            "ac506d13ded5412eeb3a3854b52eecfe04a291ed72494fcec9bdd72d53769bfa",
+            False,
+        ),
     ]
     claims = 0
-    for rel, exp_sha in expected_zips:
+    for rel, head_sha, canon_sha, check_raw in expected_zips:
         p = root / rel
         if not p.is_file():
             errors.append(f"Missing declared competition bundle: {rel}")
             continue
-        got_sha = hashlib.sha256(p.read_bytes()).hexdigest()
-        if got_sha != exp_sha:
-            errors.append(f"{rel}: SHA-256 {got_sha} != pinned {exp_sha}")
-        _assert_contains("README.md", readme, exp_sha, errors)
-        claims += 2
+        raw_bytes = p.read_bytes()
+        if check_raw:
+            got_raw = hashlib.sha256(raw_bytes).hexdigest()
+            if got_raw != head_sha:
+                errors.append(f"{rel}: raw SHA-256 {got_raw} != pinned {head_sha}")
+        got_canon = _canonical_zip_digest(raw_bytes)
+        if got_canon != canon_sha:
+            errors.append(f"{rel}: canonical member SHA-256 {got_canon} != pinned {canon_sha}")
+        _assert_contains("README.md", readme, head_sha, errors)
+        _assert_contains("README.md", readme, canon_sha, errors)
+        claims += 3
 
     fleet_prompt = root / "fleet-consensus-v1" / "prompts" / "system.md"
     exp_prompt_sha = "234969efed3a86a519d74be15beea0381f1b63e0d92c18a47cad82a15956bb74"
