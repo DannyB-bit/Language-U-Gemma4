@@ -1,18 +1,18 @@
 Run31B V3 + Cell60 Post-Norm NEON FFI vs Pure-Rust Prefill Logit Parity (Prompt: What is 2 + 2?)
 vocab_len=262144
-cosine_similarity=0.9999999729
-max_abs_diff=5.215645e-03
-rmse=1.198493e-03
+cosine_similarity=0.9997202955
+max_abs_diff=5.161284e-01
+rmse=1.178144e-01
 neon_top1=818
 rust_top1=818
 top1_exact_match=True
 top10_overlap=10
-neon_top10=[818, 236778, 79629, 22515, 2859, 1018, 83033, 902, 715, 236770]
+neon_top10=[818, 236778, 79629, 22515, 2859, 83033, 902, 1018, 715, 236770]
 rust_top10=[818, 236778, 79629, 22515, 2859, 1018, 83033, 902, 715, 236770]
 neon_gen=['GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]', 'GEN31B text="The answer is **4**.<turn|>"']
 rust_gen=['GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]', 'GEN31B text="The answer is **4**.<turn|>"']
 gen31b_exact_match=True
-neon_mem=['MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=70.31 decode_s=59.57 vm_hwm_kb=Some(6379460) vm_rss_kb=Some(6288012)']
-rust_mem=['MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=1098.18 decode_s=374.04 vm_hwm_kb=Some(6433448) vm_rss_kb=Some(6275132)']
-neon_proc=['=== END FFI_NEON rc=0 max_vmhwm_kb=6379460 max_vmrss_kb=6372932 max_vmswap_kb=0 (2026-11-15T18:13:49-05:00) ===']
-rust_proc=['=== END FFI_RUST rc=0 max_vmhwm_kb=6433448 max_vmrss_kb=6413440 max_vmswap_kb=0 (2026-11-15T18:38:27-05:00) ===']
+neon_mem=['MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=37.83 decode_s=36.02 vm_hwm_kb=Some(6577048) vm_rss_kb=Some(6427604)']
+rust_mem=['MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=1098.74 decode_s=356.37 vm_hwm_kb=Some(6601428) vm_rss_kb=Some(6378864)']
+neon_proc=['=== END FFI_NEON rc=0 max_vmhwm_kb=6577048 max_vmrss_kb=6565672 max_vmswap_kb=0 (2026-11-15T21:04:18-05:00) ===']
+rust_proc=['=== END FFI_RUST rc=0 max_vmhwm_kb=6601428 max_vmrss_kb=6530084 max_vmswap_kb=0 (2026-11-15T21:28:39-05:00) ===']

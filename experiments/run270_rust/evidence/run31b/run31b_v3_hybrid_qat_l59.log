@@ -1,0 +1,31 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[59] (300367872 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
+[run31b] loaded in 3.55s pinned_layers=60/60 pinned_bytes=6115361840 embed_bytes=539492352 vm=(Some(6524988), Some(6524988))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.86s (pinned=true)
+[run31b] layer 05/60 done in 0.92s (pinned=true)
+[run31b] layer 14/60 done in 0.37s (pinned=true)
+[run31b] layer 29/60 done in 0.80s (pinned=true)
+[run31b] layer 44/60 done in 0.80s (pinned=true)
+[run31b] layer 59/60 done in 3.78s (pinned=true)
+[run31b] prefill done in 47.65s ssd_read_mb=0.0 vm=(Some(6591016), Some(6478824))
+PREFILL_TOP5 [818:"The"(25.404), 79629:"Depending"(22.882), 22515:"Based"(21.382), 2859:"If"(20.491), 902:"In"(19.835)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 11.10s vm=(Some(6591016), Some(6342716))
+[STEP 1] id=3890 text=" answer"
+[run31b] decode step 1 in 10.09s vm=(Some(6591016), Some(6398108))
+[STEP 2] id=563 text=" is"
+[run31b] decode step 2 in 10.61s vm=(Some(6591016), Some(6359388))
+[STEP 3] id=5213 text=" **"
+[run31b] decode step 3 in 9.62s vm=(Some(6591016), Some(6396396))
+[STEP 4] id=236812 text="4"
+[run31b] decode step 4 in 9.85s vm=(Some(6591016), Some(6403148))
+[STEP 5] id=84750 text="**."
+[run31b] decode step 5 in 8.89s vm=(Some(6591016), Some(6359640))
+[STEP 6] id=106 text="<turn|>"
+GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
+GEN31B text="The answer is **4**.<turn|>"
+KV31B mode=Fp32 raw_bytes=48660480 compressed_bytes=48660480 shrink=1.00x
+MEM31B pinned_bytes=6115361840 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=47.65 decode_s=60.16 vm_hwm_kb=Some(6591016) vm_rss_kb=Some(6359640)
+=== END HYBRID_QAT_L59 rc=0 max_vmhwm_kb=6591016 max_vmrss_kb=6563972 max_vmswap_kb=0 (2026-11-15T21:02:57-05:00) ===

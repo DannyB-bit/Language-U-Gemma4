@@ -2761,11 +2761,20 @@ static void quantize_x_sub64_l1_tile16(
             if (sa > smax) smax = sa;
         }
         float sc = (smax > 1e-12f) ? (smax / 125.0f) : 0.0f;
-        sub_scales[s] = sc;
         float inv = (sc > 0.0f) ? (1.0f / sc) : 0.0f;
+        double dot_xq = 0.0;
+        double dot_qq = 0.0;
         for (int n = 0; n < 16; n++) {
-            fill_l1_quad_lut_s8(xs + n * 4, inv, luts + ((size_t)s * 16 + (size_t)n) * 16, NULL);
+            int q4[4];
+            fill_l1_quad_lut_s8(xs + n * 4, inv, luts + ((size_t)s * 16 + (size_t)n) * 16, q4);
+            for (int k = 0; k < 4; k++) {
+                double xf = (double)xs[n * 4 + k];
+                double qf = (double)q4[k];
+                dot_xq += xf * qf;
+                dot_qq += qf * qf;
+            }
         }
+        sub_scales[s] = (dot_qq > 0.0) ? (float)(dot_xq / dot_qq) : sc;
     }
 }
 
@@ -2913,19 +2922,56 @@ static inline float quantize_t5_subblk_i8(
         float a = neon_fabsf(src[i]);
         if (a > mx) mx = a;
     }
-    const float scale = (mx > 1e-30f) ? (mx / 127.0f) : 0.0f;
     const float inv = (mx > 1e-30f) ? (127.0f / mx) : 0.0f;
+    double dot_xq = 0.0, dot_qq = 0.0;
     for (int i = 0; i < len; i++) {
         float sv = src[i] * inv;
         int v = (int)(sv >= 0.0f ? (sv + 0.5f) : (sv - 0.5f));
         if (v > 127) v = 127;
         else if (v < -127) v = -127;
         dst[i] = (int8_t)v;
+        dot_xq += (double)src[i] * (double)v;
+        dot_qq += (double)v * (double)v;
     }
     for (int i = len; i < pad_to; i++) dst[i] = 0;
-    return scale;
+    return (dot_qq > 0.0) ? (float)(dot_xq / dot_qq) : ((mx > 1e-30f) ? (mx / 127.0f) : 0.0f);
 }
 #endif
+
+#define T16C_GAUSS_BIT 0x80
+
+/* Detect sparse / spiky outlier sub-blocks where top-2 elements carry >90% of L2 energy
+ * (e.g. Gate H 1000.0f / +-800.0f with ~0.03f payload, or sparse [1,2,4,8,16,0..] = 93.84%).
+ * FWHT-rotated Gemma 4 activations distribute energy across all channels (measured max ~44%),
+ * so both k=1 and k>1 deterministically execute identical single-plane Q8 (dual=0, kc_step=4). */
+static inline int x_needs_dual_plane(const float* x, int d_in, int k_tokens) {
+    for (int tok = 0; tok < k_tokens; tok++) {
+        const float* xk = x + (size_t)tok * (size_t)d_in;
+        for (int off = 0; off < d_in; off += 64) {
+            int len = (d_in - off < 64) ? (d_in - off) : 64;
+            float s1 = 0.0f, s2 = 0.0f, sum_sq = 0.0f;
+            for (int j = 0; j < len; j++) {
+                float a = neon_fabsf(xk[off + j]);
+                float q = a * a;
+                sum_sq += q;
+                if (q >= s1) { s2 = s1; s1 = q; }
+                else if (q > s2) { s2 = q; }
+            }
+            if (sum_sq > 0.0f && (s1 + s2) > 0.90f * sum_sq) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static inline float t16c_plane_weight(int gauss_lut, int eff_bits, int p) {
+    static const float GAUSS_W2[2] = { 1.087f, 2.087f };
+    static const float GAUSS_W3[3] = { 1.000f, 2.080f, 4.350f };
+    if (gauss_lut && eff_bits == 2 && p >= 0 && p < 2) return GAUSS_W2[p];
+    if (gauss_lut && eff_bits == 3 && p >= 0 && p < 3) return GAUSS_W3[p];
+    return (float)(1u << p);
+}
 
 static int gemm_ternary5_tile16_batch(
     const uint8_t* NEON_RESTRICT packed,
@@ -2982,11 +3028,12 @@ static int gemm_ternary5_tile16_batch(
 #endif
 
     int64_t total_skipped = 0;
+    const int dual = x_needs_dual_plane(x, d_in, k_tokens);
+    const int kc_step = dual ? 2 : 4;
 
-    for (int k0 = 0; k0 < k_tokens; k0 += 2) {
-        const int kc = (k_tokens - k0 >= 2) ? 2 : (k_tokens - k0);
-        const int dual = 1;
-        const int slots = kc * 2;
+    for (int k0 = 0; k0 < k_tokens; k0 += kc_step) {
+        const int kc = (k_tokens - k0 >= kc_step) ? kc_step : (k_tokens - k0);
+        const int slots = dual ? (kc * 2) : kc;
 
         for (int kk = 0; kk < kc; kk++) {
             const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
@@ -3233,9 +3280,9 @@ static int gemm_ternary5_tile16_batch(
 
     int64_t total_skipped = 0;
 
-    for (int k0 = 0; k0 < k_tokens; k0 += 2) {
-        const int kc = (k_tokens - k0 >= 2) ? 2 : (k_tokens - k0);
-        const int b_chunk = 4;
+    for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+        const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+        const int b_chunk = (kc <= 2) ? 4 : 2;
 
         if (use_cs) {
             for (int kk = 0; kk < kc; kk++) {
@@ -3441,10 +3488,12 @@ static int gemm_int8_tile16_batch(
         return -1;
     }
 
-    for (int k0 = 0; k0 < k_tokens; k0 += 2) {
-        const int kc = (k_tokens - k0 >= 2) ? 2 : (k_tokens - k0);
-        const int dual = 1;
-        const int slots = kc * 2;
+    const int dual = x_needs_dual_plane(x, d_in, k_tokens);
+    const int kc_step = dual ? 2 : 4;
+
+    for (int k0 = 0; k0 < k_tokens; k0 += kc_step) {
+        const int kc = (k_tokens - k0 >= kc_step) ? kc_step : (k_tokens - k0);
+        const int slots = dual ? (kc * 2) : kc;
 
         for (int kk = 0; kk < kc; kk++) {
             const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
@@ -3635,8 +3684,8 @@ static int gemm_int8_tile16_batch(
         const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
         const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
         int32_t t_skip = 0;
-        for (int k0 = 0; k0 < k_tokens; k0 += 2) {
-            const int kc = (k_tokens - k0 >= 2) ? 2 : (k_tokens - k0);
+        for (int k0 = 0; k0 < k_tokens; k0 += 4) {
+            const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
             double acc[4][16];
             for (int kk = 0; kk < kc; kk++) {
                 for (int r = 0; r < 16; r++) acc[kk][r] = 0.0;
@@ -3715,9 +3764,12 @@ NEON_API int gemm_bitserial_tile16_batch(
     if (d_out <= 0 || d_in <= 0) return -1;
     if (block_size != 64 && block_size != 128 && block_size != 256) return -1;
     if ((d_in % block_size) != 0) return -1;
-    if (n_bits < 1 || (n_bits > 5 && n_bits != 8)) return -1;
+    const int gauss_lut = (n_bits & T16C_GAUSS_BIT) != 0;
+    const int eff_bits = n_bits & 0x7F;
+    if (eff_bits < 1 || (eff_bits > 5 && eff_bits != 8)) return -1;
     if ((is_asym != 0 && is_asym != 1) || k_tokens <= 0) return -1;
-    if (n_bits == 5) {
+    if (gauss_lut && eff_bits != 2 && eff_bits != 3) return -1;
+    if (eff_bits == 5) {
         if (is_asym != 0) return -1;
         return gemm_ternary5_tile16_batch(
             packed, tile_norm_fp16, x, y,
@@ -3725,7 +3777,7 @@ NEON_API int gemm_bitserial_tile16_batch(
             cs_skip_thresh, num_threads, out_skipped
         );
     }
-    if (n_bits == 8) {
+    if (eff_bits == 8) {
         if (is_asym != 0) return -1;
         return gemm_int8_tile16_batch(
             packed, tile_norm_fp16, x, y,
@@ -3740,10 +3792,12 @@ NEON_API int gemm_bitserial_tile16_batch(
     const int subs_per_blk = block_size / 64;
     const int hdr_bytes = is_asym ? 64 : 32;
     const int bytes_per_plane_blk = (block_size / 8) * 16;
-    const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)n_bits * (size_t)bytes_per_plane_blk;
+    const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)eff_bits * (size_t)bytes_per_plane_blk;
     const size_t luts_stride = (size_t)(d_in / 4) * 16;
-    const int kc_max = (k_tokens < 2) ? k_tokens : 2;
-    const int slot_cap = kc_max * 2;
+    const int dual = x_needs_dual_plane(x, d_in, k_tokens);
+    const int kc_step = dual ? 2 : 4;
+    const int kc_max = (k_tokens < kc_step) ? k_tokens : kc_step;
+    const int slot_cap = dual ? (kc_max * 2) : kc_max;
     const int need_norm = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) ? 1 : 0;
     const int need_sum = (is_asym != 0) ? 1 : 0;
 
@@ -3770,10 +3824,9 @@ NEON_API int gemm_bitserial_tile16_batch(
 
     int64_t total_skipped = 0;
 
-    for (int k0 = 0; k0 < k_tokens; k0 += 2) {
-        const int kc = (k_tokens - k0 >= 2) ? 2 : (k_tokens - k0);
-        const int dual = 1;
-        const int slots = kc * 2;
+    for (int k0 = 0; k0 < k_tokens; k0 += kc_step) {
+        const int kc = (k_tokens - k0 >= kc_step) ? kc_step : (k_tokens - k0);
+        const int slots = dual ? (kc * 2) : kc;
         for (int kk = 0; kk < kc; kk++) {
             const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
             if (dual) {
@@ -3891,9 +3944,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                 }
 
                 const uint8_t* planes = bptr + hdr_bytes;
-                for (int p = 0; p < n_bits; p++) {
+                for (int p = 0; p < eff_bits; p++) {
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
-                    float weight_p = (float)(1u << p);
+                    float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
                     if (slots == 4) {
                         const int8_t* l0 = luts + 0 * luts_stride;
                         const int8_t* l1 = luts + 1 * luts_stride;
@@ -4098,9 +4151,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                 }
 
                 const uint8_t* planes = bptr + hdr_bytes;
-                for (int p = 0; p < n_bits; p++) {
+                for (int p = 0; p < eff_bits; p++) {
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
-                    float weight_p = (float)(1u << p);
+                    float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
                     for (int sb = 0; sb < subs_per_blk; sb++) {
                         int g_sub = blk * subs_per_blk + sb;
                         __m256i a0 = _mm256_setzero_si256();
@@ -4228,9 +4281,9 @@ NEON_API int gemm_bitserial_tile16_batch(
                     }
                 }
                 const uint8_t* planes = bptr + hdr_bytes;
-                for (int p = 0; p < n_bits; p++) {
+                for (int p = 0; p < eff_bits; p++) {
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
-                    float weight_p = (float)(1u << p);
+                    float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
                     for (int sb = 0; sb < subs_per_blk; sb++) {
                         int g_sub = blk * subs_per_blk + sb;
                         for (int sl = 0; sl < slots; sl++) {
@@ -4689,7 +4742,8 @@ static int gate_e_test_config(
         int rc_skip = gemm_bitserial_tile16_batch(
             packed, norms, x, y_got, d_out, d_in, bsize, n_bits, is_asym, k_tokens, 1e9f, 2, &skipped
         );
-        int64_t exp_skips = (int64_t)((k_tokens + 1) / 2) * (int64_t)n_tiles * (int64_t)n_blks;
+        const int kc_exp = x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4;
+        int64_t exp_skips = (int64_t)((k_tokens + kc_exp - 1) / kc_exp) * (int64_t)n_tiles * (int64_t)n_blks;
         if (rc_skip != 0 || skipped != exp_skips) ok = 0;
         for (int i = 0; i < k_tokens * d_out && ok; i++) {
             if (neon_fabsf(y_got[i]) > 1e-7f) ok = 0;
@@ -5495,6 +5549,75 @@ NEON_API int neon_accelerator_self_test(void) {
         }
         neon_free(bx); neon_free(by_batch); neon_free(by_single);
         if (!ok_exact) return 0;
+    }
+
+    /* Gate K: Non-uniform Gaussian 2-bit bit-plane weights (T16C_GAUSS_BIT) k=1 vs k=4 bitwise parity */
+    {
+        const int d_o = 32, d_i = 128, bsz = 64, kt = 4, nb = 2 | T16C_GAUSS_BIT;
+        const int n_tiles = d_o / 16, n_blks = d_i / bsz;
+        const size_t plane_b = (size_t)(bsz / 8) * 16u;
+        const size_t tblk = 32u + 2u * plane_b;
+        uint8_t* pk = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk);
+        float* gx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+        float* gy_b = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* gy_s = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* gref = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        if (!pk || !gx || !gy_b || !gy_s || !gref) {
+            neon_free(pk); neon_free(gx); neon_free(gy_b); neon_free(gy_s); neon_free(gref);
+            return 0;
+        }
+        uint64_t rng = 0x9E3779B97F4A7C15ULL;
+        for (int i = 0; i < kt * d_i; i++) {
+            rng = rng * 6364136223846793005ULL + 1ULL;
+            gx[i] = 0.8f * ((float)((int32_t)((rng >> 33) & 255u) - 128) / 128.0f);
+        }
+        memset(gref, 0, (size_t)kt * (size_t)d_o * sizeof(float));
+        for (int t = 0; t < n_tiles; t++) {
+            for (int blk = 0; blk < n_blks; blk++) {
+                uint8_t* bp = pk + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk;
+                for (int r = 0; r < 16; r++) {
+                    int gr = t * 16 + r;
+                    uint16_t sc_h = fp32_to_fp16(0.05f + 0.01f * (float)r);
+                    float sc_f = fp16_to_fp32(sc_h);
+                    write_u16_le(bp + (size_t)r * 2u, sc_h);
+                    for (int p = 0; p < 2; p++) {
+                        float wp = t16c_plane_weight(1, 2, p);
+                        for (int bo = 0; bo < bsz / 8; bo++) {
+                            rng = rng * 6364136223846793005ULL + 1ULL;
+                            uint8_t bv = (uint8_t)(rng >> 24);
+                            bp[32u + (size_t)p * plane_b + (size_t)bo * 16u + (size_t)r] = bv;
+                            for (int bit = 0; bit < 8; bit++) {
+                                float wv = sc_f * wp * (((bv >> (7 - bit)) & 1) ? 1.0f : -1.0f);
+                                int col = blk * bsz + bo * 8 + bit;
+                                for (int tok = 0; tok < kt; tok++) {
+                                    gref[(size_t)tok * (size_t)d_o + (size_t)gr] += wv * gx[(size_t)tok * (size_t)d_i + (size_t)col];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        int ok_g = (gemm_bitserial_tile16_batch(pk, NULL, gx, gy_b, d_o, d_i, bsz, nb, 0, kt, 0.0f, 2, NULL) == 0);
+        for (int tok = 0; tok < kt && ok_g; tok++) {
+            if (gemm_bitserial_tile16_batch(pk, NULL, gx + (size_t)tok * (size_t)d_i, gy_s + (size_t)tok * (size_t)d_o,
+                                            d_o, d_i, bsz, nb, 0, 1, 0.0f, 2, NULL) != 0) ok_g = 0;
+        }
+        for (int tok = 0; tok < kt && ok_g; tok++) {
+            double dot = 0.0, na = 0.0, nb2 = 0.0;
+            for (int r = 0; r < d_o; r++) {
+                size_t idx = (size_t)tok * (size_t)d_o + (size_t)r;
+                uint32_t ub = 0, us = 0;
+                memcpy(&ub, &gy_b[idx], sizeof(uint32_t));
+                memcpy(&us, &gy_s[idx], sizeof(uint32_t));
+                if (ub != us) ok_g = 0;
+                double vr = gref[idx], vg = gy_b[idx];
+                dot += vr * vg; na += vr * vr; nb2 += vg * vg;
+            }
+            if (dot / ((double)neon_sqrtf((float)na) * (double)neon_sqrtf((float)nb2) + 1e-12) < 0.999) ok_g = 0;
+        }
+        neon_free(pk); neon_free(gx); neon_free(gy_b); neon_free(gy_s); neon_free(gref);
+        if (!ok_g) return 0;
     }
 
     return 1;

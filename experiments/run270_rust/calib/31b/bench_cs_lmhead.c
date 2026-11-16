@@ -205,6 +205,8 @@ typedef struct {
     size_t dim;
     size_t band_size;
     const uint16_t *w;     /* [vocab, dim] BF16 */
+    uint16_t *w_perm;      /* optional [vocab, dim] pre-permuted BF16 for contiguous band NEON */
+    float *coarse_scores;  /* reusable [vocab] buffer for coarse directional sieve */
     float *row_norms;      /* [vocab] full L2 upper bound */
     float *band_norms;     /* [vocab * N_BANDS] band L2 upper bound */
     int32_t *col_perm;     /* optional [dim] static channel permutation */
@@ -275,32 +277,29 @@ static int build_lmhead_index(const uint16_t *w, size_t vocab, size_t dim, const
     idx->w = w;
     idx->row_norms = (float *)malloc(vocab * sizeof(float));
     idx->band_norms = (float *)malloc(vocab * N_BANDS * sizeof(float));
+    idx->coarse_scores = (float *)malloc(vocab * sizeof(float));
     idx->is_seed = (uint8_t *)calloc(vocab, 1);
-    if (!idx->row_norms || !idx->band_norms || !idx->is_seed) {
+    if (!idx->row_norms || !idx->band_norms || !idx->coarse_scores || !idx->is_seed) {
         free(idx->row_norms);
         free(idx->band_norms);
+        free(idx->coarse_scores);
         free(idx->is_seed);
         return -2;
     }
 
-    uint8_t *col_to_band = NULL;
     if (col_perm_in) {
         idx->col_perm = (int32_t *)malloc(dim * sizeof(int32_t));
-        col_to_band = (uint8_t *)malloc(dim);
-        if (!idx->col_perm || !col_to_band) {
+        idx->w_perm = (uint16_t *)malloc(vocab * dim * sizeof(uint16_t));
+        if (!idx->col_perm || !idx->w_perm) {
             free(idx->row_norms);
             free(idx->band_norms);
+            free(idx->coarse_scores);
             free(idx->is_seed);
             free(idx->col_perm);
-            free(col_to_band);
+            free(idx->w_perm);
             return -2;
         }
         memcpy(idx->col_perm, col_perm_in, dim * sizeof(int32_t));
-        for (int b = 0; b < N_BANDS; ++b) {
-            for (size_t k = 0; k < idx->band_size; ++k) {
-                col_to_band[col_perm_in[(size_t)b * idx->band_size + k]] = (uint8_t)b;
-            }
-        }
     }
 
 #if !defined(_WIN32)
@@ -308,9 +307,10 @@ static int build_lmhead_index(const uint16_t *w, size_t vocab, size_t dim, const
 #endif
     for (int64_t r = 0; r < (int64_t)vocab; ++r) {
         const uint16_t *row = w + (size_t)r * dim;
+        uint16_t *wp_row = idx->w_perm ? (idx->w_perm + (size_t)r * dim) : NULL;
         double total_ss = 0.0;
         float *bn = idx->band_norms + (size_t)r * N_BANDS;
-        if (!col_to_band) {
+        if (!col_perm_in) {
             for (int b = 0; b < N_BANDS; ++b) {
                 const uint16_t *seg = row + (size_t)b * idx->band_size;
                 double ss = 0.0;
@@ -322,21 +322,21 @@ static int build_lmhead_index(const uint16_t *w, size_t vocab, size_t dim, const
                 bn[b] = (float)(sqrt(ss) * 1.00005 + 1e-6);
             }
         } else {
-            double bss[N_BANDS];
-            for (int b = 0; b < N_BANDS; ++b) bss[b] = 0.0;
-            for (size_t c = 0; c < dim; ++c) {
-                double v = (double)bf16_to_f32(row[c]);
-                double vv = v * v;
-                total_ss += vv;
-                bss[col_to_band[c]] += vv;
-            }
             for (int b = 0; b < N_BANDS; ++b) {
-                bn[b] = (float)(sqrt(bss[b]) * 1.00005 + 1e-6);
+                double ss = 0.0;
+                size_t b0 = (size_t)b * idx->band_size;
+                for (size_t k = 0; k < idx->band_size; ++k) {
+                    uint16_t raw = row[col_perm_in[b0 + k]];
+                    if (wp_row) wp_row[b0 + k] = raw;
+                    double v = (double)bf16_to_f32(raw);
+                    ss += v * v;
+                }
+                total_ss += ss;
+                bn[b] = (float)(sqrt(ss) * 1.00005 + 1e-6);
             }
         }
         idx->row_norms[r] = (float)(sqrt(total_ss) * 1.00005 + 1e-6);
     }
-    free(col_to_band);
 
     float *tmp = (float *)malloc(vocab * sizeof(float));
     if (tmp) {
@@ -389,11 +389,15 @@ static int build_lmhead_index(const uint16_t *w, size_t vocab, size_t dim, const
 }
 
 static void free_lmhead_index(LmHeadIndex *idx) {
+    free(idx->w_perm);
+    free(idx->coarse_scores);
     free(idx->row_norms);
     free(idx->band_norms);
     free(idx->col_perm);
     free(idx->is_seed);
     free(idx->seed_ids);
+    idx->w_perm = NULL;
+    idx->coarse_scores = NULL;
     idx->row_norms = NULL;
     idx->band_norms = NULL;
     idx->col_perm = NULL;
@@ -406,6 +410,7 @@ typedef enum {
     CS_MODE_SINGLE_BAND = 1,
     CS_MODE_STATIC_16BAND = 2,
     CS_MODE_DYNAMIC_16BAND = 3,
+    CS_MODE_SUBSPACE_SIEVE = 4,
 } CsMode;
 
 typedef struct {
@@ -602,6 +607,99 @@ static void compute_top1_mode(const LmHeadIndex *idx, const float *h, CsMode mod
         }
         macs_done = res->col_macs_total;
         full_rows = (uint64_t)vocab;
+    } else if (mode == CS_MODE_SUBSPACE_SIEVE) {
+        /* Two-stage directional coarse-to-fine sieve over contiguous pre-permuted heavy subspace.
+         * Evaluates top d_coarse channels (2 bands = 12.5% of dim) via contiguous NEON, builds an
+         * O(V) 256-bin score quantile cutoff for top-K (~3.1% of vocab) candidates + seed rows,
+         * and refines only surviving candidates. */
+        uint64_t seed_macs = 0;
+        size_t seed_cnt = 0;
+        eval_seed_rows(idx, h, &shared_best, &seed_macs, &seed_cnt);
+        res->seed_rows = seed_cnt;
+        macs_done += seed_macs;
+        full_rows += seed_cnt;
+
+        const size_t dim = idx->dim;
+        const size_t vocab = idx->vocab;
+        const size_t d_coarse = idx->band_size * 2;
+        const uint16_t *w_act = idx->w_perm ? idx->w_perm : idx->w;
+        const float *h_act = h_banded;
+        float *cscores = idx->coarse_scores;
+        float g_min = 1e30f;
+        float g_max = -1e30f;
+
+#if !defined(_WIN32)
+#pragma omp parallel reduction(+ : macs_done) reduction(min : g_min) reduction(max : g_max)
+#endif
+        {
+#if !defined(_WIN32)
+#pragma omp for schedule(static, 512) nowait
+#endif
+            for (int64_t r = 0; r < (int64_t)vocab; ++r) {
+                if (idx->is_seed[r]) {
+                    cscores[r] = -1e30f;
+                    continue;
+                }
+                float c = dot_bf16_f32(w_act + (size_t)r * dim, h_act, d_coarse);
+                cscores[r] = c;
+                macs_done += (uint64_t)d_coarse;
+                if (c < g_min) g_min = c;
+                if (c > g_max) g_max = c;
+            }
+        }
+
+        float tau = g_min - 1.0f;
+        if (g_max > g_min + 1e-6f) {
+            uint32_t hist[256] = {0};
+            float inv_span = 255.0f / (g_max - g_min);
+            for (size_t r = 0; r < vocab; ++r) {
+                if (idx->is_seed[r]) continue;
+                int b = (int)((cscores[r] - g_min) * inv_span);
+                if (b < 0) b = 0;
+                if (b > 255) b = 255;
+                hist[b]++;
+            }
+            size_t k_keep = (vocab >= 8192) ? (vocab / 32) : (vocab / 8);
+            if (k_keep < 64) k_keep = (vocab < 64) ? vocab : 64;
+            size_t acc_cnt = 0;
+            int cut_bin = 0;
+            for (int b = 255; b >= 0; --b) {
+                acc_cnt += hist[b];
+                cut_bin = b;
+                if (acc_cnt >= k_keep) break;
+            }
+            tau = g_min + ((float)cut_bin / 255.0f) * (g_max - g_min) - 1e-5f;
+        }
+
+        const size_t d_tail = dim - d_coarse;
+#if !defined(_WIN32)
+#pragma omp parallel reduction(+ : macs_done, early_rows, full_rows)
+#endif
+        {
+            float own_best_v = -1e30f;
+            uint32_t own_best_i = 0xFFFFFFFFU;
+#if !defined(_WIN32)
+#pragma omp for schedule(static, 256) nowait
+#endif
+            for (int64_t r = 0; r < (int64_t)vocab; ++r) {
+                if (idx->is_seed[r]) continue;
+                float c = cscores[r];
+                if (c < tau) {
+                    early_rows++;
+                    continue;
+                }
+                float tot = c + dot_bf16_f32(w_act + (size_t)r * dim + d_coarse, h_act + d_coarse, d_tail);
+                macs_done += (uint64_t)d_tail;
+                full_rows++;
+                if (tot > own_best_v || (tot == own_best_v && (uint32_t)r < own_best_i)) {
+                    own_best_v = tot;
+                    own_best_i = (uint32_t)r;
+                }
+            }
+            if (own_best_i != 0xFFFFFFFFU) {
+                atomic_max_best(&shared_best, own_best_v, own_best_i);
+            }
+        }
     } else {
         uint64_t seed_macs = 0;
         size_t seed_cnt = 0;
@@ -614,6 +712,7 @@ static void compute_top1_mode(const LmHeadIndex *idx, const float *h, CsMode mod
         const size_t bs = idx->band_size;
         const size_t vocab = idx->vocab;
         const int32_t *cperm = idx->col_perm;
+        const uint16_t *w_perm = idx->w_perm;
 
 #if !defined(_WIN32)
 #pragma omp parallel reduction(+ : macs_done, early_rows, full_rows)
@@ -671,13 +770,16 @@ static void compute_top1_mode(const LmHeadIndex *idx, const float *h, CsMode mod
                 }
 
                 const uint16_t *row_w = idx->w + (size_t)r * dim;
+                const uint16_t *row_wp = w_perm ? (w_perm + (size_t)r * dim) : NULL;
                 float acc = 0.0f;
                 int pruned = 0;
                 for (int k = 0; k < N_BANDS; ++k) {
                     int b = perm[k];
-                    acc += cperm
-                        ? dot_bf16_f32_perm(row_w, h_banded + (size_t)b * bs, cperm + (size_t)b * bs, bs)
-                        : dot_bf16_f32(row_w + (size_t)b * bs, h + (size_t)b * bs, bs);
+                    acc += row_wp
+                        ? dot_bf16_f32(row_wp + (size_t)b * bs, h_banded + (size_t)b * bs, bs)
+                        : (cperm
+                            ? dot_bf16_f32_perm(row_w, h_banded + (size_t)b * bs, cperm + (size_t)b * bs, bs)
+                            : dot_bf16_f32(row_w + (size_t)b * bs, h + (size_t)b * bs, bs));
                     macs_done += (uint64_t)bs;
                     float rem_bound = tail_rem[k];
                     /* Conservative rounding margin proportional to |acc| + rem_bound prevents false pruning. */
@@ -846,11 +948,14 @@ static int run_selftest(void) {
         free(h);
         return 7;
     }
-    CsResult r_st_p;
+    CsResult r_st_p, r_sv_p;
     compute_top1_mode(&idx_p, h, CS_MODE_STATIC_16BAND, &r_st_p);
+    compute_top1_mode(&idx_p, h, CS_MODE_SUBSPACE_SIEVE, &r_sv_p);
     double st_p_saved = 100.0 * (1.0 - (double)r_st_p.col_macs_done / (double)r_st_p.col_macs_total);
-    if (r_st_p.best_id != target_row || st_p_saved < 50.0) {
-        fprintf(stderr, "[SELFTEST FAIL] Gate 7 static-perm mismatch id=%u saved=%.2f%%\n", r_st_p.best_id, st_p_saved);
+    double sv_p_saved = 100.0 * (1.0 - (double)r_sv_p.col_macs_done / (double)r_sv_p.col_macs_total);
+    if (r_st_p.best_id != target_row || st_p_saved < 50.0 || r_sv_p.best_id != target_row || sv_p_saved < 50.0) {
+        fprintf(stderr, "[SELFTEST FAIL] Gate 7/8 static-perm/sieve mismatch st=(%u,%.2f%%) sv=(%u,%.2f%%)\n",
+                r_st_p.best_id, st_p_saved, r_sv_p.best_id, sv_p_saved);
         free_lmhead_index(&idx_p);
         free_lmhead_index(&idx);
         free(w);
@@ -859,8 +964,8 @@ static int run_selftest(void) {
     }
     free_lmhead_index(&idx_p);
 
-    printf("SELFTEST_PASS_6_GATES top1=%u logit=%.4f dy_mac_saved=%.2f%% st_perm_saved=%.2f%% early_rows=%llu/%zu\n",
-           r_dy.best_id, r_dy.best_logit, dy_saved_pct, st_p_saved,
+    printf("SELFTEST_PASS_6_GATES top1=%u logit=%.4f dy_mac_saved=%.2f%% st_perm_saved=%.2f%% sieve_saved=%.2f%% early_rows=%llu/%zu\n",
+           r_dy.best_id, r_dy.best_logit, dy_saved_pct, st_p_saved, sv_p_saved,
            (unsigned long long)r_dy.rows_early_terminated, vocab);
     free_lmhead_index(&idx);
     free(w);
@@ -997,15 +1102,15 @@ int main(int argc, char **argv) {
     CsResult warm_r;
     compute_top1_mode(&idx, queries, CS_MODE_FULL, &warm_r);
 
-    const CsMode modes[3] = {CS_MODE_SINGLE_BAND, CS_MODE_STATIC_16BAND, CS_MODE_DYNAMIC_16BAND};
-    const char *mode_names[3] = {"single_band", "static_16band", "dynamic_16band"};
+    const CsMode modes[4] = {CS_MODE_SINGLE_BAND, CS_MODE_STATIC_16BAND, CS_MODE_DYNAMIC_16BAND, CS_MODE_SUBSPACE_SIEVE};
+    const char *mode_names[4] = {"single_band", "static_16band", "dynamic_16band", "subspace_sieve"};
 
     uint64_t io0 = read_proc_io_read_bytes();
     double sum_full_ms = 0.0;
-    double sum_mode_ms[3] = {0.0, 0.0, 0.0};
-    double sum_mode_early_pct[3] = {0.0, 0.0, 0.0};
-    double sum_mode_macs_saved[3] = {0.0, 0.0, 0.0};
-    size_t mode_exact[3] = {0, 0, 0};
+    double sum_mode_ms[4] = {0.0, 0.0, 0.0, 0.0};
+    double sum_mode_early_pct[4] = {0.0, 0.0, 0.0, 0.0};
+    double sum_mode_macs_saved[4] = {0.0, 0.0, 0.0, 0.0};
+    size_t mode_exact[4] = {0, 0, 0, 0};
 
     for (size_t qi = 0; qi < n_queries; ++qi) {
         const float *h = queries + qi * dim;
@@ -1015,7 +1120,7 @@ int main(int argc, char **argv) {
         printf("  tok[%zu] h_norm=%.3f full=(id=%u %.5f %.2fms)\n",
                qi, rf.h_norm, rf.best_id, rf.best_logit, rf.elapsed_ms);
 
-        for (int m = 0; m < 3; ++m) {
+        for (int m = 0; m < 4; ++m) {
             CsResult rm;
             compute_top1_mode(&idx, h, modes[m], &rm);
             int is_exact = (rm.best_id == rf.best_id) && (fabsf(rm.best_logit - rf.best_logit) < 1e-3f);
@@ -1038,7 +1143,7 @@ int main(int argc, char **argv) {
     read_proc_status_kb(&vm_hwm, &vm_rss, &vm_swap);
 
     double avg_full = sum_full_ms / (double)n_queries;
-    for (int m = 0; m < 3; ++m) {
+    for (int m = 0; m < 4; ++m) {
         double avg_m = sum_mode_ms[m] / (double)n_queries;
         double spd = avg_full / (avg_m > 1e-6 ? avg_m : 1e-6);
         printf("SUMMARY [%s | %s] full_ms_per_tok=%.2f cs_ms_per_tok=%.2f speedup=%.2fx rows_early_terminated=%.2f%% col_macs_saved=%.2f%% exact_top1=%zu/%zu timed_ssd_read_bytes=%llu vm_hwm_kb=%ld vm_rss_kb=%ld vm_swap_kb=%ld\n",

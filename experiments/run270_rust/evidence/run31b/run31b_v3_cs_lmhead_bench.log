@@ -1,76 +1,94 @@
 
-=== BENCH [Gemma4-31B-LMHead-BF16-262144x5376] vocab=262144 d=5376 bf16_mb=2688.0 threads=4 setup_s=1.77 ===
+=== BENCH [Gemma4-31B-LMHead-BF16-262144x5376] vocab=262144 d=5376 bf16_mb=2688.0 threads=4 setup_s=11.95 ===
 norm_range=[max=0.9946, p50=0.9838, min=0.9674] seed_rows=1012 perm=/tmp/perm_31b.i32
-  tok[0] h_norm=311.330 full=(id=100 46.60282 721.43ms)
-    single_band    id=100 46.60282 725.40ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 46.60282 1146.36ms speedup=0.63x early_term=99.61% macs_saved=22.48% match=EXACT
-    dynamic_16band id=100 46.60282 1190.97ms speedup=0.61x early_term=99.61% macs_saved=22.67% match=EXACT
-  tok[1] h_norm=372.087 full=(id=100 54.14902 732.97ms)
-    single_band    id=100 54.14902 728.75ms speedup=1.01x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 54.14902 1134.29ms speedup=0.65x early_term=99.61% macs_saved=20.61% match=EXACT
-    dynamic_16band id=100 54.14902 1219.19ms speedup=0.60x early_term=99.61% macs_saved=20.61% match=EXACT
-  tok[2] h_norm=289.406 full=(id=100 40.51773 723.11ms)
-    single_band    id=100 40.51773 728.73ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 40.51773 1265.10ms speedup=0.57x early_term=99.61% macs_saved=18.82% match=EXACT
-    dynamic_16band id=100 40.51773 1249.55ms speedup=0.58x early_term=99.61% macs_saved=18.84% match=EXACT
-  tok[3] h_norm=303.125 full=(id=100 43.41312 724.93ms)
-    single_band    id=100 43.41312 728.05ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 43.41312 1160.17ms speedup=0.62x early_term=99.61% macs_saved=19.69% match=EXACT
-    dynamic_16band id=100 43.41312 1231.81ms speedup=0.59x early_term=99.61% macs_saved=19.81% match=EXACT
-  tok[4] h_norm=311.330 full=(id=100 46.60282 732.48ms)
-    single_band    id=100 46.60282 723.67ms speedup=1.01x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 46.60282 1127.75ms speedup=0.65x early_term=99.61% macs_saved=22.48% match=EXACT
-    dynamic_16band id=100 46.60282 1194.87ms speedup=0.61x early_term=99.61% macs_saved=22.67% match=EXACT
-  tok[5] h_norm=326.387 full=(id=100 28.81939 721.56ms)
-    single_band    id=100 28.81939 723.50ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=100 28.81939 1215.86ms speedup=0.59x early_term=99.58% macs_saved=10.57% match=EXACT
-    dynamic_16band id=100 28.81939 1297.56ms speedup=0.56x early_term=99.58% macs_saved=10.57% match=EXACT
-  tok[6] h_norm=253.701 full=(id=1638 32.06958 723.47ms)
-    single_band    id=1638 32.06958 723.50ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=1638 32.06958 1140.88ms speedup=0.63x early_term=99.61% macs_saved=20.97% match=EXACT
-    dynamic_16band id=1638 32.06958 1163.06ms speedup=0.62x early_term=99.61% macs_saved=20.97% match=EXACT
-  tok[7] h_norm=277.941 full=(id=1340 35.67706 726.69ms)
-    single_band    id=1340 35.67706 741.45ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=1340 35.67707 1149.59ms speedup=0.63x early_term=99.61% macs_saved=18.35% match=EXACT
-    dynamic_16band id=1340 35.67707 1226.86ms speedup=0.59x early_term=99.61% macs_saved=18.77% match=EXACT
-SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | single_band] full_ms_per_tok=725.83 cs_ms_per_tok=727.88 speedup=1.00x rows_early_terminated=0.00% col_macs_saved=0.00% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=2775868 vm_rss_kb=2772116 vm_swap_kb=0
-SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | static_16band] full_ms_per_tok=725.83 cs_ms_per_tok=1167.50 speedup=0.62x rows_early_terminated=99.61% col_macs_saved=19.25% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=2775868 vm_rss_kb=2772116 vm_swap_kb=0
-SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | dynamic_16band] full_ms_per_tok=725.83 cs_ms_per_tok=1221.74 speedup=0.59x rows_early_terminated=99.61% col_macs_saved=19.36% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=2775868 vm_rss_kb=2772116 vm_swap_kb=0
+  tok[0] h_norm=404.243 full=(id=100 58.35853 791.48ms)
+    single_band    id=100 58.35853 801.03ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=100 58.35853 602.57ms speedup=1.31x early_term=99.61% macs_saved=26.22% match=EXACT
+    dynamic_16band id=100 58.35853 626.35ms speedup=1.26x early_term=99.61% macs_saved=26.08% match=EXACT
+    subspace_sieve id=100 58.35853 183.36ms speedup=4.32x early_term=96.22% macs_saved=84.20% match=EXACT
+  tok[1] h_norm=461.388 full=(id=100 63.01872 723.49ms)
+    single_band    id=100 63.01872 726.12ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=100 63.01872 601.06ms speedup=1.20x early_term=99.61% macs_saved=25.93% match=EXACT
+    dynamic_16band id=100 63.01872 602.61ms speedup=1.20x early_term=99.61% macs_saved=25.93% match=EXACT
+    subspace_sieve id=100 63.01872 184.67ms speedup=3.92x early_term=96.23% macs_saved=84.20% match=EXACT
+  tok[2] h_norm=474.512 full=(id=100 58.33508 752.60ms)
+    single_band    id=100 58.33508 724.87ms speedup=1.04x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=100 58.33508 641.33ms speedup=1.17x early_term=99.61% macs_saved=21.24% match=EXACT
+    dynamic_16band id=100 58.33508 646.39ms speedup=1.16x early_term=99.61% macs_saved=21.24% match=EXACT
+    subspace_sieve id=100 58.33508 180.58ms speedup=4.17x early_term=96.39% macs_saved=84.34% match=EXACT
+  tok[3] h_norm=391.015 full=(id=100 51.36279 723.37ms)
+    single_band    id=100 51.36279 724.39ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=100 51.36279 651.03ms speedup=1.11x early_term=99.61% macs_saved=20.30% match=EXACT
+    dynamic_16band id=100 51.36279 679.02ms speedup=1.07x early_term=99.61% macs_saved=20.30% match=EXACT
+    subspace_sieve id=100 51.36279 181.14ms speedup=3.99x early_term=96.29% macs_saved=84.26% match=EXACT
+  tok[4] h_norm=406.279 full=(id=45518 43.08815 727.40ms)
+    single_band    id=45518 43.08815 728.46ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=45518 43.08814 663.32ms speedup=1.10x early_term=99.61% macs_saved=18.05% match=EXACT
+    dynamic_16band id=45518 43.08814 726.20ms speedup=1.00x early_term=99.61% macs_saved=18.06% match=EXACT
+    subspace_sieve id=45518 43.08814 182.09ms speedup=3.99x early_term=96.17% macs_saved=84.15% match=EXACT
+  tok[5] h_norm=366.202 full=(id=45518 39.22517 728.94ms)
+    single_band    id=45518 39.22517 729.50ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=45518 39.22517 685.98ms speedup=1.06x early_term=99.61% macs_saved=15.68% match=EXACT
+    dynamic_16band id=45518 39.22517 693.36ms speedup=1.05x early_term=99.61% macs_saved=15.68% match=EXACT
+    subspace_sieve id=45518 39.22517 180.48ms speedup=4.04x early_term=96.44% macs_saved=84.39% match=EXACT
+  tok[6] h_norm=359.139 full=(id=45518 40.74597 726.36ms)
+    single_band    id=45518 40.74597 724.53ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=45518 40.74598 669.36ms speedup=1.09x early_term=99.61% macs_saved=17.04% match=EXACT
+    dynamic_16band id=45518 40.74598 690.44ms speedup=1.05x early_term=99.61% macs_saved=17.05% match=EXACT
+    subspace_sieve id=45518 40.74598 187.25ms speedup=3.88x early_term=95.83% macs_saved=83.86% match=EXACT
+  tok[7] h_norm=353.977 full=(id=1852 46.49320 721.34ms)
+    single_band    id=1852 46.49320 728.34ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=1852 46.49320 643.27ms speedup=1.12x early_term=99.61% macs_saved=20.84% match=EXACT
+    dynamic_16band id=1852 46.49320 649.15ms speedup=1.11x early_term=99.61% macs_saved=20.84% match=EXACT
+    subspace_sieve id=1852 46.49320 180.52ms speedup=4.00x early_term=96.42% macs_saved=84.37% match=EXACT
+SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | single_band] full_ms_per_tok=736.87 cs_ms_per_tok=735.91 speedup=1.00x rows_early_terminated=0.00% col_macs_saved=0.00% exact_top1=8/8 timed_ssd_read_bytes=4866048 vm_hwm_kb=5525696 vm_rss_kb=5525696 vm_swap_kb=0
+SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | static_16band] full_ms_per_tok=736.87 cs_ms_per_tok=644.74 speedup=1.14x rows_early_terminated=99.61% col_macs_saved=20.66% exact_top1=8/8 timed_ssd_read_bytes=4866048 vm_hwm_kb=5525696 vm_rss_kb=5525696 vm_swap_kb=0
+SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | dynamic_16band] full_ms_per_tok=736.87 cs_ms_per_tok=664.19 speedup=1.11x rows_early_terminated=99.61% col_macs_saved=20.65% exact_top1=8/8 timed_ssd_read_bytes=4866048 vm_hwm_kb=5525696 vm_rss_kb=5525696 vm_swap_kb=0
+SUMMARY [Gemma4-31B-LMHead-BF16-262144x5376 | subspace_sieve] full_ms_per_tok=736.87 cs_ms_per_tok=182.51 speedup=4.04x rows_early_terminated=96.25% col_macs_saved=84.22% exact_top1=8/8 timed_ssd_read_bytes=4866048 vm_hwm_kb=5525696 vm_rss_kb=5525696 vm_swap_kb=0
 
-=== BENCH [Gemma4-Assistant-LMHead-BF16-262144x1024] vocab=262144 d=1024 bf16_mb=512.0 threads=4 setup_s=0.45 ===
+=== BENCH [Gemma4-Assistant-LMHead-BF16-262144x1024] vocab=262144 d=1024 bf16_mb=512.0 threads=4 setup_s=2.38 ===
 norm_range=[max=1.0018, p50=1.0000, min=0.9983] seed_rows=1015 perm=/tmp/perm_ast.i32
-  tok[0] h_norm=166.860 full=(id=54848 17.70593 139.91ms)
-    single_band    id=54848 17.70593 142.14ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=54848 17.70593 150.79ms speedup=0.93x early_term=99.60% macs_saved=36.50% match=EXACT
-    dynamic_16band id=54848 17.70593 149.01ms speedup=0.94x early_term=99.60% macs_saved=36.49% match=EXACT
-  tok[1] h_norm=168.434 full=(id=70649 19.06232 138.81ms)
-    single_band    id=70649 19.06232 143.10ms speedup=0.97x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=70649 19.06232 163.40ms speedup=0.85x early_term=99.59% macs_saved=35.77% match=EXACT
-    dynamic_16band id=70649 19.06232 169.22ms speedup=0.82x early_term=99.59% macs_saved=35.68% match=EXACT
-  tok[2] h_norm=165.756 full=(id=70649 19.77655 139.02ms)
-    single_band    id=70649 19.77655 141.89ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=70649 19.77655 155.70ms speedup=0.89x early_term=99.60% macs_saved=35.30% match=EXACT
-    dynamic_16band id=70649 19.77655 156.08ms speedup=0.89x early_term=99.60% macs_saved=35.28% match=EXACT
-  tok[3] h_norm=166.880 full=(id=54848 17.62499 139.14ms)
-    single_band    id=54848 17.62499 143.28ms speedup=0.97x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=54848 17.62499 156.21ms speedup=0.89x early_term=99.59% macs_saved=36.30% match=EXACT
-    dynamic_16band id=54848 17.62499 149.61ms speedup=0.93x early_term=99.59% macs_saved=36.30% match=EXACT
-  tok[4] h_norm=166.542 full=(id=70649 18.62493 138.62ms)
-    single_band    id=70649 18.62493 141.96ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=70649 18.62494 150.55ms speedup=0.92x early_term=99.59% macs_saved=35.92% match=EXACT
-    dynamic_16band id=70649 18.62494 151.17ms speedup=0.92x early_term=99.59% macs_saved=35.93% match=EXACT
-  tok[5] h_norm=169.782 full=(id=3564 20.96248 138.68ms)
-    single_band    id=3564 20.96248 142.68ms speedup=0.97x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=3564 20.96248 175.54ms speedup=0.79x early_term=99.29% macs_saved=12.24% match=EXACT
-    dynamic_16band id=3564 20.96248 181.73ms speedup=0.76x early_term=99.29% macs_saved=13.11% match=EXACT
-  tok[6] h_norm=175.255 full=(id=1191 20.89093 155.26ms)
-    single_band    id=1191 20.89093 157.86ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=1191 20.89093 168.68ms speedup=0.92x early_term=99.61% macs_saved=20.17% match=EXACT
-    dynamic_16band id=1191 20.89093 172.41ms speedup=0.90x early_term=99.61% macs_saved=20.41% match=EXACT
-  tok[7] h_norm=166.016 full=(id=70649 18.83371 139.10ms)
-    single_band    id=70649 18.83371 143.36ms speedup=0.97x early_term=0.00% macs_saved=0.00% match=EXACT
-    static_16band  id=70649 18.83371 149.00ms speedup=0.93x early_term=99.60% macs_saved=37.15% match=EXACT
-    dynamic_16band id=70649 18.83371 149.03ms speedup=0.93x early_term=99.60% macs_saved=37.15% match=EXACT
-SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | single_band] full_ms_per_tok=141.07 cs_ms_per_tok=144.53 speedup=0.98x rows_early_terminated=0.00% col_macs_saved=0.00% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=547464 vm_rss_kb=543732 vm_swap_kb=0
-SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | static_16band] full_ms_per_tok=141.07 cs_ms_per_tok=158.74 speedup=0.89x rows_early_terminated=99.56% col_macs_saved=31.17% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=547464 vm_rss_kb=543732 vm_swap_kb=0
-SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | dynamic_16band] full_ms_per_tok=141.07 cs_ms_per_tok=159.78 speedup=0.88x rows_early_terminated=99.56% col_macs_saved=31.29% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=547464 vm_rss_kb=543732 vm_swap_kb=0
+  tok[0] h_norm=173.004 full=(id=13083 19.94445 138.70ms)
+    single_band    id=13083 19.94445 139.79ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=13083 19.94445 128.67ms speedup=1.08x early_term=99.61% macs_saved=30.65% match=EXACT
+    dynamic_16band id=13083 19.94445 132.02ms speedup=1.05x early_term=99.61% macs_saved=30.88% match=EXACT
+    subspace_sieve id=13083 19.94445 48.38ms speedup=2.87x early_term=96.35% macs_saved=84.31% match=EXACT
+  tok[1] h_norm=173.424 full=(id=13083 20.58450 138.80ms)
+    single_band    id=13083 20.58450 139.49ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=13083 20.58450 128.78ms speedup=1.08x early_term=99.61% macs_saved=29.49% match=EXACT
+    dynamic_16band id=13083 20.58450 132.51ms speedup=1.05x early_term=99.61% macs_saved=29.77% match=EXACT
+    subspace_sieve id=13083 20.58450 47.79ms speedup=2.90x early_term=96.36% macs_saved=84.31% match=EXACT
+  tok[2] h_norm=175.760 full=(id=94298 20.98648 138.65ms)
+    single_band    id=94298 20.98648 141.22ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=94298 20.98648 134.43ms speedup=1.03x early_term=99.60% macs_saved=26.81% match=EXACT
+    dynamic_16band id=94298 20.98648 135.33ms speedup=1.02x early_term=99.60% macs_saved=26.81% match=EXACT
+    subspace_sieve id=94298 20.98648 47.91ms speedup=2.89x early_term=96.31% macs_saved=84.27% match=EXACT
+  tok[3] h_norm=172.740 full=(id=13083 21.36495 138.39ms)
+    single_band    id=13083 21.36495 140.00ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=13083 21.36495 128.63ms speedup=1.08x early_term=99.60% macs_saved=29.56% match=EXACT
+    dynamic_16band id=13083 21.36495 128.65ms speedup=1.08x early_term=99.60% macs_saved=29.56% match=EXACT
+    subspace_sieve id=13083 21.36495 47.92ms speedup=2.89x early_term=96.42% macs_saved=84.37% match=EXACT
+  tok[4] h_norm=174.866 full=(id=221025 18.39405 140.07ms)
+    single_band    id=221025 18.39405 141.61ms speedup=0.99x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=221025 18.39405 133.72ms speedup=1.05x early_term=99.57% macs_saved=23.10% match=EXACT
+    dynamic_16band id=221025 18.39405 138.54ms speedup=1.01x early_term=99.57% macs_saved=23.12% match=EXACT
+    subspace_sieve id=221025 18.39405 47.85ms speedup=2.93x early_term=96.45% macs_saved=84.39% match=EXACT
+  tok[5] h_norm=173.545 full=(id=13083 21.13820 139.28ms)
+    single_band    id=13083 21.13820 139.67ms speedup=1.00x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=13083 21.13820 128.79ms speedup=1.08x early_term=99.59% macs_saved=30.30% match=EXACT
+    dynamic_16band id=13083 21.13820 135.03ms speedup=1.03x early_term=99.59% macs_saved=30.29% match=EXACT
+    subspace_sieve id=13083 21.13820 49.77ms speedup=2.80x early_term=96.44% macs_saved=84.38% match=EXACT
+  tok[6] h_norm=172.315 full=(id=77769 19.40994 138.69ms)
+    single_band    id=77769 19.40994 142.61ms speedup=0.97x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=77769 19.40994 133.39ms speedup=1.04x early_term=99.58% macs_saved=22.91% match=EXACT
+    dynamic_16band id=77769 19.40994 138.56ms speedup=1.00x early_term=99.58% macs_saved=23.10% match=EXACT
+    subspace_sieve id=77769 19.40994 49.71ms speedup=2.79x early_term=95.45% macs_saved=83.51% match=EXACT
+  tok[7] h_norm=173.463 full=(id=13083 22.02703 138.72ms)
+    single_band    id=13083 22.02703 141.43ms speedup=0.98x early_term=0.00% macs_saved=0.00% match=EXACT
+    static_16band  id=13083 22.02703 137.12ms speedup=1.01x early_term=99.58% macs_saved=25.94% match=EXACT
+    dynamic_16band id=13083 22.02703 138.01ms speedup=1.01x early_term=99.59% macs_saved=26.00% match=EXACT
+    subspace_sieve id=13083 22.02703 48.15ms speedup=2.88x early_term=96.26% macs_saved=84.23% match=EXACT
+SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | single_band] full_ms_per_tok=138.91 cs_ms_per_tok=140.73 speedup=0.99x rows_early_terminated=0.00% col_macs_saved=0.00% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=1071668 vm_rss_kb=1069104 vm_swap_kb=0
+SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | static_16band] full_ms_per_tok=138.91 cs_ms_per_tok=131.69 speedup=1.05x rows_early_terminated=99.59% col_macs_saved=27.34% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=1071668 vm_rss_kb=1069104 vm_swap_kb=0
+SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | dynamic_16band] full_ms_per_tok=138.91 cs_ms_per_tok=134.83 speedup=1.03x rows_early_terminated=99.59% col_macs_saved=27.44% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=1071668 vm_rss_kb=1069104 vm_swap_kb=0
+SUMMARY [Gemma4-Assistant-LMHead-BF16-262144x1024 | subspace_sieve] full_ms_per_tok=138.91 cs_ms_per_tok=48.44 speedup=2.87x rows_early_terminated=96.25% col_macs_saved=84.22% exact_top1=8/8 timed_ssd_read_bytes=0 vm_hwm_kb=1071668 vm_rss_kb=1069104 vm_swap_kb=0

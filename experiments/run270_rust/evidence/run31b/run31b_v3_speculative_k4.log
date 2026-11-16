@@ -1,130 +1,265 @@
-=== START S0_BASELINE (2026-11-15T18:38:28-05:00) ===
-[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
-[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352
-[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=true native_tbi_hw=true
+=== START S0_BASELINE (2026-11-15T20:44:35-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
 [run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=333.81 shared_kv=(L58,L59) step_pos=false
-[run31b] loaded in 3.54s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6401580), Some(6374072))
+[run31b] loaded in 2.79s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6565816), Some(6547380))
 [run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
-[run31b] layer 00/60 done in 1.52s (pinned=true)
-[run31b] layer 05/60 done in 1.58s (pinned=true)
-[run31b] layer 14/60 done in 0.72s (pinned=true)
-[run31b] layer 29/60 done in 1.31s (pinned=true)
-[run31b] layer 44/60 done in 1.35s (pinned=true)
-[run31b] layer 59/60 done in 2.12s (pinned=true)
-[run31b] prefill done in 71.53s ssd_read_mb=0.0 vm=(Some(6413488), Some(6289924))
-PREFILL_TOP5 [818:"The"(25.296), 79629:"Depending"(22.306), 22515:"Based"(21.019), 2859:"If"(20.680), 1018:"**"(19.648)]
-[run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
+[run31b] layer 00/60 done in 0.84s (pinned=true)
+[run31b] layer 05/60 done in 0.75s (pinned=true)
+[run31b] layer 14/60 done in 0.43s (pinned=true)
+[run31b] layer 29/60 done in 0.82s (pinned=true)
+[run31b] layer 44/60 done in 0.74s (pinned=true)
+[run31b] layer 59/60 done in 1.05s (pinned=true)
+[run31b] prefill done in 40.78s ssd_read_mb=0.0 vm=(Some(6565816), Some(6476760))
+PREFILL_TOP5 [818:"The"(25.271), 79629:"Depending"(22.419), 22515:"Based"(21.145), 2859:"If"(20.746), 83033:"Assuming"(19.819)]
 [STEP 0] id=818 text="The"
-[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 22.75s vm=(Some(6413488), Some(6248140))
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 14.17s vm=(Some(6565816), Some(6433424))
 [STEP 1] id=3890 text=" answer"
 [STEP 2] id=563 text=" is"
 [STEP 3] id=5213 text=" **"
-[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 21.93s vm=(Some(6413488), Some(6245128))
+[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 14.54s vm=(Some(6565816), Some(6457612))
 [STEP 4] id=236812 text="4"
-[run31b] spec batch=3 drafted=2 accepted=0 next_k=3 ewma=0.62 in 19.73s vm=(Some(6413488), Some(6263984))
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.62 in 14.19s vm=(Some(6565816), Some(6425880))
 [STEP 5] id=84750 text="**."
-[run31b] spec batch=4 drafted=1 accepted=0 next_k=3 ewma=0.49 in 15.87s vm=(Some(6413488), Some(6205644))
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.49 in 15.21s vm=(Some(6565816), Some(6442936))
 [STEP 6] id=106 text="<turn|>"
-SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=333.81 step_pos=false drafted=9 accepted=2 batches=4 fallback_k1=0 accept_rate=0.222 generated=7 s_per_tok=14.137
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=333.81 step_pos=false drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=10.454
 GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
 GEN31B text="The answer is **4**.<turn|>"
-MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=71.53 decode_s=85.00 vm_hwm_kb=Some(6413488) vm_rss_kb=Some(6205792)
-=== END S0_BASELINE rc=0 max_vmhwm_kb=6413488 max_vmrss_kb=6399952 max_vmswap_kb=0 (2026-11-15T18:41:12-05:00) ===
-=== START S1 (2026-11-15T18:41:12-05:00) ===
-[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
-[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352
-[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=true native_tbi_hw=true
+KV31B mode=Fp32 raw_bytes=66682880 compressed_bytes=66682880 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=40.78 decode_s=62.72 vm_hwm_kb=Some(6565816) vm_rss_kb=Some(6443044)
+=== END S0_BASELINE rc=0 max_vmhwm_kb=6565816 max_vmrss_kb=6548688 max_vmswap_kb=0 (2026-11-15T20:46:24-05:00) ===
+=== START S1_CS_SKIP_1E3 (2026-11-15T20:46:24-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
 [run31b] enabled Cauchy-Schwarz down_proj tile skip: thresh=1.00e-3 mats=60 norms_bytes=3386880
 [run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=333.81 shared_kv=(L58,L59) step_pos=false
-[run31b] loaded in 33.38s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6341724), Some(6341724))
+[run31b] loaded in 31.47s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6559536), Some(6544536))
 [run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
-[run31b] layer 00/60 done in 1.66s (pinned=true)
-[run31b] layer 05/60 done in 1.41s (pinned=true)
-[run31b] layer 14/60 done in 0.77s (pinned=true)
-[run31b] layer 29/60 done in 1.46s (pinned=true)
-[run31b] layer 44/60 done in 1.21s (pinned=true)
-[run31b] layer 59/60 done in 1.78s (pinned=true)
-[run31b] prefill done in 71.62s ssd_read_mb=0.0 vm=(Some(6369040), Some(6284044))
-PREFILL_TOP5 [818:"The"(25.296), 79629:"Depending"(22.306), 22515:"Based"(21.019), 2859:"If"(20.680), 1018:"**"(19.648)]
-[run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
+[run31b] layer 00/60 done in 0.88s (pinned=true)
+[run31b] layer 05/60 done in 0.97s (pinned=true)
+[run31b] layer 14/60 done in 0.41s (pinned=true)
+[run31b] layer 29/60 done in 0.73s (pinned=true)
+[run31b] layer 44/60 done in 0.73s (pinned=true)
+[run31b] layer 59/60 done in 0.99s (pinned=true)
+[run31b] prefill done in 40.97s ssd_read_mb=0.0 vm=(Some(6559536), Some(6479968))
+PREFILL_TOP5 [818:"The"(25.271), 79629:"Depending"(22.419), 22515:"Based"(21.145), 2859:"If"(20.746), 83033:"Assuming"(19.819)]
 [STEP 0] id=818 text="The"
-[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 22.62s vm=(Some(6369040), Some(6280268))
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 15.75s vm=(Some(6566968), Some(6414408))
 [STEP 1] id=3890 text=" answer"
 [STEP 2] id=563 text=" is"
 [STEP 3] id=5213 text=" **"
-[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 22.42s vm=(Some(6369040), Some(6227848))
+[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 15.06s vm=(Some(6566968), Some(6429220))
 [STEP 4] id=236812 text="4"
-[run31b] spec batch=3 drafted=2 accepted=0 next_k=3 ewma=0.62 in 20.94s vm=(Some(6369040), Some(6250752))
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.62 in 15.16s vm=(Some(6566968), Some(6412728))
 [STEP 5] id=84750 text="**."
-[run31b] spec batch=4 drafted=1 accepted=0 next_k=3 ewma=0.49 in 17.05s vm=(Some(6369040), Some(6238956))
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.49 in 16.08s vm=(Some(6566968), Some(6450472))
 [STEP 6] id=106 text="<turn|>"
-SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=333.81 step_pos=false drafted=9 accepted=2 batches=4 fallback_k1=0 accept_rate=0.222 generated=7 s_per_tok=14.581
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=333.81 step_pos=false drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=11.104
 GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
 GEN31B text="The answer is **4**.<turn|>"
-MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=71.62 decode_s=87.68 vm_hwm_kb=Some(6369040) vm_rss_kb=Some(6239064)
-=== END S1 rc=0 max_vmhwm_kb=6369040 max_vmrss_kb=6347576 max_vmswap_kb=0 (2026-11-15T18:44:28-05:00) ===
-=== START S2 (2026-11-15T18:44:28-05:00) ===
-[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
-[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352
-[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=true native_tbi_hw=true
-[run31b] loaded in 3.24s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6329312), Some(6323992))
-[run31b] prompt 25 tokens ids=[2, 105, 2364, 107, 6974, 496, 17856, 1292, 531, 2426, 768, 496, 1548, 563, 8355, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
-[run31b] layer 00/60 done in 1.62s (pinned=true)
-[run31b] layer 05/60 done in 1.73s (pinned=true)
-[run31b] layer 14/60 done in 0.88s (pinned=true)
-[run31b] layer 29/60 done in 1.52s (pinned=true)
-[run31b] layer 44/60 done in 1.34s (pinned=true)
-[run31b] layer 59/60 done in 2.29s (pinned=true)
-[run31b] prefill done in 81.41s ssd_read_mb=0.0 vm=(Some(6387356), Some(6290488))
-PREFILL_TOP5 [8291:"Here"(21.084), 2021:"To"(19.620), 5715:" Here"(18.601), 2282:" To"(17.064), 222759:"เพ\u{e37}\u{e48}อให\u{e49}"(15.483)]
+KV31B mode=Fp32 raw_bytes=66682880 compressed_bytes=66682880 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=40.97 decode_s=66.63 vm_hwm_kb=Some(6566968) vm_rss_kb=Some(6450496)
+=== END S1_CS_SKIP_1E3 rc=0 max_vmhwm_kb=6566968 max_vmrss_kb=6555172 max_vmswap_kb=0 (2026-11-15T20:48:47-05:00) ===
+=== START S2_SEED_ONLY_0MB (2026-11-15T20:48:47-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
+[run31b] loaded in 2.86s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6412268), Some(6412148))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.89s (pinned=true)
+[run31b] layer 05/60 done in 0.82s (pinned=true)
+[run31b] layer 14/60 done in 0.43s (pinned=true)
+[run31b] layer 29/60 done in 0.74s (pinned=true)
+[run31b] layer 44/60 done in 0.66s (pinned=true)
+[run31b] layer 59/60 done in 0.98s (pinned=true)
+[run31b] prefill done in 39.17s ssd_read_mb=0.0 vm=(Some(6566764), Some(6486456))
+PREFILL_TOP5 [818:"The"(25.271), 79629:"Depending"(22.419), 22515:"Based"(21.145), 2859:"If"(20.746), 83033:"Assuming"(19.819)]
 [run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
-[STEP 0] id=8291 text="Here"
-[run31b] spec fallback k=1 step=0 in 10.97s k_window=3 vm=(Some(6387356), Some(6254800))
-[STEP 1] id=563 text=" is"
-[run31b] spec fallback k=1 step=1 in 10.75s k_window=3 vm=(Some(6387356), Some(6263956))
-[STEP 2] id=496 text=" a"
-[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 20.09s vm=(Some(6387356), Some(6223396))
-[STEP 3] id=17856 text=" Python"
-[STEP 4] id=1292 text=" function"
-[STEP 5] id=531 text=" to"
-[STEP 6] id=2426 text=" check"
-[run31b] spec batch=2 drafted=3 accepted=3 next_k=3 ewma=0.84 in 19.56s vm=(Some(6387356), Some(6272196))
-[STEP 7] id=768 text=" if"
-SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=0.00 step_pos=false drafted=6 accepted=3 batches=2 fallback_k1=2 accept_rate=0.500 generated=8 s_per_tok=8.802
-GEN31B ids=[8291, 563, 496, 17856, 1292, 531, 2426, 768]
-GEN31B text="Here is a Python function to check if"
-MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=81.41 decode_s=61.79 vm_hwm_kb=Some(6387356) vm_rss_kb=Some(6263636)
-=== END S2 rc=0 max_vmhwm_kb=6387356 max_vmrss_kb=6370832 max_vmswap_kb=0 (2026-11-15T18:46:58-05:00) ===
-=== START S3 (2026-11-15T18:46:58-05:00) ===
-[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0)
-[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352
-[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=true native_tbi_hw=true
+[STEP 0] id=818 text="The"
+[run31b] spec fallback k=1 step=0 in 6.86s k_window=3 vm=(Some(6566764), Some(6448764))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec fallback k=1 step=1 in 6.69s k_window=3 vm=(Some(6566764), Some(6420984))
+[STEP 2] id=563 text=" is"
+[run31b] spec fallback k=1 step=2 in 6.41s k_window=3 vm=(Some(6566764), Some(6436020))
+[STEP 3] id=5213 text=" **"
+[run31b] spec fallback k=1 step=3 in 6.21s k_window=3 vm=(Some(6566764), Some(6418060))
+[STEP 4] id=236812 text="4"
+[run31b] spec fallback k=1 step=4 in 6.49s k_window=3 vm=(Some(6566764), Some(6390852))
+[STEP 5] id=84750 text="**."
+[run31b] spec fallback k=1 step=5 in 6.53s k_window=3 vm=(Some(6566764), Some(6429348))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=0.00 step_pos=false drafted=0 accepted=0 batches=0 fallback_k1=6 accept_rate=0.000 generated=7 s_per_tok=6.571
+GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
+GEN31B text="The answer is **4**.<turn|>"
+KV31B mode=Fp32 raw_bytes=48660480 compressed_bytes=48660480 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=39.17 decode_s=39.59 vm_hwm_kb=Some(6566764) vm_rss_kb=Some(6429412)
+=== END S2_SEED_ONLY_0MB rc=0 max_vmhwm_kb=6566764 max_vmrss_kb=6552580 max_vmswap_kb=0 (2026-11-15T20:50:12-05:00) ===
+=== START S3_HYBRID_SEED_PLUS_AST (2026-11-15T20:50:12-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
 [run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=333.81 shared_kv=(L58,L59) step_pos=false
-[run31b] loaded in 4.03s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6387184), Some(6371540))
+[run31b] loaded in 2.91s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6588688), Some(6561164))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.80s (pinned=true)
+[run31b] layer 05/60 done in 0.83s (pinned=true)
+[run31b] layer 14/60 done in 0.41s (pinned=true)
+[run31b] layer 29/60 done in 0.84s (pinned=true)
+[run31b] layer 44/60 done in 0.68s (pinned=true)
+[run31b] layer 59/60 done in 1.00s (pinned=true)
+[run31b] prefill done in 39.93s ssd_read_mb=0.0 vm=(Some(6588688), Some(6503864))
+PREFILL_TOP5 [818:"The"(25.271), 79629:"Depending"(22.419), 22515:"Based"(21.145), 2859:"If"(20.746), 83033:"Assuming"(19.819)]
+[run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 13.61s vm=(Some(6588688), Some(6420140))
+[STEP 1] id=3890 text=" answer"
+[STEP 2] id=563 text=" is"
+[STEP 3] id=5213 text=" **"
+[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 14.13s vm=(Some(6588688), Some(6466880))
+[STEP 4] id=236812 text="4"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.62 in 14.35s vm=(Some(6588688), Some(6408828))
+[STEP 5] id=84750 text="**."
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.49 in 15.22s vm=(Some(6588688), Some(6437644))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=333.81 step_pos=false drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=10.426
+GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
+GEN31B text="The answer is **4**.<turn|>"
+KV31B mode=Fp32 raw_bytes=66682880 compressed_bytes=66682880 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=39.93 decode_s=62.72 vm_hwm_kb=Some(6588688) vm_rss_kb=Some(6437792)
+=== END S3_HYBRID_SEED_PLUS_AST rc=0 max_vmhwm_kb=6588688 max_vmrss_kb=6555576 max_vmswap_kb=0 (2026-11-15T20:52:01-05:00) ===
+=== START S4_SEED_KV_FP8 (2026-11-15T20:52:01-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
+[run31b] loaded in 2.96s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6412444), Some(6412444))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.91s (pinned=true)
+[run31b] layer 05/60 done in 0.80s (pinned=true)
+[run31b] layer 14/60 done in 0.42s (pinned=true)
+[run31b] layer 29/60 done in 0.76s (pinned=true)
+[run31b] layer 44/60 done in 0.66s (pinned=true)
+[run31b] layer 59/60 done in 0.92s (pinned=true)
+[run31b] prefill done in 40.31s ssd_read_mb=0.0 vm=(Some(6563800), Some(6463708))
+PREFILL_TOP5 [818:"The"(24.577), 79629:"Depending"(22.171), 22515:"Based"(19.755), 1018:"**"(19.730), 83033:"Assuming"(19.051)]
+[run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
+[STEP 0] id=818 text="The"
+[run31b] spec fallback k=1 step=0 in 6.72s k_window=3 vm=(Some(6563800), Some(6397360))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec fallback k=1 step=1 in 6.65s k_window=3 vm=(Some(6563800), Some(6401764))
+[STEP 2] id=563 text=" is"
+[run31b] spec fallback k=1 step=2 in 6.72s k_window=3 vm=(Some(6563800), Some(6414704))
+[STEP 3] id=5213 text=" **"
+[run31b] spec fallback k=1 step=3 in 6.67s k_window=3 vm=(Some(6563800), Some(6387888))
+[STEP 4] id=236812 text="4"
+[run31b] spec fallback k=1 step=4 in 6.19s k_window=3 vm=(Some(6563800), Some(6426936))
+[STEP 5] id=84750 text="**."
+[run31b] spec fallback k=1 step=5 in 6.51s k_window=3 vm=(Some(6563800), Some(6380764))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=0.00 step_pos=false drafted=0 accepted=0 batches=0 fallback_k1=6 accept_rate=0.000 generated=7 s_per_tok=6.616
+GEN31B ids=[818, 3890, 563, 5213, 236812, 84750, 106]
+GEN31B text="The answer is **4**.<turn|>"
+KV31B mode=Fp8E4M3 raw_bytes=48660480 compressed_bytes=12346560 shrink=3.94x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=40.31 decode_s=39.87 vm_hwm_kb=Some(6563800) vm_rss_kb=Some(6380824)
+=== END S4_SEED_KV_FP8 rc=0 max_vmhwm_kb=6563800 max_vmrss_kb=6533776 max_vmswap_kb=0 (2026-11-15T20:53:29-05:00) ===
+=== START S2_P4_SEED_ONLY (2026-11-15T20:53:29-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
+[run31b] loaded in 1.80s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6431808), Some(6431808))
 [run31b] prompt 25 tokens ids=[2, 105, 2364, 107, 6974, 496, 17856, 1292, 531, 2426, 768, 496, 1548, 563, 8355, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
-[run31b] layer 00/60 done in 1.80s (pinned=true)
-[run31b] layer 05/60 done in 1.61s (pinned=true)
-[run31b] layer 14/60 done in 0.86s (pinned=true)
-[run31b] layer 29/60 done in 1.53s (pinned=true)
-[run31b] layer 44/60 done in 1.32s (pinned=true)
-[run31b] layer 59/60 done in 1.94s (pinned=true)
-[run31b] prefill done in 82.62s ssd_read_mb=0.0 vm=(Some(6387184), Some(6281660))
-PREFILL_TOP5 [8291:"Here"(21.084), 2021:"To"(19.620), 5715:" Here"(18.601), 2282:" To"(17.064), 222759:"เพ\u{e37}\u{e48}อให\u{e49}"(15.483)]
+[run31b] layer 00/60 done in 0.98s (pinned=true)
+[run31b] layer 05/60 done in 0.93s (pinned=true)
+[run31b] layer 14/60 done in 0.48s (pinned=true)
+[run31b] layer 29/60 done in 0.83s (pinned=true)
+[run31b] layer 44/60 done in 0.77s (pinned=true)
+[run31b] layer 59/60 done in 1.22s (pinned=true)
+[run31b] prefill done in 44.68s ssd_read_mb=0.0 vm=(Some(6593608), Some(6500832))
+PREFILL_TOP5 [8291:"Here"(20.946), 2021:"To"(19.596), 5715:" Here"(18.309), 2282:" To"(17.052), 222759:"เพ\u{e37}\u{e48}อให\u{e49}"(15.591)]
+[run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
+[STEP 0] id=8291 text="Here"
+[run31b] spec fallback k=1 step=0 in 5.45s k_window=3 vm=(Some(6593608), Some(6441828))
+[STEP 1] id=563 text=" is"
+[run31b] spec fallback k=1 step=1 in 5.96s k_window=3 vm=(Some(6593608), Some(6424624))
+[STEP 2] id=496 text=" a"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 9.71s vm=(Some(6593608), Some(6442772))
+[STEP 3] id=1852 text=" own"
+[run31b] spec fallback k=1 step=3 in 5.95s k_window=3 vm=(Some(6593608), Some(6441980))
+[STEP 4] id=236772 text="-"
+[run31b] spec fallback k=1 step=4 in 5.85s k_window=3 vm=(Some(6593608), Some(6399436))
+[STEP 5] id=715 text="//"
+[run31b] spec fallback k=1 step=5 in 5.71s k_window=3 vm=(Some(6593608), Some(6423280))
+[STEP 6] id=236751 text="s"
+[run31b] spec fallback k=1 step=6 in 5.94s k_window=3 vm=(Some(6593608), Some(6406232))
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 10.11s vm=(Some(6593608), Some(6406168))
+[STEP 8] id=1292 text=" function"
+[run31b] spec fallback k=1 step=8 in 6.19s k_window=3 vm=(Some(6593608), Some(6419124))
+[STEP 9] id=531 text=" to"
+[STEP 10] id=2426 text=" check"
+[STEP 11] id=768 text=" if"
+[run31b] spec batch=3 drafted=3 accepted=2 next_k=3 ewma=0.65 in 10.32s vm=(Some(6593608), Some(6418176))
+[STEP 12] id=506 text=" the"
+[run31b] spec batch=4 drafted=2 accepted=0 next_k=3 ewma=0.52 in 8.80s vm=(Some(6593608), Some(6398440))
+[STEP 13] id=1548 text=" number"
+[STEP 14] id=529 text=" of"
+[run31b] spec batch=5 drafted=1 accepted=1 next_k=3 ewma=0.61 in 7.74s vm=(Some(6593608), Some(6404556))
+[STEP 15] id=8355 text=" prime"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=0.00 step_pos=false drafted=12 accepted=3 batches=5 fallback_k1=7 accept_rate=0.250 generated=16 s_per_tok=5.868
+GEN31B ids=[8291, 563, 496, 1852, 236772, 715, 236751, 496, 1292, 531, 2426, 768, 506, 1548, 529, 8355]
+GEN31B text="Here is a own-//s a function to check if the number of prime"
+KV31B mode=Fp32 raw_bytes=88309760 compressed_bytes=88309760 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=44.68 decode_s=88.19 vm_hwm_kb=Some(6593608) vm_rss_kb=Some(6404620)
+=== END S2_P4_SEED_ONLY rc=0 max_vmhwm_kb=6593608 max_vmrss_kb=6571016 max_vmswap_kb=0 (2026-11-15T20:55:46-05:00) ===
+=== START S3_P4_HYBRID_SEED_PLUS_AST (2026-11-15T20:57:28-05:00) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=421 body_bytes=5809667904 norm_bytes=5326064 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v3_c8d.c8d: entries=63 norms=1 payload_bytes=91647168 cold_va=false native_tbi_hw=true
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=333.81 shared_kv=(L58,L59) step_pos=false
+[run31b] loaded in 2.85s pinned_layers=60/60 pinned_bytes=5814993968 embed_bytes=539492352 vm=(Some(6535744), Some(6535744))
+[run31b] prompt 25 tokens ids=[2, 105, 2364, 107, 6974, 496, 17856, 1292, 531, 2426, 768, 496, 1548, 563, 8355, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.93s (pinned=true)
+[run31b] layer 05/60 done in 0.97s (pinned=true)
+[run31b] layer 14/60 done in 0.49s (pinned=true)
+[run31b] layer 29/60 done in 0.87s (pinned=true)
+[run31b] layer 44/60 done in 0.87s (pinned=true)
+[run31b] layer 59/60 done in 1.13s (pinned=true)
+[run31b] prefill done in 46.72s ssd_read_mb=0.0 vm=(Some(6558940), Some(6461040))
+PREFILL_TOP5 [8291:"Here"(20.946), 2021:"To"(19.596), 5715:" Here"(18.309), 2282:" To"(17.052), 222759:"เพ\u{e37}\u{e48}อให\u{e49}"(15.591)]
 [run31b] loaded CNGM spec seed /mnt/SHE-VAULT/gemma4_31b_math_seed.cngm: transitions=200000
 [STEP 0] id=8291 text="Here"
 [STEP 1] id=563 text=" is"
-[run31b] spec batch=1 drafted=3 accepted=1 next_k=3 ewma=0.87 in 21.38s vm=(Some(6387184), Some(6295740))
+[run31b] spec batch=1 drafted=3 accepted=1 next_k=3 ewma=0.87 in 13.94s vm=(Some(6560560), Some(6460652))
 [STEP 2] id=496 text=" a"
-[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.69 in 23.01s vm=(Some(6387184), Some(6253540))
-[STEP 3] id=17856 text=" Python"
-[STEP 4] id=1292 text=" function"
-[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.62 in 22.15s vm=(Some(6387184), Some(6271244))
-[STEP 5] id=531 text=" to"
-[STEP 6] id=2426 text=" check"
-[run31b] spec batch=4 drafted=1 accepted=1 next_k=3 ewma=0.70 in 16.95s vm=(Some(6387184), Some(6257652))
-[STEP 7] id=768 text=" if"
-SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=333.81 step_pos=false drafted=10 accepted=3 batches=4 fallback_k1=0 accept_rate=0.300 generated=8 s_per_tok=12.682
-GEN31B ids=[8291, 563, 496, 17856, 1292, 531, 2426, 768]
-GEN31B text="Here is a Python function to check if"
-MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=82.62 decode_s=88.94 vm_hwm_kb=Some(6387184) vm_rss_kb=Some(6257688)
-=== END S3 rc=0 max_vmhwm_kb=6387184 max_vmrss_kb=6364192 max_vmswap_kb=0 (2026-11-15T18:49:57-05:00) ===
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.69 in 13.27s vm=(Some(6560560), Some(6442684))
+[STEP 3] id=1852 text=" own"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.55 in 14.69s vm=(Some(6560560), Some(6435888))
+[STEP 4] id=236772 text="-"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=2 ewma=0.44 in 14.30s vm=(Some(6560560), Some(6421528))
+[STEP 5] id=715 text="//"
+[run31b] spec batch=5 drafted=2 accepted=0 next_k=1 ewma=0.35 in 13.73s vm=(Some(6560560), Some(6407348))
+[STEP 6] id=236751 text="s"
+[run31b] spec batch=6 drafted=1 accepted=0 next_k=1 ewma=0.28 in 12.92s vm=(Some(6560560), Some(6399248))
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.23 in 12.09s vm=(Some(6560560), Some(6415656))
+[STEP 8] id=1292 text=" function"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.18 in 12.54s vm=(Some(6560560), Some(6402376))
+[STEP 9] id=531 text=" to"
+[STEP 10] id=2426 text=" check"
+[run31b] spec batch=9 drafted=1 accepted=1 next_k=1 ewma=0.35 in 12.43s vm=(Some(6560560), Some(6395512))
+[STEP 11] id=768 text=" if"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.28 in 11.76s vm=(Some(6560560), Some(6422784))
+[STEP 12] id=506 text=" the"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.22 in 10.71s vm=(Some(6560560), Some(6426796))
+[STEP 13] id=1548 text=" number"
+[STEP 14] id=529 text=" of"
+[run31b] spec batch=12 drafted=1 accepted=1 next_k=1 ewma=0.38 in 10.82s vm=(Some(6560560), Some(6406396))
+[STEP 15] id=8355 text=" prime"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=200000 assistant_mb=333.81 step_pos=false drafted=21 accepted=3 batches=12 fallback_k1=0 accept_rate=0.143 generated=16 s_per_tok=10.638
+GEN31B ids=[8291, 563, 496, 1852, 236772, 715, 236751, 496, 1292, 531, 2426, 768, 506, 1548, 529, 8355]
+GEN31B text="Here is a own-//s a function to check if the number of prime"
+KV31B mode=Fp32 raw_bytes=104529920 compressed_bytes=104529920 shrink=1.00x
+MEM31B pinned_bytes=5814993968 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 prefill_s=46.72 decode_s=159.74 vm_hwm_kb=Some(6560560) vm_rss_kb=Some(6406432)
+=== END S3_P4 rc=0 max_vmhwm_kb=6560560 max_vmrss_kb=6547132 max_vmswap_kb=0 (2026-11-15T21:01:03-05:00) ===

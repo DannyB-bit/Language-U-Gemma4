@@ -23,6 +23,30 @@ pub const T16C_MAGIC: &[u8; 4] = b"T16C";
 pub const T16C_VERSION: u32 = 1;
 pub const ARCH_FLAG_GEMMA4: u32 = 1 << 0;
 pub const ARCH_FLAG_TIED_HEAD: u32 = 1 << 1;
+pub const T16C_GAUSS_BIT: u8 = 0x80;
+
+/// Reconstruct additive bit-plane scaling factor (`1<<p` uniform, or non-uniform Gaussian weights when `T16C_GAUSS_BIT` is set).
+#[inline]
+pub fn plane_weight(n_bits_raw: u8, p: usize) -> f32 {
+    let gauss = (n_bits_raw & T16C_GAUSS_BIT) != 0;
+    let eff = n_bits_raw & 0x7F;
+    if gauss && eff == 2 {
+        match p {
+            0 => 1.087,
+            1 => 2.087,
+            _ => (1u32 << p) as f32,
+        }
+    } else if gauss && eff == 3 {
+        match p {
+            0 => 1.000,
+            1 => 2.080,
+            2 => 4.350,
+            _ => (1u32 << p) as f32,
+        }
+    } else {
+        (1u32 << p) as f32
+    }
+}
 
 #[repr(C, align(64))]
 #[derive(Clone, Copy)]
@@ -188,14 +212,15 @@ const TERN5_LUT: [[i8; 5]; 243] = build_tern5_lut();
 
 /// Packed byte size of a single `16 x block_size` tile-block.
 pub fn tile16_blk_bytes(block_size: usize, n_bits: u8, is_asym: bool) -> usize {
-    if n_bits == 5 {
+    let eff_bits = n_bits & 0x7F;
+    if eff_bits == 5 {
         32 + block_size.div_ceil(5) * 16
-    } else if n_bits == 8 {
+    } else if eff_bits == 8 {
         32 + block_size * 16
     } else {
         let hdr_bytes = if is_asym { 64 } else { 32 };
         let plane_bytes = (block_size / 8) * 16;
-        hdr_bytes + (n_bits as usize) * plane_bytes
+        hdr_bytes + (eff_bits as usize) * plane_bytes
     }
 }
 
@@ -206,10 +231,15 @@ pub fn expected_tile16_bytes(d_out: usize, d_in: usize, block_size: usize, n_bit
     if !(block_size == 64 || block_size == 128 || block_size == 256) || d_in % block_size != 0 {
         return Err(format!("invalid tile16 block_size={block_size} for d_in={d_in}"));
     }
-    if n_bits == 0 || (n_bits > 5 && n_bits != 8) {
+    let gauss = (n_bits & T16C_GAUSS_BIT) != 0;
+    let eff_bits = n_bits & 0x7F;
+    if eff_bits == 0 || (eff_bits > 5 && eff_bits != 8) {
         return Err(format!("invalid tile16 n_bits={n_bits}"));
     }
-    if (n_bits == 5 || n_bits == 8) && is_asym {
+    if gauss && eff_bits != 2 && eff_bits != 3 {
+        return Err(format!("invalid tile16 T16C_GAUSS_BIT with eff_bits={eff_bits}"));
+    }
+    if (eff_bits == 5 || eff_bits == 8) && is_asym {
         return Err(format!("invalid tile16 n_bits={n_bits} with is_asym=true"));
     }
     let n_tiles = d_out.div_ceil(16);
@@ -327,12 +357,13 @@ impl T16CMat {
         let plane_bytes = bytes_per_row_blk * 16;
         let tblk_bytes = tile16_blk_bytes(block_size, n_bits, is_asym);
         let quintets = block_size.div_ceil(5);
-        let max_level = if n_bits == 5 {
+        let eff_bits = n_bits & 0x7F;
+        let max_level = if eff_bits == 5 {
             2
-        } else if n_bits == 8 {
+        } else if eff_bits == 8 {
             255
         } else {
-            (1u8 << n_bits) - 1
+            (1u8 << eff_bits) - 1
         };
 
         for t in 0..n_tiles {
@@ -358,7 +389,7 @@ impl T16CMat {
                             return Err(format!("idx value {v} exceeds max_level {max_level}"));
                         }
                     }
-                    if n_bits == 5 {
+                    if eff_bits == 5 {
                         for g in 0..quintets {
                             let base = g * 5;
                             let mut code = 0u16;
@@ -371,12 +402,12 @@ impl T16CMat {
                             }
                             dst[off + 32 + g * 16 + r] = code as u8;
                         }
-                    } else if n_bits == 8 {
+                    } else if eff_bits == 8 {
                         for c in 0..block_size {
                             dst[off + 32 + c * 16 + r] = row_blk[c];
                         }
                     } else {
-                        for p in 0..(n_bits as usize) {
+                        for p in 0..(eff_bits as usize) {
                             let p_off = off + hdr_bytes + p * plane_bytes;
                             for bo in 0..bytes_per_row_blk {
                                 let mut byte = 0u8;
@@ -434,7 +465,8 @@ impl T16CMat {
                 0.0f32
             };
             let w_blk = &mut w[blk * bsize..(blk + 1) * bsize];
-            if self.n_bits == 5 {
+            let eff_bits = self.n_bits & 0x7F;
+            if eff_bits == 5 {
                 for g in 0..quintets {
                     let code = src[off + 32 + g * 16 + r] as usize;
                     if code >= 243 {
@@ -449,7 +481,7 @@ impl T16CMat {
                         }
                     }
                 }
-            } else if self.n_bits == 8 {
+            } else if eff_bits == 8 {
                 for c in 0..bsize {
                     let q = src[off + 32 + c * 16 + r] as i8;
                     w_blk[c] = sc * (q as f32);
@@ -458,8 +490,8 @@ impl T16CMat {
                 for v in w_blk.iter_mut() {
                     *v = bi;
                 }
-                for p in 0..(self.n_bits as usize) {
-                    let wp = sc * ((1u32 << p) as f32);
+                for p in 0..(eff_bits as usize) {
+                    let wp = sc * plane_weight(self.n_bits, p);
                     let p_off = off + hdr_bytes + p * plane_bytes;
                     for bo in 0..bytes_per_row_blk {
                         let b = src[p_off + bo * 16 + r];
@@ -531,7 +563,8 @@ impl T16CMat {
                         break;
                     }
                     let sc = fp16_to_f32(u16::from_le_bytes([src[off + r * 2], src[off + r * 2 + 1]]));
-                    if self.n_bits == 5 {
+                    let eff_bits = self.n_bits & 0x7F;
+                    if eff_bits == 5 {
                         w_blk[..bsize].fill(0.0);
                         for g in 0..quintets {
                             let code = src[off + 32 + g * 16 + r] as usize;
@@ -546,7 +579,7 @@ impl T16CMat {
                                 }
                             }
                         }
-                    } else if self.n_bits == 8 {
+                    } else if eff_bits == 8 {
                         for c in 0..bsize {
                             let q = src[off + 32 + c * 16 + r] as i8;
                             w_blk[c] = sc * (q as f32);
@@ -558,8 +591,8 @@ impl T16CMat {
                             0.0f32
                         };
                         w_blk[..bsize].fill(bi);
-                        for p in 0..(self.n_bits as usize) {
-                            let wp = sc * ((1u32 << p) as f32);
+                        for p in 0..(eff_bits as usize) {
+                            let wp = sc * plane_weight(self.n_bits, p);
                             let p_off = off + hdr_bytes + p * plane_bytes;
                             for bo in 0..bytes_per_row_blk {
                                 let b = src[p_off + bo * 16 + r];
@@ -741,7 +774,8 @@ impl T16CMat {
         let quintets = bsize.div_ceil(5);
         let packed = self.packed_slice();
         let is_asym = self.is_asym;
-        let n_bits = self.n_bits as usize;
+        let n_bits_raw = self.n_bits;
+        let eff_bits = (n_bits_raw & 0x7F) as usize;
         let total_skipped = std::sync::atomic::AtomicI64::new(0);
 
         let nthreads = threads.max(1).min(d_out);
@@ -784,7 +818,7 @@ impl T16CMat {
                                 let off = (t * n_blks + blk) * tblk_bytes;
                                 let sc = fp16_to_f32(u16::from_le_bytes([packed[off + r * 2], packed[off + r * 2 + 1]])) as f64;
                                 let xb = &xk[blk * bsize..(blk + 1) * bsize];
-                                if n_bits == 5 {
+                                if eff_bits == 5 {
                                     let mut bsum = 0.0f64;
                                     for g in 0..quintets {
                                         let code = packed[off + 32 + g * 16 + r] as usize;
@@ -799,7 +833,7 @@ impl T16CMat {
                                         }
                                     }
                                     acc += sc * bsum;
-                                } else if n_bits == 8 {
+                                } else if eff_bits == 8 {
                                     let mut wsum = 0.0f64;
                                     for c in 0..bsize {
                                         let q = packed[off + 32 + c * 16 + r] as i8;
@@ -816,8 +850,8 @@ impl T16CMat {
                                         let sx: f64 = xb.iter().map(|&v| v as f64).sum();
                                         acc += bi_v * sx;
                                     }
-                                    for p in 0..n_bits {
-                                        let wp = sc * ((1u32 << p) as f64);
+                                    for p in 0..eff_bits {
+                                        let wp = sc * (plane_weight(n_bits_raw, p) as f64);
                                         let p_off = off + hdr_bytes + p * plane_bytes;
                                         let mut isum = 0.0f64;
                                         for bo in 0..bytes_per_row_blk {
@@ -1536,7 +1570,8 @@ mod tests {
                     let y_rms = (n1 / (y_rust.len().max(1) as f64)).sqrt() as f32;
                     let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
                     assert!(cos > 0.9999, "native tern5 cos={cos} (bsize={bsize} k={k_tokens})");
-                    let tol = if k_tokens <= 2 { 1e-3f32 } else { 2e-3f32 + 2e-4f32 * y_rms };
+                    // Unified single-plane INT8 (7-bit) Q8 precision across all smooth k_tokens
+                    let tol = 2e-3f32 + 2e-4f32 * y_rms;
                     for (idx_y, (a, b)) in y_rust.iter().zip(y_nat.iter()).enumerate() {
                         assert!((a - b).abs() < tol, "native mismatch bsize={bsize} k={k_tokens} idx={idx_y}: rust={a} nat={b} tol={tol}");
                     }
@@ -1745,6 +1780,150 @@ mod tests {
                     "cs_tile_skip mismatch row={r_idx}: y_full={a} vs y_nat={b} tol={tol} (path={})",
                     nk.path
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn gauss_nonuniform_2bit_improves_rotated_gaussian_snr_and_matches_native() {
+        let d_out = 32usize;
+        let d_in = 128usize;
+        let bsize = 64usize;
+        let n_blks = d_in / bsize;
+
+        // Generate Gaussian weights via deterministic Box-Muller
+        let mut s: u64 = 0x517cc1b727220a95;
+        let mut next_f = || -> f32 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (((s >> 40) as u32).max(1) as f32) / (1u32 << 24) as f32
+        };
+        let mut w = vec![0.0f32; d_out * d_in];
+        for r in 0..d_out {
+            let row_std = 0.04 + 0.002 * (r as f32);
+            let mut j = 0;
+            while j < d_in {
+                let u1 = next_f().max(1e-6);
+                let u2 = next_f();
+                let rad = (-2.0f32 * u1.ln()).sqrt();
+                let th = std::f32::consts::TAU * u2;
+                w[r * d_in + j] = rad * th.cos() * row_std;
+                if j + 1 < d_in {
+                    w[r * d_in + j + 1] = rad * th.sin() * row_std;
+                }
+                j += 2;
+            }
+        }
+
+        let quantize_pack = |n_bits: u8| -> (T16CMat, f64) {
+            let levels: [f32; 4] = [
+                -(plane_weight(n_bits, 1) + plane_weight(n_bits, 0)),
+                -(plane_weight(n_bits, 1) - plane_weight(n_bits, 0)),
+                plane_weight(n_bits, 1) - plane_weight(n_bits, 0),
+                plane_weight(n_bits, 1) + plane_weight(n_bits, 0),
+            ];
+            let mut sc = vec![0.0f32; d_out * n_blks];
+            let mut idx = vec![0u8; d_out * d_in];
+            let mut sse = 0.0f64;
+            for r in 0..d_out {
+                for blk in 0..n_blks {
+                    let s0 = r * d_in + blk * bsize;
+                    let sl = &w[s0..s0 + bsize];
+                    let var = sl.iter().map(|&v| v * v).sum::<f32>() / (bsize as f32);
+                    let std_b = var.sqrt().max(1e-6);
+                    // Lloyd-Max 2-bit optimal inner threshold factor ~0.498 on N(0,1)
+                    let mut best_step = std_b * 0.50;
+                    let mut best_err = f64::INFINITY;
+                    for c in 35..=70 {
+                        let step = std_b * (c as f32 * 0.01);
+                        let mut err = 0.0f64;
+                        for &wv in sl {
+                            let mut min_d = f32::INFINITY;
+                            for &lv in &levels {
+                                let d = (wv - step * lv).abs();
+                                if d < min_d {
+                                    min_d = d;
+                                }
+                            }
+                            err += (min_d as f64) * (min_d as f64);
+                        }
+                        if err < best_err {
+                            best_err = err;
+                            best_step = step;
+                        }
+                    }
+                    sc[r * n_blks + blk] = best_step;
+                    for (j, &wv) in sl.iter().enumerate() {
+                        let mut best_q = 0usize;
+                        let mut min_d = f32::INFINITY;
+                        for (qi, &lv) in levels.iter().enumerate() {
+                            let d = (wv - best_step * lv).abs();
+                            if d < min_d {
+                                min_d = d;
+                                best_q = qi;
+                            }
+                        }
+                        idx[s0 + j] = best_q as u8;
+                        let diff = (wv - best_step * levels[best_q]) as f64;
+                        sse += diff * diff;
+                    }
+                }
+            }
+            let mat = T16CMat::pack_from_components(
+                format!("gauss.nb{n_bits}"),
+                d_out,
+                d_in,
+                bsize,
+                n_bits,
+                false,
+                false,
+                &sc,
+                None,
+                &idx,
+                None,
+                None,
+            )
+            .unwrap();
+            (mat, sse / (w.len() as f64))
+        };
+
+        let (_, mse_u) = quantize_pack(2);
+        let (mat_g, mse_g) = quantize_pack(2 | T16C_GAUSS_BIT);
+        assert!(mse_g < mse_u, "expected Gaussian levels MSE ({mse_g}) < uniform ({mse_u})");
+
+        let tmp = std::env::temp_dir().join("t16c_gauss_test.t16c");
+        T16CModel::write_file(&tmp, ARCH_FLAG_GEMMA4, &[("n0".into(), vec![1.0])], &[mat_g]).unwrap();
+        let loaded = T16CModel::load(&tmp, None, true).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let lm = loaded.mat("gauss.nb130").unwrap();
+        assert_eq!(lm.n_bits, 2 | T16C_GAUSS_BIT);
+
+        let kt = 4usize;
+        let x: Vec<f32> = (0..kt * d_in).map(|i| ((i as f32) * 0.13).sin()).collect();
+        let y_rust = lm.project_batch(&x, kt, None, 2).unwrap();
+        for tok in 0..kt {
+            for r in 0..d_out {
+                let row = lm.decode_row(r).unwrap();
+                let dot: f32 = row.iter().zip(&x[tok * d_in..(tok + 1) * d_in]).map(|(a, b)| a * b).sum();
+                assert!((y_rust[tok * d_out + r] - dot).abs() < 1e-4);
+            }
+        }
+        if let Some(nk) = NativeTile16Kernel::discover(None) {
+            let y_b = lm.project_batch(&x, kt, Some(&nk), 2).unwrap();
+            for tok in 0..kt {
+                let y_s = lm.project_batch(&x[tok * d_in..(tok + 1) * d_in], 1, Some(&nk), 2).unwrap();
+                let (mut dot, mut n1, mut n2) = (0.0f64, 0.0f64, 0.0f64);
+                for r in 0..d_out {
+                    let a = y_b[tok * d_out + r];
+                    let b = y_s[r];
+                    let yr = y_rust[tok * d_out + r];
+                    assert_eq!(a.to_bits(), b.to_bits(), "gauss native k=4 vs k=1 bit mismatch");
+                    assert!((a - yr).abs() < 0.05, "gauss native vs rust diff={} ({a} vs {yr})", (a - yr).abs());
+                    dot += (a as f64) * (yr as f64);
+                    n1 += (a as f64) * (a as f64);
+                    n2 += (yr as f64) * (yr as f64);
+                }
+                let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
+                assert!(cos > 0.9999, "gauss native vs rust cos={cos} at tok={tok}");
             }
         }
     }

@@ -450,6 +450,119 @@ struct LayerKv {
     v: Vec<f32>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KvQuantMode {
+    Fp32,
+    Q8,
+    Fp8E4M3,
+}
+
+impl KvQuantMode {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "fp32" | "f32" => Ok(Self::Fp32),
+            "q8" | "q8_0" => Ok(Self::Q8),
+            "fp8" | "e4m3" | "fp8_e4m3" => Ok(Self::Fp8E4M3),
+            other => Err(format!("invalid --kv-quant '{other}' (expected fp32|q8|fp8)")),
+        }
+    }
+}
+
+fn fp8_e4m3_encode_scalar(v: f32) -> u8 {
+    let sign = if v.is_sign_negative() { 0x80u8 } else { 0x00u8 };
+    let av = v.abs().min(448.0);
+    if av < 2.0f32.powi(-9) {
+        return sign;
+    }
+    if av < 2.0f32.powi(-6) {
+        let mant = ((av * 512.0).round() as u8).clamp(0, 7);
+        return sign | mant;
+    }
+    let exp_unbiased = av.log2().floor() as i32;
+    let exp_field = (exp_unbiased + 7).clamp(1, 15);
+    let step = 2.0f32.powi(exp_field - 7);
+    let mant_f = ((av / step) - 1.0) * 8.0;
+    let mut mant = mant_f.round() as i32;
+    let mut ef = exp_field;
+    if mant >= 8 {
+        mant = 0;
+        ef += 1;
+    }
+    if ef >= 15 {
+        ef = 15;
+        mant = mant.min(6); // OCP E4M3 reserves exp=15,mant=7 for NaN
+    }
+    sign | ((ef as u8) << 3) | (mant as u8)
+}
+
+fn build_fp8_e4m3_lut() -> [f32; 256] {
+    let mut lut = [0.0f32; 256];
+    for idx in 0..256usize {
+        let sign = if (idx & 0x80) != 0 { -1.0f32 } else { 1.0f32 };
+        let exp = ((idx >> 3) & 0x0F) as i32;
+        let mant = (idx & 0x07) as f32;
+        lut[idx] = if exp == 0 {
+            sign * 2.0f32.powi(-6) * (mant / 8.0)
+        } else if exp == 15 && mant >= 7.0 {
+            sign * 448.0
+        } else {
+            sign * 2.0f32.powi(exp - 7) * (1.0 + mant / 8.0)
+        };
+    }
+    lut
+}
+
+/// Per-head symmetric Q8_0 quantization roundtrip, returning packed Q8 bytes (`hd + 4` per head).
+fn quantize_dequant_kv_q8_inplace(buf: &mut [f32], hd: usize) -> usize {
+    let mut packed_bytes = 0usize;
+    for chunk in buf.chunks_exact_mut(hd) {
+        let max_a = chunk.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        let sc = if max_a > 1e-12 { max_a / 127.0 } else { 0.0 };
+        let inv = if sc > 0.0 { 1.0 / sc } else { 0.0 };
+        for v in chunk.iter_mut() {
+            let q = (*v * inv).round().clamp(-127.0, 127.0) as i8;
+            *v = (q as f32) * sc;
+        }
+        packed_bytes += hd + 4;
+    }
+    packed_bytes
+}
+
+/// Per-head IEEE OCP FP8 E4M3 quantization roundtrip, returning packed FP8 bytes (`hd + 4` per head).
+fn quantize_dequant_kv_fp8_e4m3_inplace(buf: &mut [f32], hd: usize, lut: &[f32; 256]) -> usize {
+    let mut packed_bytes = 0usize;
+    for chunk in buf.chunks_exact_mut(hd) {
+        let max_a = chunk.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        let sc = if max_a > 1e-12 { max_a / 448.0 } else { 0.0 };
+        let inv = if sc > 0.0 { 1.0 / sc } else { 0.0 };
+        for v in chunk.iter_mut() {
+            let code = fp8_e4m3_encode_scalar(*v * inv);
+            *v = lut[code as usize] * sc;
+        }
+        packed_bytes += hd + 4;
+    }
+    packed_bytes
+}
+
+fn parse_hybrid_qat_layers(spec: &str, n_layers: usize) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for raw in spec.split(',') {
+        let t = raw.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let idx: usize = t.parse().map_err(|_| format!("invalid layer id '{t}' in --hybrid-qat-layers"))?;
+        if idx >= n_layers {
+            return Err(format!("--hybrid-qat-layers layer {idx} >= n_layers {n_layers}"));
+        }
+        if !out.contains(&idx) {
+            out.push(idx);
+        }
+    }
+    out.sort_unstable();
+    Ok(out)
+}
+
 struct Runtime31B {
     cfg: Gemma4Cfg,
     sf: Option<SafeTensors>,
@@ -457,12 +570,17 @@ struct Runtime31B {
     scalars: Vec<f32>,
     embed: Embed31B,
     pinned: Vec<PinnedLayer>,
+    hybrid_pinned: HashMap<usize, PinnedLayer>,
     t16c_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
     native_t16c: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
     c8d_bank: Option<run270_rust::cuneiform_tbi::CuneiformBank>,
     cs_skip_thresh: f32,
     cs_down_norms: Vec<Option<Vec<u16>>>,
     cs_skipped_blocks: u64,
+    kv_quant: KvQuantMode,
+    fp8_lut: [f32; 256],
+    kv_raw_bytes: usize,
+    kv_compressed_bytes: usize,
     kv: Vec<LayerKv>,
     threads: usize,
     ssd_bytes_read: u64,
@@ -641,12 +759,17 @@ impl Runtime31B {
         let t16c_mats = &self.t16c_mats;
         let all_pinned = t16c_mats.is_some();
         let native_t16c = &self.native_t16c;
+        let hybrid_pinned = &self.hybrid_pinned;
         let cs_down_norms = &self.cs_down_norms;
         let cs_skip_thresh = self.cs_skip_thresh;
+        let kv_quant = self.kv_quant;
+        let fp8_lut = &self.fp8_lut;
         let kv = &mut self.kv;
         let threads = self.threads;
         let mut read_bytes = 0u64;
         let mut cs_skipped_step = 0u64;
+        let mut kv_raw_step = 0usize;
+        let mut kv_cmp_step = 0usize;
 
         let get_norm = |key: &str| -> Result<&[f32], String> {
             norms
@@ -685,6 +808,20 @@ impl Runtime31B {
                 };
 
             let mut run_proj = |layer: usize, proj_suffix: &'static str, x_batch: &[f32]| -> Result<Vec<f32>, String> {
+                if let Some(pl) = hybrid_pinned.get(&layer) {
+                    let p = match proj_suffix {
+                        "self_attn.q_proj" => &pl.q,
+                        "self_attn.k_proj" => &pl.k,
+                        "self_attn.v_proj" => pl.v.as_ref().ok_or("unexpected v_proj lookup on k_eq_v layer")?,
+                        "self_attn.o_proj" => &pl.o,
+                        "mlp.gate_proj" => &pl.gate,
+                        "mlp.up_proj" => &pl.up,
+                        "mlp.down_proj" => &pl.down,
+                        other => return Err(format!("unknown proj suffix {other}")),
+                    };
+                    return qat_project_batch(p, x_batch, seq_len, threads);
+                }
+
                 if let Some(mats) = t16c_mats {
                     let k1 = format!("model.language_model.layers.{layer}.{proj_suffix}.weight");
                     let k2 = format!("model.layers.{layer}.{proj_suffix}.weight");
@@ -805,6 +942,24 @@ impl Runtime31B {
                     }
                 }
 
+                match kv_quant {
+                    KvQuantMode::Fp32 => {
+                        let kb = k_batch.len() * 4 + v_batch.len() * 4;
+                        kv_raw_step += kb;
+                        kv_cmp_step += kb;
+                    }
+                    KvQuantMode::Q8 => {
+                        kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                        kv_cmp_step += quantize_dequant_kv_q8_inplace(&mut k_batch, hd)
+                            + quantize_dequant_kv_q8_inplace(&mut v_batch, hd);
+                    }
+                    KvQuantMode::Fp8E4M3 => {
+                        kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                        kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
+                            + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
+                    }
+                }
+
                 let base_t = kv[l].k.len() / (n_kv * hd);
                 kv[l].k.extend_from_slice(&k_batch);
                 kv[l].v.extend_from_slice(&v_batch);
@@ -863,6 +1018,8 @@ impl Runtime31B {
         })?;
         self.ssd_bytes_read += read_bytes;
         self.cs_skipped_blocks += cs_skipped_step;
+        self.kv_raw_bytes += kv_raw_step;
+        self.kv_compressed_bytes += kv_cmp_step;
 
         let fn_gain = self.norm("model.language_model.norm.weight")?;
         let mut out = if all_final {
@@ -953,6 +1110,7 @@ fn load_runtime_31b(
     cfg: Gemma4Cfg,
     embed_mode: EmbedMode31B,
     pin_layers: usize,
+    kv_quant: KvQuantMode,
     threads: usize,
 ) -> Result<(Runtime31B, usize, usize), String> {
     let sf = SafeTensors::open(model_path)?;
@@ -1033,12 +1191,17 @@ fn load_runtime_31b(
             scalars,
             embed,
             pinned,
+            hybrid_pinned: HashMap::new(),
             t16c_mats: None,
             native_t16c: None,
             c8d_bank: None,
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            kv_quant,
+            fp8_lut: build_fp8_e4m3_lut(),
+            kv_raw_bytes: 0,
+            kv_compressed_bytes: 0,
             kv,
             threads,
             ssd_bytes_read: 0,
@@ -1055,6 +1218,8 @@ fn load_runtime_31b_t16c(
     disable_native: bool,
     cfg: Gemma4Cfg,
     embed_mode: EmbedMode31B,
+    kv_quant: KvQuantMode,
+    hybrid_qat_layers: &[usize],
     threads: usize,
 ) -> Result<(Runtime31B, usize, usize), String> {
     let mut t16c = run270_rust::t16c::T16CModel::load(t16c_path, native_lib, disable_native)?;
@@ -1121,15 +1286,44 @@ fn load_runtime_31b_t16c(
         return Err("T16C missing model.language_model.embed_tokens.weight and no --model fallback".into());
     };
 
+    let mut hybrid_pinned = HashMap::new();
+    let mut hybrid_bytes = 0usize;
+    if !hybrid_qat_layers.is_empty() {
+        let sf = sf_opt
+            .as_ref()
+            .ok_or("--hybrid-qat-layers requires --model <model.safetensors> alongside --t16c")?;
+        for &l in hybrid_qat_layers {
+            if l >= cfg.n_layers {
+                return Err(format!("hybrid QAT layer {l} >= n_layers {}", cfg.n_layers));
+            }
+            let pfx = format!("model.language_model.layers.{l}");
+            let (q, bq) = load_qat_proj(sf, &format!("{pfx}.self_attn.q_proj"))?;
+            let (k, bk) = load_qat_proj(sf, &format!("{pfx}.self_attn.k_proj"))?;
+            let (v, bv) = if cfg.layer_full[l] && cfg.attention_k_eq_v {
+                (None, 0)
+            } else {
+                let (pv, bv0) = load_qat_proj(sf, &format!("{pfx}.self_attn.v_proj"))?;
+                (Some(pv), bv0)
+            };
+            let (o, bo) = load_qat_proj(sf, &format!("{pfx}.self_attn.o_proj"))?;
+            let (gate, bg) = load_qat_proj(sf, &format!("{pfx}.mlp.gate_proj"))?;
+            let (up, bu) = load_qat_proj(sf, &format!("{pfx}.mlp.up_proj"))?;
+            let (down, bd) = load_qat_proj(sf, &format!("{pfx}.mlp.down_proj"))?;
+            hybrid_bytes += (bq + bk + bv + bo + bg + bu + bd) as usize;
+            hybrid_pinned.insert(l, PinnedLayer { q, k, v, o, gate, up, down });
+        }
+    }
+
     let body_bytes: usize = t16c.mats.values().map(|m| m.total_bytes()).sum();
     eprintln!(
-        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} norm_bytes={} embed_bytes={}",
+        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} norm_bytes={} embed_bytes={} hybrid_qat={:?} ({hybrid_bytes} B) kv_quant={kv_quant:?}",
         native_t16c.as_ref().map_or("disabled", |n| n.path.as_str()),
         t16c.mats.len(),
         t16c.norms.len(),
         body_bytes,
         norm_bytes,
-        embed_bytes
+        embed_bytes,
+        hybrid_qat_layers
     );
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
@@ -1141,17 +1335,22 @@ fn load_runtime_31b_t16c(
             scalars,
             embed,
             pinned: Vec::new(),
+            hybrid_pinned,
             t16c_mats: Some(t16c.mats),
             native_t16c,
             c8d_bank: None,
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            kv_quant,
+            fp8_lut: build_fp8_e4m3_lut(),
+            kv_raw_bytes: 0,
+            kv_compressed_bytes: 0,
             kv,
             threads,
             ssd_bytes_read: 0,
         },
-        body_bytes + norm_bytes,
+        body_bytes + norm_bytes + hybrid_bytes,
         embed_bytes,
     ))
 }
@@ -1280,6 +1479,8 @@ fn run() -> Result<(), String> {
     };
     let embed_h8 = args.iter().any(|a| a == "--embed-h8");
     let embed_mode = EmbedMode31B::parse(&get("--embed-mode").unwrap_or_else(|| "stream".into()), embed_h8)?;
+    let kv_quant = KvQuantMode::parse(&get("--kv-quant").unwrap_or_else(|| "fp32".into()))?;
+    let hybrid_qat_arg = get("--hybrid-qat-layers");
     let pin_layers: usize = match get("--pin-layers") {
         Some(s) => s.parse().map_err(|_| format!("invalid --pin-layers '{s}'"))?,
         None => 0,
@@ -1294,8 +1495,12 @@ fn run() -> Result<(), String> {
     let ids_arg = get("--ids");
 
     let cfg = load_gemma4_cfg(Path::new(&cfgp))?;
+    let hybrid_qat_layers = match hybrid_qat_arg.as_deref() {
+        Some(s) => parse_hybrid_qat_layers(s, cfg.n_layers)?,
+        None => Vec::new(),
+    };
     eprintln!(
-        "[run31b] cfg d={} layers={} ff={} heads={}/{} global_kv={} hd={}/{} window={} softcap={:?}",
+        "[run31b] cfg d={} layers={} ff={} heads={}/{} global_kv={} hd={}/{} window={} softcap={:?} kv_quant={kv_quant:?}",
         cfg.d, cfg.n_layers, cfg.ff, cfg.n_heads, cfg.n_kv, cfg.n_global_kv, cfg.hd, cfg.global_hd, cfg.window, cfg.final_softcap
     );
 
@@ -1308,10 +1513,12 @@ fn run() -> Result<(), String> {
             disable_native,
             cfg,
             embed_mode,
+            kv_quant,
+            &hybrid_qat_layers,
             threads,
         )?
     } else {
-        load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, threads)?
+        load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, kv_quant, threads)?
     };
     if let Some(cp) = c8d_arg.as_deref() {
         let native_hint = so_arg
@@ -1473,7 +1680,10 @@ fn run() -> Result<(), String> {
             let rem = max_tokens - generated.len();
             let draft_budget = ctrl.current_k().min(rem.saturating_sub(1));
             let drafts = if draft_budget > 0 {
-                if let Some((ref ast, sl_l, fl_l)) = assistant_state {
+                let seed_first = ngram.propose_sequence(&history, draft_budget);
+                if !seed_first.is_empty() {
+                    seed_first
+                } else if let Some((ref ast, sl_l, fl_l)) = assistant_state {
                     let kv_tmp = std::mem::take(&mut rt.kv);
                     let ast_res = ast.draft_sequence_masked(
                         y0,
@@ -1491,14 +1701,9 @@ fn run() -> Result<(), String> {
                         closed_thought_bans,
                     );
                     rt.kv = kv_tmp;
-                    let d = ast_res?;
-                    if d.is_empty() {
-                        ngram.propose_sequence(&history, draft_budget)
-                    } else {
-                        d
-                    }
+                    ast_res?
                 } else {
-                    ngram.propose_sequence(&history, draft_budget)
+                    Vec::new()
                 }
             } else {
                 Vec::new()
@@ -1625,6 +1830,13 @@ fn run() -> Result<(), String> {
     let (vm_hwm, vm_rss) = proc_status_kb();
     println!("GEN31B ids={generated:?}");
     println!("GEN31B text={:?}", tk.decode(&generated));
+    if rt.kv_raw_bytes > 0 {
+        let ratio = rt.kv_raw_bytes as f64 / rt.kv_compressed_bytes.max(1) as f64;
+        println!(
+            "KV31B mode={:?} raw_bytes={} compressed_bytes={} shrink={ratio:.2}x",
+            rt.kv_quant, rt.kv_raw_bytes, rt.kv_compressed_bytes
+        );
+    }
     println!(
         "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
         rt.ssd_bytes_read, rt.cs_skipped_blocks
@@ -1817,5 +2029,46 @@ mod tests {
         logits2[23682] = 18.0;
         apply_degeneracy_guard(&mut logits2, &prompt_ids, &[23681]);
         assert_eq!(argmax_f32(&logits2), 23682);
+    }
+
+    #[test]
+    fn kv_quant_q8_and_fp8_e4m3_roundtrip_fidelity() {
+        assert_eq!(KvQuantMode::parse("fp32").unwrap(), KvQuantMode::Fp32);
+        assert_eq!(KvQuantMode::parse("q8").unwrap(), KvQuantMode::Q8);
+        assert_eq!(KvQuantMode::parse("fp8").unwrap(), KvQuantMode::Fp8E4M3);
+        assert!(KvQuantMode::parse("int2_bad").is_err());
+
+        let hd = 256usize;
+        let orig: Vec<f32> = (0..4 * hd).map(|i| ((i as f32 * 0.13).sin() * 3.2) + ((i as f32 * 0.03).cos() * 0.4)).collect();
+        let mut q8 = orig.clone();
+        let bytes_q8 = quantize_dequant_kv_q8_inplace(&mut q8, hd);
+        assert_eq!(bytes_q8, 4 * (hd + 4));
+
+        let lut = build_fp8_e4m3_lut();
+        let mut fp8 = orig.clone();
+        let bytes_fp8 = quantize_dequant_kv_fp8_e4m3_inplace(&mut fp8, hd, &lut);
+        assert_eq!(bytes_fp8, 4 * (hd + 4));
+
+        let shrink = (orig.len() * 4) as f64 / bytes_fp8 as f64;
+        assert!((shrink - (1024.0 / 260.0)).abs() < 1e-6);
+
+        let cos = |v: &[f32]| -> f64 {
+            let (mut d, mut n1, mut n2) = (0.0f64, 0.0f64, 0.0f64);
+            for (&a, &b) in orig.iter().zip(v.iter()) {
+                d += (a as f64) * (b as f64);
+                n1 += (a as f64) * (a as f64);
+                n2 += (b as f64) * (b as f64);
+            }
+            d / (n1.sqrt() * n2.sqrt() + 1e-12)
+        };
+        assert!(cos(&q8) > 0.9999, "Q8 KV cos={}", cos(&q8));
+        assert!(cos(&fp8) > 0.999, "FP8 E4M3 KV cos={}", cos(&fp8));
+    }
+
+    #[test]
+    fn parse_hybrid_qat_layers_validates_bounds() {
+        assert_eq!(parse_hybrid_qat_layers("59, 58, 59, 0", 60).unwrap(), vec![0, 58, 59]);
+        assert!(parse_hybrid_qat_layers("60", 60).is_err());
+        assert!(parse_hybrid_qat_layers("abc", 60).is_err());
     }
 }
