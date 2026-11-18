@@ -1,0 +1,72 @@
+=== COLAB 262K MULTIMODAL VISION (frame_01_coco.png) + TRI-MODAL-GATE ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 9.91s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6290448), Some(6290448))
+[run31b] vision encoded 640x480 -> n_soft=266 in 1390.99s
+[run31b] prompt 287 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 9.49s (pinned=true)
+[run31b] layer 05/60 done in 11.28s (pinned=true)
+[run31b] layer 14/60 done in 9.49s (pinned=true)
+[run31b] layer 29/60 done in 10.84s (pinned=true)
+[run31b] layer 44/60 done in 7.47s (pinned=true)
+[run31b] layer 59/60 done in 12.51s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9964 read=0.992 hear=1.000 see=1.000 hf=1.01 cr=23.37 marg=4.800 prob=0.977 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 518.56s ssd_read_mb=0.0 vm=(Some(6925488), Some(6862080))
+PREFILL_TOP5 [818:"The"(21.665), 2094:"This"(16.865), 22515:"Based"(15.495), 1018:"**"(15.232), 11069:"Your"(14.236)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=RESCUE score=0.6519 read=0.227 hear=1.000 see=1.000 hf=0.98 cr=7.18 marg=0.210 prob=0.387 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=1 rescued_marg=2.347 rescued_score=0.9821 mode=CLEAN
+[run31b] decode step 0 in 5.42s vm=(Some(7152180), Some(7151632))
+[STEP 1] id=3847 text=" provided"
+[TRIMODAL] step=2 mode=RESCUE score=0.7517 read=0.448 hear=1.000 see=1.000 hf=0.97 cr=6.90 marg=0.585 prob=0.557 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=2 rescued_marg=2.115 rescued_score=0.9813 mode=CLEAN
+[run31b] decode step 1 in 3.55s vm=(Some(7152512), Some(7152512))
+[STEP 2] id=1816 text=" text"
+[TRIMODAL] step=3 mode=CLEAN score=0.9946 read=0.988 hear=1.000 see=1.000 hf=0.96 cr=11.76 marg=3.363 prob=0.966 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 3.19s vm=(Some(7153612), Some(7153612))
+[STEP 3] id=563 text=" is"
+[TRIMODAL] step=4 mode=CLEAN score=0.9864 read=0.970 hear=1.000 see=1.000 hf=0.99 cr=12.72 marg=2.414 prob=0.914 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 3.17s vm=(Some(7154492), Some(7154492))
+[STEP 4] id=496 text=" a"
+[TRIMODAL] step=5 mode=CLEAN score=0.9999 read=1.000 hear=1.000 see=1.000 hf=1.00 cr=8.45 marg=9.345 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 3.17s vm=(Some(7155372), Some(7155372))
+[STEP 5] id=30696 text=" nons"
+[TRIMODAL] step=6 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.07 cr=10.21 marg=9.034 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 3.20s vm=(Some(7156252), Some(7156252))
+[STEP 6] id=227753 text="ensical"
+[TRIMODAL] step=7 mode=CLEAN score=0.9449 read=0.878 hear=1.000 see=1.000 hf=0.99 cr=7.34 marg=1.669 prob=0.650 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 6 in 3.17s vm=(Some(7157132), Some(7157132))
+[STEP 7] id=7501 text=" sequence"
+[TRIMODAL] step=8 mode=CLEAN score=0.9994 read=0.999 hear=1.000 see=1.000 hf=0.99 cr=11.55 marg=6.344 prob=0.996 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 7 in 3.29s vm=(Some(7158184), Some(7158184))
+[STEP 8] id=529 text=" of"
+[TRIMODAL] step=9 mode=CLEAN score=0.9074 read=0.794 hear=1.000 see=1.000 hf=0.96 cr=7.77 marg=2.188 prob=0.412 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 8 in 3.19s vm=(Some(7159064), Some(7159064))
+[STEP 9] id=61261 text=" genetically"
+[TRIMODAL] step=10 mode=CLEAN score=0.9273 read=0.838 hear=1.000 see=1.000 hf=0.97 cr=9.06 marg=2.869 prob=0.538 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 9 in 3.31s vm=(Some(7159944), Some(7159944))
+[STEP 10] id=131675 text=" utterance"
+[TRIMODAL] step=11 mode=CAUTION score=0.7548 read=0.455 hear=1.000 see=1.000 hf=1.01 cr=9.63 marg=0.612 prob=0.542 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=11 rescued_marg=0.612 rescued_score=0.7518 mode=RESCUE
+[run31b] decode step 10 in 3.34s vm=(Some(7160988), Some(7160988))
+[STEP 11] id=236764 text=","
+[TRIMODAL] step=12 mode=CLEAN score=0.9229 read=0.829 hear=1.000 see=1.000 hf=1.03 cr=12.40 marg=1.480 prob=0.535 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 11 in 3.30s vm=(Some(7161868), Some(7161868))
+[STEP 12] id=837 text=" which"
+[TRIMODAL] step=13 mode=CAUTION score=0.7920 read=0.538 hear=1.000 see=1.000 hf=1.00 cr=10.06 marg=0.832 prob=0.507 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=13 rescued_marg=0.832 rescued_score=0.7786 mode=CAUTION
+[run31b] decode step 12 in 3.37s vm=(Some(7162748), Some(7162748))
+[STEP 13] id=7412 text=" appears"
+[TRIMODAL] step=14 mode=CLEAN score=0.9995 read=0.999 hear=1.000 see=1.000 hf=1.02 cr=11.06 marg=5.702 prob=0.997 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 13 in 3.28s vm=(Some(7163628), Some(7163628))
+[STEP 14] id=531 text=" to"
+[TRIMODAL] step=15 mode=CLEAN score=0.9996 read=0.999 hear=1.000 see=1.000 hf=1.08 cr=12.69 marg=6.440 prob=0.998 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 14 in 3.16s vm=(Some(7164508), Some(7164508))
+[STEP 15] id=577 text=" be"
+GEN31B ids=[818, 3847, 1816, 563, 496, 30696, 227753, 7501, 529, 61261, 131675, 236764, 837, 7412, 531, 577]
+GEN31B text="The provided text is a nonsensical sequence of genetically utterance, which appears to be"
+KV31B mode=Fp8E4M3 raw_bytes=544276480 compressed_bytes=138098560 shrink=3.94x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=3327330 prefill_s=518.56 decode_s=51.13 vm_hwm_kb=Some(7164508) vm_rss_kb=Some(7164508)
+COLAB_VISION_COMPLETE_OK

@@ -1,0 +1,88 @@
+=== V2 BASELINE PI4 V4.2 + SIEVE:0.25 + TRI-MODAL-LOG ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 10.18s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(6294632), Some(6294632))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.63s (pinned=true)
+[run31b] layer 05/60 done in 0.68s (pinned=true)
+[run31b] layer 14/60 done in 0.59s (pinned=true)
+[run31b] layer 29/60 done in 0.67s (pinned=true)
+[run31b] layer 44/60 done in 0.44s (pinned=true)
+[run31b] layer 59/60 done in 0.74s (pinned=true)
+[TRIMODAL] step=0 mode=RESCUE score=0.6854 read=0.301 hear=1.000 see=1.000 hf=0.98 cr=16.63 marg=0.324 prob=0.459 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] prefill done in 31.70s ssd_read_mb=0.0 vm=(Some(6599308), Some(6537816))
+PREFILL_TOP5 [2021:"To"(19.687), 818:"The"(19.363), 22515:"Based"(18.653), 2859:"If"(16.845), 10081:"Since"(14.284)]
+[STEP 0] id=2021 text="To"
+[TRIMODAL] step=1 mode=CAUTION score=0.7725 read=0.494 hear=1.000 see=1.000 hf=0.97 cr=16.20 marg=0.672 prob=0.581 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 0 in 2.75s vm=(Some(6599308), Some(6537816))
+[STEP 1] id=974 text=" get"
+[TRIMODAL] step=2 mode=CLEAN score=0.9902 read=0.978 hear=1.000 see=1.000 hf=0.98 cr=10.82 marg=3.083 prob=0.938 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.49s vm=(Some(6599308), Some(6537816))
+[STEP 2] id=506 text=" the"
+[TRIMODAL] step=3 mode=CLEAN score=0.9588 read=0.908 hear=1.000 see=1.000 hf=0.96 cr=8.70 marg=1.443 prob=0.809 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.51s vm=(Some(6599308), Some(6537816))
+[STEP 3] id=3890 text=" answer"
+[TRIMODAL] step=4 mode=RESCUE score=0.7153 read=0.367 hear=1.000 see=1.000 hf=0.88 cr=9.85 marg=0.509 prob=0.419 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 3 in 2.57s vm=(Some(6599308), Some(6537816))
+[STEP 4] id=236787 text=":"
+[TRIMODAL] step=5 mode=RESCUE score=0.6965 read=0.326 hear=1.000 see=1.000 hf=0.96 cr=13.54 marg=0.307 prob=0.551 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 4 in 2.48s vm=(Some(6599308), Some(6537816))
+[STEP 5] id=5213 text=" **"
+[TRIMODAL] step=6 mode=CAUTION score=0.7596 read=0.496 hear=1.000 see=0.950 hf=1.01 cr=19.77 marg=0.623 prob=0.647 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 5 in 2.49s vm=(Some(6599308), Some(6537816))
+[STEP 6] id=236778 text="2"
+[TRIMODAL] step=7 mode=CAUTION score=0.9535 read=0.978 hear=1.000 see=0.867 hf=1.00 cr=22.07 marg=3.081 prob=0.936 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 6 in 2.49s vm=(Some(6599308), Some(6537816))
+[STEP 7] id=900 text=" +"
+GEN31B ids=[2021, 974, 506, 3890, 236787, 5213, 236778, 900]
+GEN31B text="To get the answer: **2 +"
+KV31B mode=Fp8E4M3 raw_bytes=50462720 compressed_bytes=12803840 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1901325 prefill_s=31.70 decode_s=17.77 vm_hwm_kb=Some(6599308) vm_rss_kb=Some(6537816)
+=== V2 BASELINE PI4 V4.2 + SIEVE:0.25 + TRI-MODAL-GATE ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 9.89s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(6294628), Some(6294628))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.73s (pinned=true)
+[run31b] layer 05/60 done in 0.66s (pinned=true)
+[run31b] layer 14/60 done in 0.59s (pinned=true)
+[run31b] layer 29/60 done in 0.66s (pinned=true)
+[run31b] layer 44/60 done in 0.44s (pinned=true)
+[run31b] layer 59/60 done in 0.73s (pinned=true)
+[TRIMODAL] step=0 mode=RESCUE score=0.6854 read=0.301 hear=1.000 see=1.000 hf=0.98 cr=16.63 marg=0.324 prob=0.459 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=0 rescued_marg=0.408 rescued_score=0.6936 mode=RESCUE
+[TRIMODAL-OPTICAL] step=0 rescue_canvas_crc32=0xfd018cc0
+[run31b] prefill done in 31.70s ssd_read_mb=0.0 vm=(Some(6599304), Some(6537812))
+PREFILL_TOP5 [79629:"Depending"(20.095), 2021:"To"(19.687), 818:"The"(19.363), 22515:"Based"(18.653), 2859:"If"(16.845)]
+[STEP 0] id=79629 text="Depending"
+[TRIMODAL] step=1 mode=CLEAN score=0.9996 read=0.999 hear=1.000 see=1.000 hf=1.07 cr=14.40 marg=6.379 prob=0.997 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.60s vm=(Some(6599304), Some(6537812))
+[STEP 1] id=580 text=" on"
+[TRIMODAL] step=2 mode=CLEAN score=0.9896 read=0.977 hear=1.000 see=1.000 hf=1.02 cr=13.87 marg=2.852 prob=0.934 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.54s vm=(Some(6599304), Some(6537812))
+[STEP 2] id=506 text=" the"
+[TRIMODAL] step=3 mode=RESCUE score=0.7297 read=0.399 hear=1.000 see=1.000 hf=0.97 cr=8.07 marg=0.894 prob=0.034 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=3 rescued_marg=3.668 rescued_score=0.9812 mode=CLEAN
+[run31b] decode step 2 in 2.72s vm=(Some(6599304), Some(6537812))
+[STEP 3] id=4403 text=" context"
+[TRIMODAL] step=4 mode=CAUTION score=0.8846 read=0.744 hear=1.000 see=1.000 hf=0.94 cr=13.76 marg=1.112 prob=0.748 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=4 rescued_marg=1.112 rescued_score=0.8846 mode=CAUTION
+[run31b] decode step 3 in 2.67s vm=(Some(6599304), Some(6537812))
+[STEP 4] id=236764 text=","
+[TRIMODAL] step=5 mode=CLEAN score=0.9258 read=0.835 hear=1.000 see=1.000 hf=0.97 cr=11.03 marg=1.411 prob=0.639 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.59s vm=(Some(6599304), Some(6537812))
+[STEP 5] id=625 text=" it"
+[TRIMODAL] step=6 mode=CLEAN score=0.9930 read=0.984 hear=1.000 see=1.000 hf=0.97 cr=9.63 marg=3.603 prob=0.956 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.51s vm=(Some(6599304), Some(6537812))
+[STEP 6] id=563 text=" is"
+[TRIMODAL] step=7 mode=CLEAN score=0.9343 read=0.854 hear=1.000 see=1.000 hf=0.98 cr=12.28 marg=1.335 prob=0.787 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 6 in 2.48s vm=(Some(6599304), Some(6537812))
+[STEP 7] id=236743 text=" "
+GEN31B ids=[79629, 580, 506, 4403, 236764, 625, 563, 236743]
+GEN31B text="Depending on the context, it is "
+KV31B mode=Fp8E4M3 raw_bytes=50462720 compressed_bytes=12803840 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1436180 prefill_s=31.70 decode_s=18.12 vm_hwm_kb=Some(6599304) vm_rss_kb=Some(6537812)

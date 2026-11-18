@@ -377,6 +377,30 @@ NEON_API int gemv_bitserial_tile16_mmap(
 );
 
 /**
+ * Two-stage block-ordered Cauchy-Schwarz / optional subspace-sieve LM-head
+ * pruning directly on resident Tile-16 bit-serial `.t16c` weights (0 weight
+ * duplication, 0 SSD reads). Preserves exact top-`top_k_keep` logits.
+ * `sieve_frac == 0.0f` enforces 100% mathematically conservative exact CS pruning;
+ * `sieve_frac > 0.0f` enables two-stage heavy-block sieve + top-candidate refinement.
+ */
+NEON_API int lmhead_cs_top1_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym,
+    int k_tokens,
+    int top_k_keep,
+    float sieve_frac,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped_blks
+);
+
+/**
  * Vectorized optional input channel equalization (`x *= inv_s`, skipped when
  * `inv_s == NULL`) fused with orthonormal Fast Walsh-Hadamard block rotation
  * (`bsize == 1` skips FWHT; otherwise power-of-two `bsize >= 8` dividing `d_in`).

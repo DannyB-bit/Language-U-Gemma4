@@ -617,6 +617,79 @@ impl T16CMat {
         out
     }
 
+    fn prepare_x_fwht(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        native: Option<&NativeTile16Kernel>,
+    ) -> Result<Option<Vec<f32>>, String> {
+        let d_in = self.d_in;
+        if self.inv_s.is_none() && !self.has_fwht {
+            return Ok(None);
+        }
+        let mut buf = x_raw.to_vec();
+        let used_native_prep = if let Some(inv_fn) = native.and_then(|k| k.inv_s_fwht_fn) {
+            let inv_ptr = self.inv_s.as_ref().map_or(ptr::null(), |v| v.as_ptr());
+            let bsz = if self.has_fwht { self.block_size as i32 } else { 1i32 };
+            let rc = unsafe { inv_fn(buf.as_mut_ptr(), inv_ptr, k_tokens as i32, d_in as i32, bsz) };
+            if rc != 0 {
+                return Err(format!("native inv_s_and_fwht_f32_c failed rc={rc} on {}", self.name));
+            }
+            true
+        } else {
+            false
+        };
+        if !used_native_prep {
+            if let Some(ref inv_s) = self.inv_s {
+                for tok in 0..k_tokens {
+                    let row = &mut buf[tok * d_in..(tok + 1) * d_in];
+                    for j in 0..d_in {
+                        row[j] *= inv_s[j];
+                    }
+                }
+            }
+            if self.has_fwht {
+                fwht_block_inplace(&mut buf, self.block_size)?;
+            }
+        }
+        Ok(Some(buf))
+    }
+
+    fn apply_low_rank(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        y: &mut [f32],
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+    ) -> Result<(), String> {
+        if let Some(ref lr) = self.low_rank {
+            if let Some(lr_fn) = native.and_then(|k| k.lowrank_add_fn) {
+                let rc = unsafe {
+                    lr_fn(
+                        lr.u_i8.as_ptr(),
+                        lr.su.as_ptr(),
+                        lr.v_i8.as_ptr(),
+                        lr.sv.as_ptr(),
+                        x_raw.as_ptr(),
+                        y.as_mut_ptr(),
+                        lr.d_out as i32,
+                        lr.d_in as i32,
+                        lr.rank as i32,
+                        k_tokens as i32,
+                        threads.max(1) as i32,
+                    )
+                };
+                if rc != 0 {
+                    return Err(format!("native int8_lowrank_add_batch_c failed rc={rc} on {}", self.name));
+                }
+            } else {
+                lr.add_batch_into(x_raw, k_tokens, y, threads);
+            }
+        }
+        Ok(())
+    }
+
     /// Execute tile-16 GEMV/GEMM with optional Cauchy-Schwarz block-tile pruning, returning `(y, skipped_blocks)`.
     pub fn project_batch_cs(
         &self,
@@ -660,36 +733,7 @@ impl T16CMat {
             None => None,
         };
 
-        let mut x_work: Option<Vec<f32>> = if self.inv_s.is_some() || self.has_fwht {
-            let mut buf = x_raw.to_vec();
-            let used_native_prep = if let Some(inv_fn) = native.and_then(|k| k.inv_s_fwht_fn) {
-                let inv_ptr = self.inv_s.as_ref().map_or(ptr::null(), |v| v.as_ptr());
-                let bsz = if self.has_fwht { self.block_size as i32 } else { 1i32 };
-                let rc = unsafe { inv_fn(buf.as_mut_ptr(), inv_ptr, k_tokens as i32, d_in as i32, bsz) };
-                if rc != 0 {
-                    return Err(format!("native inv_s_and_fwht_f32_c failed rc={rc} on {}", self.name));
-                }
-                true
-            } else {
-                false
-            };
-            if !used_native_prep {
-                if let Some(ref inv_s) = self.inv_s {
-                    for tok in 0..k_tokens {
-                        let row = &mut buf[tok * d_in..(tok + 1) * d_in];
-                        for j in 0..d_in {
-                            row[j] *= inv_s[j];
-                        }
-                    }
-                }
-                if self.has_fwht {
-                    fwht_block_inplace(&mut buf, self.block_size)?;
-                }
-            }
-            Some(buf)
-        } else {
-            None
-        };
+        let mut x_work = self.prepare_x_fwht(x_raw, k_tokens, native)?;
         let x_mat: &[f32] = match x_work.as_mut() {
             Some(v) => v.as_slice(),
             None => x_raw,
@@ -726,31 +770,78 @@ impl T16CMat {
             skipped = self.matmul_rust(x_mat, k_tokens, &mut y, threads, active_norms, cs_skip_thresh);
         }
 
-        if let Some(ref lr) = self.low_rank {
-            if let Some(lr_fn) = native.and_then(|k| k.lowrank_add_fn) {
-                let rc = unsafe {
-                    lr_fn(
-                        lr.u_i8.as_ptr(),
-                        lr.su.as_ptr(),
-                        lr.v_i8.as_ptr(),
-                        lr.sv.as_ptr(),
-                        x_raw.as_ptr(),
-                        y.as_mut_ptr(),
-                        lr.d_out as i32,
-                        lr.d_in as i32,
-                        lr.rank as i32,
-                        k_tokens as i32,
-                        threads.max(1) as i32,
-                    )
-                };
-                if rc != 0 {
-                    return Err(format!("native int8_lowrank_add_batch_c failed rc={rc} on {}", self.name));
-                }
-            } else {
-                lr.add_batch_into(x_raw, k_tokens, &mut y, threads);
-            }
-        }
+        self.apply_low_rank(x_raw, k_tokens, &mut y, native, threads)?;
         Ok((y, skipped))
+    }
+
+    /// Execute two-stage block-ordered Cauchy-Schwarz / sieve LM-head projection on resident `.t16c` tiles.
+    #[allow(clippy::too_many_arguments)]
+    pub fn project_lmhead_cs(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+        tile_norms_fp16: Option<&[u16]>,
+        top_k_keep: usize,
+        sieve_frac: f32,
+    ) -> Result<(Vec<f32>, i64), String> {
+        let d_out = self.d_out;
+        let d_in = self.d_in;
+        if x_raw.len() != k_tokens * d_in {
+            return Err(format!(
+                "{}: x len {} != k_tokens({}) * d_in({})",
+                self.name,
+                x_raw.len(),
+                k_tokens,
+                d_in
+            ));
+        }
+        if k_tokens == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        let expected_norms = d_out.div_ceil(16) * (d_in / self.block_size);
+        if let (Some(cs_fn), Some(norms)) = (native.and_then(|k| k.lmhead_cs_fn), tile_norms_fp16) {
+            if norms.len() != expected_norms {
+                return Err(format!(
+                    "{}: tile_norms_fp16 len {} != expected {expected_norms}",
+                    self.name,
+                    norms.len()
+                ));
+            }
+            let mut x_work = self.prepare_x_fwht(x_raw, k_tokens, native)?;
+            let x_mat: &[f32] = match x_work.as_mut() {
+                Some(v) => v.as_slice(),
+                None => x_raw,
+            };
+            let mut y = vec![0f32; k_tokens * d_out];
+            let mut skipped: i64 = 0;
+            let rc = unsafe {
+                cs_fn(
+                    self.packed_slice().as_ptr(),
+                    norms.as_ptr(),
+                    x_mat.as_ptr(),
+                    y.as_mut_ptr(),
+                    d_out as i32,
+                    d_in as i32,
+                    self.block_size as i32,
+                    self.n_bits as i32,
+                    if self.is_asym { 1 } else { 0 },
+                    k_tokens as i32,
+                    top_k_keep.clamp(1, 32) as i32,
+                    sieve_frac.max(0.0),
+                    threads.max(1) as i32,
+                    &mut skipped as *mut i64,
+                )
+            };
+            if rc != 0 {
+                return Err(format!("native lmhead_cs_top1_tile16_batch failed rc={rc} on {}", self.name));
+            }
+            self.apply_low_rank(x_raw, k_tokens, &mut y, native, threads)?;
+            Ok((y, skipped))
+        } else {
+            self.project_batch(x_raw, k_tokens, native, threads).map(|y| (y, 0))
+        }
     }
 
     fn matmul_rust(
@@ -914,12 +1005,30 @@ pub type Int8LowRankAddBatchFn = unsafe extern "C" fn(
     num_threads: i32,
 ) -> i32;
 
+pub type LmHeadCsTile16BatchFn = unsafe extern "C" fn(
+    packed: *const u8,
+    tile_norm_fp16: *const u16,
+    x: *const f32,
+    y: *mut f32,
+    d_out: i32,
+    d_in: i32,
+    block_size: i32,
+    n_bits: i32,
+    is_asym: i32,
+    k_tokens: i32,
+    top_k_keep: i32,
+    sieve_frac: f32,
+    num_threads: i32,
+    out_skipped_blks: *mut i64,
+) -> i32;
+
 pub struct NativeTile16Kernel {
     handle: usize,
     pub path: String,
     pub gemm_fn: GemmTile16BatchFn,
     pub inv_s_fwht_fn: Option<InvSFwhtF32Fn>,
     pub lowrank_add_fn: Option<Int8LowRankAddBatchFn>,
+    pub lmhead_cs_fn: Option<LmHeadCsTile16BatchFn>,
 }
 
 unsafe impl Send for NativeTile16Kernel {}
@@ -992,12 +1101,19 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, Int8LowRankAddBatchFn>(lr_sym))
             };
+            let lm_sym = sys::dlsym(h, b"lmhead_cs_top1_tile16_batch\0".as_ptr() as *const std::ffi::c_char);
+            let lmhead_cs_fn: Option<LmHeadCsTile16BatchFn> = if lm_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: s.to_string(),
                 gemm_fn,
                 inv_s_fwht_fn,
                 lowrank_add_fn,
+                lmhead_cs_fn,
             })
         }
         #[cfg(windows)]
@@ -1027,12 +1143,19 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, Int8LowRankAddBatchFn>(lr_sym))
             };
+            let lm_sym = sys::GetProcAddress(h, b"lmhead_cs_top1_tile16_batch\0".as_ptr() as *const i8);
+            let lmhead_cs_fn: Option<LmHeadCsTile16BatchFn> = if lm_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: path.display().to_string(),
                 gemm_fn,
                 inv_s_fwht_fn,
                 lowrank_add_fn,
+                lmhead_cs_fn,
             })
         }
         #[cfg(not(any(unix, windows)))]
@@ -1924,6 +2047,90 @@ mod tests {
                 }
                 let cos = dot / (n1.sqrt() * n2.sqrt() + 1e-12);
                 assert!(cos > 0.9999, "gauss native vs rust cos={cos} at tok={tok}");
+            }
+        }
+    }
+
+    #[test]
+    fn lmhead_cs_prunes_and_matches_exact_top1_batch() {
+        let d_out = 128usize;
+        let d_in = 512usize;
+        let bsize = 64usize;
+        let n_blks = d_in / bsize;
+        let mut sc = vec![0.02f32; d_out * n_blks];
+        let mut idx = vec![0u8; d_out * d_in];
+        for r in 0..d_out {
+            for b in 0..n_blks {
+                sc[r * n_blks + b] = if r == 37 {
+                    0.50
+                } else if r < 48 {
+                    0.08
+                } else {
+                    0.01
+                };
+            }
+            for j in 0..d_in {
+                idx[r * d_in + j] = if r == 37 && j < 128 {
+                    7
+                } else {
+                    ((r * 13 + j * 7) % 8) as u8
+                };
+            }
+        }
+        let mat = T16CMat::pack_from_components(
+            "lmhead.cs.test".into(),
+            d_out,
+            d_in,
+            bsize,
+            3,
+            false,
+            true,
+            &sc,
+            None,
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        let norms = mat.compute_tile_norms_fp16();
+        let mut x = vec![0.0f32; 2 * d_in];
+        for tok in 0..2 {
+            for j in 0..d_in {
+                x[tok * d_in + j] = if j < 128 {
+                    if tok == 0 { 1.4 } else { -1.4 }
+                } else {
+                    (((j % 11) as f32) - 5.0) * 0.01
+                };
+            }
+        }
+
+        if let Some(nk) = NativeTile16Kernel::discover(None) {
+            assert!(nk.lmhead_cs_fn.is_some(), "expected lmhead_cs_top1_tile16_batch in {}", nk.path);
+            let y_full = mat.project_batch(&x, 2, Some(&nk), 2).unwrap();
+            let (y_cs, sk_cs) = mat.project_lmhead_cs(&x, 2, Some(&nk), 2, Some(&norms), 8, 0.0).unwrap();
+            let (y_sv, sk_sv) = mat.project_lmhead_cs(&x, 2, Some(&nk), 2, Some(&norms), 8, 0.25).unwrap();
+            assert!(sk_cs > 0, "expected exact CS to prune low-norm tiles, got sk_cs={sk_cs}");
+            assert!(sk_sv > 0, "expected sieve CS to prune blocks, got sk_sv={sk_sv}");
+            for tok in 0..2 {
+                let s0 = tok * d_out;
+                let top_f = y_full[s0..s0 + d_out]
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap();
+                let top_c = y_cs[s0..s0 + d_out]
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap();
+                let top_s = y_sv[s0..s0 + d_out]
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap();
+                assert_eq!(top_f.0, top_c.0, "tok {tok}: exact CS top1 mismatch");
+                assert_eq!(top_f.0, top_s.0, "tok {tok}: sieve CS top1 mismatch");
+                assert!((top_f.1 - top_c.1).abs() < 1e-3);
             }
         }
     }

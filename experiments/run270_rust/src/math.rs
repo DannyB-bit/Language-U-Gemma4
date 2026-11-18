@@ -78,15 +78,33 @@ pub fn attn_decode(
     hd: usize,
     sw: Option<usize>,
 ) -> Vec<f32> {
+    attn_decode_range(q, k_seq, v_seq, t, t, pos, n_heads, n_kv, hd, sw)
+}
+
+/// Multi-query attention over keys `[0..=kv_end.max(t)]` with symmetric sliding-window distance check.
+/// Supports HF `use_bidirectional_attention == "vision"` on sliding layers where `kv_end >= t`.
+pub fn attn_decode_range(
+    q: &[f32],
+    k_seq: &[f32],
+    v_seq: &[f32],
+    t: usize,
+    kv_end: usize,
+    pos: usize,
+    n_heads: usize,
+    n_kv: usize,
+    hd: usize,
+    sw: Option<usize>,
+) -> Vec<f32> {
     let gqa = n_heads / n_kv;
+    let max_tt = kv_end.max(t);
     let mut ctx = vec![0f32; n_heads * hd];
     for hq in 0..n_heads {
         let kvh = hq / gqa;
         let qh = &q[hq * hd..(hq + 1) * hd];
-        let mut scores: Vec<(usize, f64)> = Vec::with_capacity(t + 1);
-        for tt in 0..=t {
+        let mut scores: Vec<(usize, f64)> = Vec::with_capacity(max_tt + 1);
+        for tt in 0..=max_tt {
             if let Some(w) = sw {
-                if pos - tt >= w {
+                if pos.abs_diff(tt) >= w {
                     continue;
                 }
             }
@@ -280,5 +298,17 @@ mod tests {
         for _ in 0..16 {
             assert_eq!(top_k_top_p_sample(&mut logits.clone(), &ids, 1.0, 2, 0.95, 1.0, &[], &mut rng), 1);
         }
+    }
+
+    #[test]
+    fn attn_decode_range_attends_future_vision_slots_within_window() {
+        let q = [1.0f32, 0.0];
+        let k = [0.0f32, 1.0, 8.0, 0.0, 12.0, 0.0];
+        let v = [1.0f32, 0.0, 5.0, 0.0, 9.0, 0.0];
+        let c_causal = attn_decode(&q, &k, &v, 0, 0, 1, 1, 2, Some(2));
+        assert!((c_causal[0] - 1.0).abs() < 1e-6);
+        // Bidirectional kv_end=2 with window=2 includes t=0 and t=1, excludes t=2 (`abs_diff(0, 2) >= 2`).
+        let c_bidir = attn_decode_range(&q, &k, &v, 0, 2, 0, 1, 1, 2, Some(2));
+        assert!(c_bidir[0] > 4.9 && c_bidir[0] < 5.01, "c_bidir={:?}", c_bidir);
     }
 }

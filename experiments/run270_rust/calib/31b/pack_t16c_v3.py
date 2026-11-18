@@ -24,11 +24,13 @@ ARCH_FLAGS = 3  # ARCH_FLAG_GEMMA4 | ARCH_FLAG_TIED_HEAD
 
 # Mapping from fast_quant.c quantize mode_i -> (t16c n_bits, is_asym)
 MODE_TO_T16C: Dict[int, Tuple[int, bool]] = {
-    0: (1, True),   # 1-bit asymmetric bit-serial (64 + plane = 576B @ b256)
-    1: (5, False),  # 5-trit ternary symmetric (32 + 52*16 = 864B @ b256)
-    2: (2, False),  # 2-bit symmetric bit-serial (32 + 2*plane = 1056B @ b256)
-    3: (2, True),   # 2-bit asymmetric bit-serial (64 + 2*plane = 1088B @ b256)
-    4: (3, False),  # 3-bit symmetric bit-serial (32 + 3*plane = 1568B @ b256)
+    0: (1, True),          # 1-bit asymmetric bit-serial (64 + plane = 576B @ b256)
+    1: (5, False),         # 5-trit ternary symmetric (32 + 52*16 = 864B @ b256)
+    2: (2, False),         # 2-bit symmetric bit-serial (32 + 2*plane = 1056B @ b256)
+    3: (2, True),          # 2-bit asymmetric bit-serial (64 + 2*plane = 1088B @ b256)
+    4: (3, False),         # 3-bit symmetric bit-serial (32 + 3*plane = 1568B @ b256)
+    5: (2 | 0x80, False),  # 2-bit non-uniform Gaussian symmetric (32 + 2*plane = 1056B @ b256)
+    6: (3 | 0x80, False),  # 3-bit non-uniform Gaussian symmetric (32 + 3*plane = 1568B @ b256)
 }
 
 LAYER_PROJS: List[Tuple[str, str]] = [
@@ -47,20 +49,24 @@ def tile16_blk_bytes(block_size: int, n_bits: int, is_asym: bool) -> int:
     """Return packed byte count of a single `16 x block_size` tile-block."""
     if block_size not in (64, 128, 256):
         raise ValueError(f"Unsupported block_size={block_size}")
-    if n_bits == 5:
+    eff_bits = n_bits & 0x7F
+    gauss = (n_bits & 0x80) != 0
+    if gauss and eff_bits not in (2, 3):
+        raise ValueError(f"T16C_GAUSS_BIT (0x80) requires eff_bits in (2, 3), got n_bits={n_bits}")
+    if eff_bits == 5:
         if is_asym:
             raise ValueError("n_bits=5 (5-trit ternary) requires is_asym=False")
         quintets = (block_size + 4) // 5
         return 32 + quintets * 16
-    if n_bits == 8:
+    if eff_bits == 8:
         if is_asym:
             raise ValueError("n_bits=8 (symmetric signed INT8) requires is_asym=False")
         return 32 + block_size * 16
-    if not (1 <= n_bits <= 4):
+    if not (1 <= eff_bits <= 4):
         raise ValueError(f"Unsupported n_bits={n_bits}")
     hdr_bytes = 64 if is_asym else 32
     plane_bytes = (block_size // 8) * 16
-    return hdr_bytes + n_bits * plane_bytes
+    return hdr_bytes + eff_bits * plane_bytes
 
 
 def expected_tile16_bytes(d_out: int, d_in: int, block_size: int, n_bits: int, is_asym: bool) -> int:
@@ -362,7 +368,9 @@ def _self_test() -> int:
         assert tile16_blk_bytes(256, 1, True) == 576
         assert tile16_blk_bytes(256, 5, False) == 864
         assert tile16_blk_bytes(256, 2, False) == 1056
+        assert tile16_blk_bytes(256, 2 | 0x80, False) == 1056
         assert tile16_blk_bytes(256, 3, False) == 1568
+        assert tile16_blk_bytes(256, 3 | 0x80, False) == 1568
         assert tile16_blk_bytes(64, 5, False) == 240
         assert tile16_blk_bytes(128, 5, False) == 448
         assert tile16_blk_bytes(64, 8, False) == 1056
@@ -370,6 +378,11 @@ def _self_test() -> int:
         try:
             tile16_blk_bytes(256, 5, True)
             raise AssertionError("Expected ValueError for ternary+asym")
+        except ValueError:
+            pass
+        try:
+            tile16_blk_bytes(256, 1 | 0x80, False)
+            raise AssertionError("Expected ValueError for 1-bit+gauss")
         except ValueError:
             pass
         try:

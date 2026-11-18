@@ -1,0 +1,101 @@
+=== PROOF 1: TEXT ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 31.48s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(5699428), Some(4944552))
+[run31b] prompt 20 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 5279, 529, 7001, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.88s (pinned=true)
+[run31b] layer 05/60 done in 1.25s (pinned=true)
+[run31b] layer 14/60 done in 0.69s (pinned=true)
+[run31b] layer 29/60 done in 0.64s (pinned=true)
+[run31b] layer 44/60 done in 0.52s (pinned=true)
+[run31b] layer 59/60 done in 1.03s (pinned=true)
+[run31b] prefill done in 37.66s ssd_read_mb=0.0 vm=(Some(5909268), Some(5867112))
+PREFILL_TOP5 [818:"The"(24.719), 2021:"To"(24.546), 10081:"Since"(24.113), 8291:"Here"(19.716), 79629:"Depending"(19.582)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 12.00s vm=(Some(5940104), Some(5889244))
+[STEP 1] id=5279 text=" capital"
+[run31b] decode step 1 in 10.26s vm=(Some(5949148), Some(5871464))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 7.41s vm=(Some(5949148), Some(5932020))
+[STEP 3] id=7001 text=" France"
+[run31b] decode step 3 in 4.49s vm=(Some(6066224), Some(6066224))
+[STEP 4] id=563 text=" is"
+[run31b] decode step 4 in 3.14s vm=(Some(6082692), Some(6082692))
+[STEP 5] id=5213 text=" **"
+[run31b] decode step 5 in 2.76s vm=(Some(6085552), Some(6085552))
+[STEP 6] id=31756 text="France"
+[run31b] decode step 6 in 3.35s vm=(Some(6085300), Some(6076732))
+[STEP 7] id=1018 text="**"
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 31756, 1018]
+GEN31B text="The capital of France is **France**"
+KV31B mode=Fp8E4M3 raw_bytes=48660480 compressed_bytes=12346560 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=11307 prefill_s=37.66 decode_s=43.44 vm_hwm_kb=Some(6085300) vm_rss_kb=Some(6076764)
+=== PROOF 2: SPECULATIVE ASSISTANT ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=334.31 shared_kv=(L58,L59) step_pos=false
+[run31b] loaded in 14.04s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(6480620), Some(6480620))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.67s (pinned=true)
+[run31b] layer 05/60 done in 0.75s (pinned=true)
+[run31b] layer 14/60 done in 0.64s (pinned=true)
+[run31b] layer 29/60 done in 0.78s (pinned=true)
+[run31b] layer 44/60 done in 0.55s (pinned=true)
+[run31b] layer 59/60 done in 0.98s (pinned=true)
+[run31b] prefill done in 36.88s ssd_read_mb=0.0 vm=(Some(6825864), Some(6825864))
+PREFILL_TOP5 [79629:"Depending"(20.095), 2021:"To"(19.687), 818:"The"(19.363), 22515:"Based"(18.653), 2859:"If"(16.845)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec fallback k=1 step=0 in 2.92s k_window=3 vm=(Some(6837928), Some(6837928))
+[STEP 1] id=580 text=" on"
+[run31b] spec fallback k=1 step=1 in 2.58s k_window=3 vm=(Some(6838020), Some(6838020))
+[STEP 2] id=506 text=" the"
+[run31b] spec fallback k=1 step=2 in 3.19s k_window=3 vm=(Some(6837564), Some(6810124))
+[STEP 3] id=4403 text=" context"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 6.25s vm=(Some(6837564), Some(6818700))
+[STEP 4] id=236764 text=","
+[STEP 5] id=625 text=" it"
+[run31b] spec batch=2 drafted=2 accepted=1 next_k=3 ewma=0.74 in 4.97s vm=(Some(6837564), Some(6818700))
+[STEP 6] id=563 text=" is"
+[run31b] spec fallback k=1 step=6 in 2.63s k_window=3 vm=(Some(6837564), Some(6818700))
+[STEP 7] id=236743 text=" "
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 step_pos=false min_margin=0.75 margin_stopped=3 ast_lm_skipped=124903 drafted=5 accepted=1 batches=2 fallback_k1=4 accept_rate=0.200 generated=8 s_per_tok=3.373
+GEN31B ids=[79629, 580, 506, 4403, 236764, 625, 563, 236743]
+GEN31B text="Depending on the context, it is "
+KV31B mode=Fp8E4M3 raw_bytes=57671680 compressed_bytes=14632960 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=2166 prefill_s=36.88 decode_s=23.61 vm_hwm_kb=Some(6837564) vm_rss_kb=Some(6818700)
+=== PROOF 3: VISION IMAGE ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.23s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(6294596), Some(6294596))
+[run31b] vision encoded 640x480 -> n_soft=266 in 1376.63s
+[run31b] prompt 286 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 9.73s (pinned=true)
+[run31b] layer 05/60 done in 11.63s (pinned=true)
+[run31b] layer 14/60 done in 9.57s (pinned=true)
+[run31b] layer 29/60 done in 11.59s (pinned=true)
+[run31b] layer 44/60 done in 7.60s (pinned=true)
+[run31b] layer 59/60 done in 12.58s (pinned=true)
+[run31b] prefill done in 529.20s ssd_read_mb=0.0 vm=(Some(6964084), Some(6884800))
+PREFILL_TOP5 [818:"The"(23.028), 2094:"This"(21.508), 1018:"**"(20.257), 10081:"Since"(20.220), 67723:"Brad"(19.676)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 4.84s vm=(Some(7088716), Some(7088716))
+[STEP 1] id=2471 text=" image"
+[run31b] decode step 1 in 3.73s vm=(Some(7103968), Some(7099772))
+[STEP 2] id=563 text=" is"
+[run31b] decode step 2 in 3.33s vm=(Some(7103968), Some(7102712))
+[STEP 3] id=496 text=" a"
+[run31b] decode step 3 in 3.25s vm=(Some(7103968), Some(7103636))
+[STEP 4] id=7426 text=" visual"
+[run31b] decode step 4 in 3.24s vm=(Some(7104556), Some(7104556))
+[STEP 5] id=10065 text=" representation"
+GEN31B ids=[818, 2471, 563, 496, 7426, 10065]
+GEN31B text="The image is a visual representation"
+KV31B mode=Fp8E4M3 raw_bytes=524451840 compressed_bytes=133068480 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=9798 prefill_s=529.20 decode_s=18.40 vm_hwm_kb=Some(7104556) vm_rss_kb=Some(7104556)
+ALL_3_PROOFS_OK

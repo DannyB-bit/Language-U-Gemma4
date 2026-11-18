@@ -36,7 +36,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+_resolved_file = Path(__file__).resolve()
+REPO_ROOT = _resolved_file.parents[4] if len(_resolved_file.parents) > 4 else _resolved_file.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -941,6 +942,67 @@ def write_c8db_file(
                     f.write(b"\x00" * exp_pad)
             pos += payload_bytes
     return out_path.stat().st_size
+
+
+def read_c8db_file(path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, dict]]:
+    """Deserialize 64-byte-aligned `.c8d` (`C8DB` v1) pattern bank container."""
+    norms: Dict[str, np.ndarray] = {}
+    entries: Dict[str, dict] = {}
+    with open(path, "rb") as f:
+        magic, ver, n_norms, n_entries, _flags, _res = struct.unpack("<4s5I", f.read(24))
+        if magic != C8DB_MAGIC or ver != C8DB_VERSION:
+            raise ValueError(f"Invalid C8DB header in {path}: {magic!r} v{ver}")
+        pos = 24
+        for _ in range(n_norms):
+            nlen = struct.unpack("<H", f.read(2))[0]
+            name = f.read(nlen).decode("utf-8")
+            cnt = struct.unpack("<I", f.read(4))[0]
+            arr = np.frombuffer(f.read(cnt * 4), dtype="<f4").copy()
+            norms[name] = arr
+            pos += 2 + nlen + 4 + cnt * 4
+        for _ in range(n_entries):
+            hdr = f.read(40)
+            nlen, d_out, d_in, rk, n_exp, top_k, _r0, _r1, rc, rf, ra, bt, temp, gscale, _r2, payload_bytes = struct.unpack(
+                "<HIIHBBBBBBBBffIQ", hdr
+            )
+            name = f.read(nlen).decode("utf-8")
+            pos += 40 + nlen
+            pad = (64 - (pos % 64)) % 64
+            if pad:
+                f.read(pad)
+                pos += pad
+            payload = f.read(payload_bytes)
+            pos += payload_bytes
+            meta_bytes = n_exp * 8 * 4 + n_exp * 4
+            meta_pad = (64 - (meta_bytes % 64)) % 64
+            cents = np.frombuffer(payload[: n_exp * 8 * 4], dtype="<f4").reshape(n_exp, 8).copy()
+            off = meta_bytes + meta_pad
+            exp_bytes = d_out * 4 + rk * 4 + d_out * rk + rk * d_in
+            exp_stride = (exp_bytes + 63) & ~63
+            experts = []
+            for e_i in range(n_exp):
+                eo = off + e_i * exp_stride
+                su = np.frombuffer(payload[eo : eo + d_out * 4], dtype="<f4").copy()
+                eo += d_out * 4
+                sv = np.frombuffer(payload[eo : eo + rk * 4], dtype="<f4").copy()
+                eo += rk * 4
+                ui = np.frombuffer(payload[eo : eo + d_out * rk], dtype=np.int8).reshape(d_out, rk).copy()
+                eo += d_out * rk
+                vi = np.frombuffer(payload[eo : eo + rk * d_in], dtype=np.int8).reshape(rk, d_in).copy()
+                experts.append((su, sv, ui, vi))
+            entries[name] = {
+                "name": name,
+                "d_out": d_out,
+                "d_in": d_in,
+                "rank": rk,
+                "top_k": top_k,
+                "c6d": (rc, rf, ra, bt),
+                "temperature": temp,
+                "gate_scale": gscale,
+                "centroids": cents,
+                "experts": experts,
+            }
+    return norms, entries
 
 
 def train_projection_pattern_bank(

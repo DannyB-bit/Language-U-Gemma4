@@ -1,0 +1,45 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5615545408 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d: entries=5 norms=1 payload_bytes=10475584 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_31b_assistant.t16c: layers=4 d=1024 resident_mb=334.31 shared_kv=(L58,L59) step_pos=false
+[run31b] loaded in 13.04s pinned_layers=60/60 pinned_bytes=5782120848 embed_bytes=539492352 vm=(Some(6636984), Some(6636984))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.63s (pinned=true)
+[run31b] layer 05/60 done in 0.67s (pinned=true)
+[run31b] layer 14/60 done in 0.59s (pinned=true)
+[run31b] layer 29/60 done in 0.68s (pinned=true)
+[run31b] layer 44/60 done in 0.45s (pinned=true)
+[run31b] layer 59/60 done in 0.76s (pinned=true)
+[TRIMODAL] step=0 mode=RESCUE score=0.6854 read=0.301 hear=1.000 see=1.000 hf=0.98 cr=16.63 marg=0.324 prob=0.459 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=0 rescued_marg=0.408 rescued_score=0.6936 mode=RESCUE
+[TRIMODAL-OPTICAL] step=0 rescue_canvas_crc32=0xfd018cc0
+[run31b] prefill done in 32.00s ssd_read_mb=0.0 vm=(Some(6934596), Some(6873124))
+PREFILL_TOP5 [79629:"Depending"(20.095), 2021:"To"(19.687), 818:"The"(19.363), 22515:"Based"(18.653), 2859:"If"(16.845)]
+[STEP 0] id=79629 text="Depending"
+[TRIMODAL] step=1 mode=CLEAN score=0.9996 read=0.999 hear=1.000 see=1.000 hf=1.07 cr=14.40 marg=6.379 prob=0.997 sieve=0.250 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=0 in 2.65s k_window=3 vm=(Some(6934596), Some(6880252))
+[STEP 1] id=580 text=" on"
+[TRIMODAL] step=2 mode=CLEAN score=0.9896 read=0.977 hear=1.000 see=1.000 hf=1.02 cr=13.87 marg=2.852 prob=0.934 sieve=0.250 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=1 in 2.53s k_window=3 vm=(Some(6934596), Some(6880252))
+[STEP 2] id=506 text=" the"
+[TRIMODAL] step=3 mode=RESCUE score=0.7297 read=0.399 hear=1.000 see=1.000 hf=0.97 cr=8.07 marg=0.894 prob=0.034 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=3 rescued_marg=3.668 rescued_score=0.9812 mode=CLEAN
+[run31b] spec fallback k=1 step=2 in 2.65s k_window=3 vm=(Some(6934596), Some(6880252))
+[STEP 3] id=4403 text=" context"
+[TRIMODAL] step=4 mode=CAUTION score=0.8846 read=0.744 hear=1.000 see=1.000 hf=0.94 cr=13.76 marg=1.112 prob=0.748 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=4 rescued_marg=1.112 rescued_score=0.8846 mode=CAUTION
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 6.24s vm=(Some(6934596), Some(6880252))
+[STEP 4] id=236764 text=","
+[STEP 5] id=625 text=" it"
+[TRIMODAL] step=6 mode=CLEAN score=0.9928 read=0.984 hear=1.000 see=1.000 hf=0.97 cr=9.63 marg=3.603 prob=0.954 sieve=0.250 cs=0.00e0 k=3 c8db=false
+[run31b] spec batch=2 drafted=1 accepted=1 next_k=3 ewma=0.84 in 3.76s vm=(Some(6934596), Some(6880252))
+[STEP 6] id=563 text=" is"
+[TRIMODAL] step=7 mode=CLEAN score=0.9343 read=0.854 hear=1.000 see=1.000 hf=0.98 cr=12.28 marg=1.335 prob=0.787 sieve=0.250 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=6 in 2.50s k_window=3 vm=(Some(6934596), Some(6880252))
+[STEP 7] id=236743 text=" "
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 step_pos=false min_margin=0.75 margin_stopped=3 ast_lm_skipped=1330680 drafted=4 accepted=1 batches=2 fallback_k1=4 accept_rate=0.250 generated=8 s_per_tok=3.008
+GEN31B ids=[79629, 580, 506, 4403, 236764, 625, 563, 236743]
+GEN31B text="Depending on the context, it is "
+KV31B mode=Fp8E4M3 raw_bytes=55869440 compressed_bytes=14175680 shrink=3.94x
+MEM31B pinned_bytes=5782120848 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1183996 prefill_s=32.00 decode_s=21.06 vm_hwm_kb=Some(6934596) vm_rss_kb=Some(6880252)

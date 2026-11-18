@@ -1,0 +1,191 @@
+[transformers] `Gemma4ImageProcessor` requires torchvision (not installed); falling back to `Gemma4ImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `Gemma4ImageProcessorPil` directly to silence this warning.
+[V4.2] Vision upper bound 161,292,204 B -> LM budget 6,198,707,796 B (total 6,360,000,000)
+[CaptureV4] n_tok=4137 cal_end=4096 ans_tokens=2289 test2=4096:4117 testf=4117:4137
+L00/59 (S) dt=278.5s elap= 278.5s rss=527MB
+L01/59 (S) dt=279.6s elap= 558.1s rss=527MB
+L02/59 (S) dt=278.1s elap= 836.2s rss=527MB
+L03/59 (S) dt=277.8s elap=1113.9s rss=527MB
+L04/59 (S) dt=281.0s elap=1394.9s rss=527MB
+L05/59 (F) dt=367.0s elap=1761.9s rss=535MB
+L06/59 (S) dt=280.3s elap=2042.2s rss=535MB
+L07/59 (S) dt=280.4s elap=2322.6s rss=535MB
+L08/59 (S) dt=281.6s elap=2604.3s rss=535MB
+L09/59 (S) dt=280.3s elap=2884.5s rss=535MB
+L10/59 (S) dt=281.2s elap=3165.8s rss=535MB
+L11/59 (F) dt=373.1s elap=3538.9s rss=535MB
+L12/59 (S) dt=280.8s elap=3819.6s rss=535MB
+L13/59 (S) dt=278.3s elap=4097.9s rss=535MB
+L14/59 (S) dt=282.3s elap=4380.2s rss=535MB
+L15/59 (S) dt=279.8s elap=4660.0s rss=535MB
+L16/59 (S) dt=280.0s elap=4940.0s rss=535MB
+L17/59 (F) dt=373.9s elap=5313.9s rss=535MB
+L18/59 (S) dt=280.5s elap=5594.4s rss=535MB
+L19/59 (S) dt=279.3s elap=5873.7s rss=535MB
+L20/59 (S) dt=281.0s elap=6154.7s rss=535MB
+L21/59 (S) dt=281.5s elap=6436.2s rss=535MB
+L22/59 (S) dt=282.0s elap=6718.1s rss=535MB
+L23/59 (F) dt=372.1s elap=7090.2s rss=535MB
+L24/59 (S) dt=280.7s elap=7370.9s rss=535MB
+L25/59 (S) dt=282.2s elap=7653.1s rss=535MB
+L26/59 (S) dt=283.6s elap=7936.7s rss=535MB
+L27/59 (S) dt=285.9s elap=8222.6s rss=535MB
+L28/59 (S) dt=280.9s elap=8503.5s rss=535MB
+L29/59 (F) dt=371.8s elap=8875.3s rss=535MB
+L30/59 (S) dt=280.8s elap=9156.1s rss=535MB
+L31/59 (S) dt=279.0s elap=9435.1s rss=535MB
+L32/59 (S) dt=280.4s elap=9715.5s rss=535MB
+L33/59 (S) dt=281.9s elap=9997.4s rss=535MB
+L34/59 (S) dt=281.1s elap=10278.5s rss=535MB
+L35/59 (F) dt=372.9s elap=10651.4s rss=535MB
+L36/59 (S) dt=282.3s elap=10933.7s rss=535MB
+L37/59 (S) dt=281.6s elap=11215.3s rss=535MB
+L38/59 (S) dt=280.6s elap=11495.9s rss=535MB
+L39/59 (S) dt=281.2s elap=11777.1s rss=535MB
+L40/59 (S) dt=280.0s elap=12057.2s rss=535MB
+L41/59 (F) dt=369.4s elap=12426.6s rss=535MB
+L42/59 (S) dt=278.8s elap=12705.4s rss=535MB
+L43/59 (S) dt=281.9s elap=12987.3s rss=535MB
+L44/59 (S) dt=278.0s elap=13265.2s rss=535MB
+L45/59 (S) dt=281.6s elap=13546.8s rss=535MB
+L46/59 (S) dt=280.8s elap=13827.6s rss=535MB
+L47/59 (F) dt=370.5s elap=14198.1s rss=535MB
+L48/59 (S) dt=281.2s elap=14479.3s rss=535MB
+L49/59 (S) dt=280.4s elap=14759.7s rss=535MB
+L50/59 (S) dt=285.6s elap=15045.3s rss=535MB
+L51/59 (S) dt=278.5s elap=15323.7s rss=535MB
+L52/59 (S) dt=280.0s elap=15603.8s rss=535MB
+L53/59 (F) dt=371.7s elap=15975.5s rss=535MB
+L54/59 (S) dt=281.3s elap=16256.9s rss=535MB
+L55/59 (S) dt=283.3s elap=16540.1s rss=535MB
+L56/59 (S) dt=283.2s elap=16823.3s rss=535MB
+L57/59 (S) dt=282.7s elap=17106.0s rss=535MB
+L58/59 (S) dt=285.1s elap=17391.1s rss=834MB
+L59/59 (F) dt=363.0s elap=17754.1s rss=951MB
+CAPTURE_V4_COMPLETE OK
+[V4.2 Stage3] teacher capture done in 17756.9s rss=450MB
+[V4.2 Stage4] LM allocation upper bound 6,160,464,765 B (LM budget 6,198,707,796 B)
+[V4 ALLOC] target_bytes=6,160,464,765 B (6.160 GB / 5.737 GiB) (budget=6,198,707,796)
+[EMBED 3b_u0] 142.6s cos_t2=0.98201
+L00 (111/111 r=16) casc_t2=0.99399(last=0.97947) casc_tf=0.99255(last=0.97949) nr=0.9993 [745.4s] rss=777MB
+L01 (111/111 r=16) casc_t2=0.95527(last=0.97414) casc_tf=0.95172(last=0.97172) nr=1.0466 [729.9s] rss=787MB
+L02 (414/111 r=16) casc_t2=0.95990(last=0.97620) casc_tf=0.95612(last=0.97398) nr=1.0446 [677.6s] rss=902MB
+L03 (111/111 r=16) casc_t2=0.97036(last=0.98144) casc_tf=0.96777(last=0.98011) nr=1.0401 [670.7s] rss=763MB
+L04 (414/111 r=16) casc_t2=0.97181(last=0.98268) casc_tf=0.96888(last=0.98147) nr=1.0414 [686.0s] rss=824MB
+L05 (111/111 r=16) casc_t2=0.98711(last=0.99232) casc_tf=0.98538(last=0.99177) nr=1.0306 [918.7s] rss=824MB
+L06 (111/111 r=16) casc_t2=0.99223(last=0.99540) casc_tf=0.99097(last=0.99507) nr=1.0215 [665.4s] rss=821MB
+L07 (111/111 r=16) casc_t2=0.99442(last=0.99665) casc_tf=0.99363(last=0.99614) nr=1.0123 [653.4s] rss=781MB
+L08 (111/000 r=16) casc_t2=0.99321(last=0.99601) casc_tf=0.99257(last=0.99525) nr=1.0091 [671.4s] rss=787MB
+L09 (111/000 r=16) casc_t2=0.99493(last=0.99709) casc_tf=0.99451(last=0.99653) nr=0.9899 [670.6s] rss=806MB
+L10 (515/000 r=16) casc_t2=0.99586(last=0.99784) casc_tf=0.99552(last=0.99742) nr=0.9824 [655.3s] rss=777MB
+L11 (111/111 r=16) casc_t2=0.99670(last=0.99820) casc_tf=0.99643(last=0.99786) nr=0.9794 [897.0s] rss=803MB
+L12 (111/000 r=16) casc_t2=0.99662(last=0.99812) casc_tf=0.99636(last=0.99799) nr=0.9835 [663.2s] rss=866MB
+L13 (111/000 r=16) casc_t2=0.99644(last=0.99805) casc_tf=0.99614(last=0.99789) nr=0.9814 [656.6s] rss=782MB
+L14 (515/111 r=16) casc_t2=0.99642(last=0.99797) casc_tf=0.99610(last=0.99777) nr=0.9810 [648.1s] rss=781MB
+L15 (111/000 r=16) casc_t2=0.99682(last=0.99783) casc_tf=0.99632(last=0.99769) nr=0.9809 [672.3s] rss=806MB
+L16 (111/000 r=16) casc_t2=0.99621(last=0.99760) casc_tf=0.99563(last=0.99744) nr=0.9886 [669.4s] rss=864MB
+L17 (111/111 r=16) casc_t2=0.99680(last=0.99828) casc_tf=0.99626(last=0.99820) nr=0.9750 [890.1s] rss=842MB
+L18 (111/000 r=16) casc_t2=0.99613(last=0.99791) casc_tf=0.99540(last=0.99776) nr=0.9750 [653.4s] rss=819MB
+L19 (515/111 r=16) casc_t2=0.99586(last=0.99775) casc_tf=0.99488(last=0.99759) nr=0.9627 [657.1s] rss=778MB
+L20 (111/000 r=16) casc_t2=0.99498(last=0.99612) casc_tf=0.99372(last=0.99598) nr=0.9557 [673.8s] rss=766MB
+L21 (111/000 r=16) casc_t2=0.99304(last=0.99236) casc_tf=0.99158(last=0.99150) nr=0.9566 [656.9s] rss=767MB
+L22 (111/000 r=16) casc_t2=0.98986(last=0.98600) casc_tf=0.98808(last=0.98253) nr=0.9496 [655.2s] rss=777MB
+L23 (111/111 r=16) casc_t2=0.98776(last=0.98121) casc_tf=0.98488(last=0.97394) nr=0.9392 [894.8s] rss=763MB
+L24 (111/000 r=16) casc_t2=0.98140(last=0.96096) casc_tf=0.97575(last=0.94890) nr=0.9449 [663.5s] rss=787MB
+L25 (111/000 r=16) casc_t2=0.97101(last=0.92621) casc_tf=0.96245(last=0.89653) nr=0.9412 [664.8s] rss=806MB
+L26 (111/000 r=16) casc_t2=0.96380(last=0.90542) casc_tf=0.95520(last=0.87601) nr=0.9616 [658.3s] rss=786MB
+L27 (111/000 r=16) casc_t2=0.95438(last=0.86592) casc_tf=0.94406(last=0.83784) nr=0.9576 [696.6s] rss=776MB
+L28 (111/000 r=16) casc_t2=0.96719(last=0.90207) casc_tf=0.95835(last=0.87200) nr=0.9836 [683.3s] rss=806MB
+L29 (111/111 r=16) casc_t2=0.97576(last=0.93905) casc_tf=0.96497(last=0.90227) nr=0.9810 [900.2s] rss=778MB
+L30 (111/000 r=16) casc_t2=0.97480(last=0.95545) casc_tf=0.96087(last=0.92210) nr=0.9793 [660.3s] rss=777MB
+L31 (111/000 r=16) casc_t2=0.97514(last=0.95871) casc_tf=0.96446(last=0.92952) nr=0.9369 [662.5s] rss=776MB
+L32 (111/000 r=16) casc_t2=0.97310(last=0.95692) casc_tf=0.96276(last=0.93154) nr=0.9038 [668.4s] rss=805MB
+L33 (111/000 r=16) casc_t2=0.96857(last=0.94868) casc_tf=0.95849(last=0.91661) nr=0.8947 [663.8s] rss=806MB
+L34 (111/000 r=16) casc_t2=0.96535(last=0.94647) casc_tf=0.95711(last=0.91505) nr=0.9151 [664.4s] rss=765MB
+L35 (111/111 r=16) casc_t2=0.96566(last=0.94385) casc_tf=0.95770(last=0.90870) nr=0.9415 [903.3s] rss=825MB
+L36 (111/000 r=16) casc_t2=0.95528(last=0.92129) casc_tf=0.94487(last=0.87053) nr=0.9425 [670.2s] rss=803MB
+L37 (111/000 r=16) casc_t2=0.94285(last=0.89945) casc_tf=0.93171(last=0.84588) nr=0.9516 [666.8s] rss=802MB
+L38 (111/000 r=16) casc_t2=0.91591(last=0.85963) casc_tf=0.89980(last=0.78277) nr=0.9496 [683.0s] rss=865MB
+L39 (111/000 r=16) casc_t2=0.85162(last=0.76030) casc_tf=0.82572(last=0.62611) nr=0.9517 [692.7s] rss=780MB
+L40 (111/000 r=16) casc_t2=0.81918(last=0.69212) casc_tf=0.78676(last=0.53310) nr=0.9808 [687.6s] rss=767MB
+L41 (111/111 r=16) casc_t2=0.86238(last=0.75982) casc_tf=0.84160(last=0.60638) nr=0.9957 [1377.6s] rss=771MB
+L42 (111/000 r=16) casc_t2=0.87014(last=0.75484) casc_tf=0.85177(last=0.60372) nr=0.9661 [698.1s] rss=863MB
+L43 (111/000 r=16) casc_t2=0.86613(last=0.74365) casc_tf=0.84055(last=0.57855) nr=0.9319 [686.0s] rss=864MB
+L44 (111/000 r=16) casc_t2=0.86412(last=0.74046) casc_tf=0.84552(last=0.59326) nr=0.9137 [685.2s] rss=767MB
+L45 (111/000 r=16) casc_t2=0.84337(last=0.70896) casc_tf=0.82639(last=0.57543) nr=0.8931 [685.8s] rss=866MB
+L46 (111/000 r=16) casc_t2=0.82727(last=0.67597) casc_tf=0.81178(last=0.54176) nr=0.8793 [677.1s] rss=866MB
+L47 (111/111 r=16) casc_t2=0.85717(last=0.70766) casc_tf=0.84682(last=0.59403) nr=0.8807 [907.0s] rss=870MB
+L48 (111/000 r=16) casc_t2=0.87771(last=0.73263) casc_tf=0.86939(last=0.62519) nr=0.8904 [676.6s] rss=869MB
+L49 (111/000 r=16) casc_t2=0.85505(last=0.69429) casc_tf=0.83746(last=0.55758) nr=0.8799 [685.3s] rss=868MB
+L50 (111/000 r=16) casc_t2=0.83058(last=0.65477) casc_tf=0.80753(last=0.51492) nr=0.8582 [684.4s] rss=887MB
+L51 (111/000 r=16) casc_t2=0.72678(last=0.47909) casc_tf=0.69188(last=0.32375) nr=0.8498 [680.4s] rss=868MB
+L52 (111/000 r=16) casc_t2=0.58094(last=0.18624) casc_tf=0.54980(last=0.06950) nr=0.8115 [688.7s] rss=888MB
+L53 (111/111 r=16) casc_t2=0.66671(last=0.27156) casc_tf=0.63919(last=0.15933) nr=0.8718 [906.8s] rss=909MB
+L54 (111/111 r=16) casc_t2=0.69551(last=0.28804) casc_tf=0.65664(last=0.17242) nr=0.8887 [678.9s] rss=853MB
+L55 (111/111 r=16) casc_t2=0.70683(last=0.30956) casc_tf=0.67317(last=0.20562) nr=0.9012 [684.3s] rss=891MB
+L56 (111/111 r=16) casc_t2=0.68266(last=0.30846) casc_tf=0.64722(last=0.19618) nr=0.8856 [813.5s] rss=868MB
+L57 (111/111 r=16) casc_t2=0.65166(last=0.32536) casc_tf=0.61993(last=0.22390) nr=0.8522 [764.9s] rss=844MB
+L58 (444/444 r=16) casc_t2=0.64373(last=0.48721) casc_tf=0.61066(last=0.41161) nr=0.9278 [844.4s] rss=809MB
+L59 (444/444 r=16) casc_t2=0.80311(last=0.70713) casc_tf=0.77763(last=0.62298) nr=1.2607 [1024.1s] rss=766MB
+[V4 FINAL_HIDDEN] cos_t2=0.47243 nr_t2=0.9885 | cos_tf=0.32817 nr_tf=0.8165
+[test_2p2 V4_TOP5] [(818, 25.33), (22515, 25.064), (100, 24.804), (101, 24.683), (79629, 23.908)]
+[test_fr V4_TOP5] [(100, 26.71), (107, 26.612), (101, 26.264), (108, 25.372), (45518, 25.134)]
+[V4.2 Stage4] calibration done in 43918.4s
+[V4.2 Stage6] unified /mnt/SHE-VAULT/gemma4_31b_v4_2_full.t16c = 6,321,723,648 B (6.3217 GB, 5.888 GiB) norms=585 mats=604
+[V4.2 Stage5] Vision C8DB stats={'keep': 1.0, 'cos_before': 0.7599670886993408, 'cos_after': 0.818787157535553} merge=yes
+[StudentV4 L00] 171.7s
+[StudentV4 L20] 132.9s
+[StudentV4 L39] 132.0s
+[StudentV4 L52] 133.2s
+[StudentV4 L57] 166.7s
+[StudentV4 L58] 195.2s
+[StudentV4 L59] 235.4s
+[Step3] Cached V4 student propagation in 9251.9s -> /mnt/SHE-VAULT/work31b/student_state_v4_2.npz
+[Step3-KV] model.language_model.layers.58.self_attn.k_proj.weight: val_cos 0.82589->0.88399 keep=True
+[Step3-KV] model.language_model.layers.58.self_attn.v_proj.weight: val_cos 0.69256->0.73069 keep=True
+[Step3-KV] model.language_model.layers.59.self_attn.k_proj.weight: val_cos 0.72928->0.83470 keep=True
+[Step3] V4 Student L59 cal cosine=0.78450
+[Step3-FN] val_mse 17.45448->14.44155 using=Wiener
+[Step3-Cell60 Before] Val KL=3.8962 top1=49.6% margin=-1.185
+[transformers] `Gemma4ImageProcessor` requires torchvision (not installed); falling back to `Gemma4ImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `Gemma4ImageProcessorPil` directly to silence this warning.
+[V4.2] Vision upper bound 161,292,204 B -> LM budget 6,198,707,796 B (total 6,360,000,000)
+[V4.2 Stage3] teacher capture already complete -> /mnt/SHE-VAULT/work31b/snaps_v4_2/teacher_bridge_v4.npz
+[V4.2 Stage4] calibration already complete -> /mnt/SHE-VAULT/work31b/layers_v4_2
+[V4.2 Stage6] unified /mnt/SHE-VAULT/gemma4_31b_v4_2_full.t16c already complete = 6,321,723,648 B
+[V4.2 Stage5] Vision C8DB stats={'keep': 1.0, 'cos_before': 0.7599670886993408, 'cos_after': 0.818787157535553} merge=yes
+[Step3-KV] model.language_model.layers.58.self_attn.k_proj.weight: val_cos 0.82589->0.88251 keep=True
+[Step3-KV] model.language_model.layers.58.self_attn.v_proj.weight: val_cos 0.69256->0.73590 keep=True
+[Step3-KV] model.language_model.layers.59.self_attn.k_proj.weight: val_cos 0.72928->0.83446 keep=True
+[Step3] V4 Student L59 cal cosine=0.78237
+[Step3-FN] val_mse 17.27587->14.35158 using=Wiener
+[Step3-Cell60 Before] Val KL=3.3114 top1=51.1% margin=-1.141 cand_vocab=6144
+  step 001/300 loss=32.8061 | Va: KL=3.323 acc=50.2% marg=-1.13
+  step 020/300 loss=25.8018 | Va: KL=3.194 acc=50.0% marg=-0.82
+  step 040/300 loss=23.1621 | Va: KL=3.244 acc=50.9% marg=-0.69
+  step 060/300 loss=20.8037 | Va: KL=3.160 acc=50.2% marg=-0.66
+  step 080/300 loss=19.6169 | Va: KL=3.106 acc=49.8% marg=-0.52
+  step 100/300 loss=19.5263 | Va: KL=3.049 acc=51.7% marg=-0.45
+  step 120/300 loss=18.8357 | Va: KL=3.122 acc=50.4% marg=-0.48
+  step 140/300 loss=19.4128 | Va: KL=3.012 acc=50.2% marg=-0.40
+  step 160/300 loss=19.1588 | Va: KL=3.136 acc=52.0% marg=-0.43
+  step 180/300 loss=17.9918 | Va: KL=3.030 acc=52.2% marg=-0.31
+  step 200/300 loss=17.3618 | Va: KL=2.928 acc=52.4% marg=-0.24
+  step 220/300 loss=17.7586 | Va: KL=2.864 acc=51.5% marg=-0.30
+  step 240/300 loss=17.4971 | Va: KL=2.907 acc=52.4% marg=-0.28
+  step 260/300 loss=17.7192 | Va: KL=2.822 acc=53.1% marg=-0.26
+  step 280/300 loss=16.9051 | Va: KL=2.852 acc=52.0% marg=-0.35
+  step 300/300 loss=17.2979 | Va: KL=2.858 acc=52.4% marg=-0.22
+[Step3-Cell60 Quantized INT8] Val KL: 3.3114->2.8581, Top1: 51.1%->52.4%, Margin: -1.141->-0.222, StateCos: 0.65308->0.74376
+[Step3-DONE] Wrote /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d (1 norms, 4 entries, 10,497,792 B)
+[V4.2 Stage5] /mnt/SHE-VAULT/gemma4_31b_v4_2_c8d.c8d entries=['model.embed_vision.embedding_projection.weight', 'model.language_model.layers.58.self_attn.k_proj.weight', 'model.language_model.layers.58.self_attn.v_proj.weight', 'model.language_model.layers.59.self_attn.k_proj.weight', 'model.language_model.norm.post_cell60']
+=== test_2p2 (Ls=21) y0_T=236778:'2' y0_S=79629:'Depending' cos_h=0.58432 cos_k58=0.89060 cos_v58=0.80768 cos_k59=0.80027 ===
+  1_RefH_RefKV: step0_match=True prefix=5/5 exact=5/5 [(236778, '2'), (563, ' is'), (236743, ' '), (236778, '2'), (60167, '(*)')]
+  2_V4H_RefKV: step0_match=False prefix=0/5 exact=0/5 [(900, ' +'), (236743, ' '), (12083, ' är'), (4745, ' equal'), (5372, ' pul')]
+  3_RefH_V4KV: step0_match=False prefix=0/5 exact=0/5 [(900, ' +'), (236743, ' '), (2360, ' ?'), (578, ' ='), (236743, ' ')]
+  4_V4H_V4KV: step0_match=False prefix=0/5 exact=0/5 [(900, ' +'), (236743, ' '), (2360, ' ?'), (578, ' ='), (236743, ' ')]
+=== test_fr (Ls=20) y0_T=818:'The' y0_S=818:'The' cos_h=0.65660 cos_k58=0.87443 cos_v58=0.80723 cos_k59=0.78371 ===
+  1_RefH_RefKV: step0_match=True prefix=5/5 exact=5/5 [(669, ' The'), (5279, ' capital'), (529, ' of'), (506, ' the'), (5279, ' capital')]
+  2_V4H_RefKV: step0_match=True prefix=5/5 exact=5/5 [(669, ' The'), (5279, ' capital'), (529, ' of'), (506, ' the'), (5279, ' capital')]
+  3_RefH_V4KV: step0_match=False prefix=0/5 exact=0/5 [(236743, ' '), (236778, '2'), (236771, '0'), (6315, 'berg'), (556, 'ur')]
+  4_V4H_V4KV: step0_match=False prefix=0/5 exact=0/5 [(236743, ' '), (236778, '2'), (236771, '0'), (6954, ' ש'), (237903, '空')]
+[V4.2 Stage7] 2x2 replay complete
+V4_2_PHASE_B_COMPLETE OK

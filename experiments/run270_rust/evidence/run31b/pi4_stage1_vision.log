@@ -1,0 +1,36 @@
+[transformers] `Gemma4ImageProcessor` requires torchvision (not installed); falling back to `Gemma4ImageProcessorPil` for backward compatibility. Install torchvision to use the default backend, or import `Gemma4ImageProcessorPil` directly to silence this warning.
+  [Vision V00/26 m=4 r=8] stud_vs_teach_cos=0.99952 dt=560.2s
+  [Vision V01/26 m=4 r=8] stud_vs_teach_cos=0.99986 dt=560.0s
+  [Vision V02/26 m=1 r=0] stud_vs_teach_cos=0.99985 dt=483.7s
+  [Vision V03/26 m=1 r=0] stud_vs_teach_cos=0.99979 dt=486.9s
+  [Vision V04/26 m=1 r=0] stud_vs_teach_cos=0.99974 dt=491.4s
+  [Vision V05/26 m=1 r=0] stud_vs_teach_cos=0.99965 dt=492.9s
+  [Vision V06/26 m=1 r=0] stud_vs_teach_cos=0.99967 dt=491.9s
+  [Vision V07/26 m=1 r=0] stud_vs_teach_cos=0.99974 dt=492.9s
+  [Vision V08/26 m=1 r=0] stud_vs_teach_cos=0.99978 dt=494.1s
+  [Vision V09/26 m=1 r=0] stud_vs_teach_cos=0.99975 dt=493.3s
+  [Vision V10/26 m=1 r=0] stud_vs_teach_cos=0.99973 dt=499.8s
+  [Vision V11/26 m=1 r=0] stud_vs_teach_cos=0.99966 dt=497.8s
+  [Vision V12/26 m=1 r=0] stud_vs_teach_cos=0.99951 dt=505.2s
+  [Vision V13/26 m=1 r=0] stud_vs_teach_cos=0.99932 dt=493.4s
+  [Vision V14/26 m=1 r=0] stud_vs_teach_cos=0.99905 dt=494.5s
+  [Vision V15/26 m=1 r=0] stud_vs_teach_cos=0.99853 dt=492.8s
+  [Vision V16/26 m=1 r=0] stud_vs_teach_cos=0.99802 dt=494.4s
+  [Vision V17/26 m=1 r=0] stud_vs_teach_cos=0.99746 dt=492.9s
+  [Vision V18/26 m=1 r=0] stud_vs_teach_cos=0.99667 dt=493.0s
+  [Vision V19/26 m=1 r=0] stud_vs_teach_cos=0.99535 dt=490.9s
+  [Vision V20/26 m=1 r=0] stud_vs_teach_cos=0.99356 dt=493.7s
+  [Vision V21/26 m=1 r=0] stud_vs_teach_cos=0.99072 dt=493.6s
+  [Vision V22/26 m=1 r=0] stud_vs_teach_cos=0.98675 dt=491.3s
+  [Vision V23/26 m=1 r=0] stud_vs_teach_cos=0.97808 dt=492.8s
+  [Vision V24/26 m=4 r=8] stud_vs_teach_cos=0.96601 dt=564.7s
+  [Vision V25/26 m=4 r=8] stud_vs_teach_cos=0.95151 dt=564.8s
+  [Vision V26/26 m=4 r=8] stud_vs_teach_cos=0.89527 dt=564.1s
+    [Vision C8DB step 001/300] loss=0.9003 val_cos=0.76003 (1.6s)
+    [Vision C8DB step 050/300] loss=0.7235 val_cos=0.79627 (34.8s)
+    [Vision C8DB step 100/300] loss=0.6721 val_cos=0.80863 (68.8s)
+    [Vision C8DB step 150/300] loss=0.5985 val_cos=0.81396 (102.6s)
+    [Vision C8DB step 200/300] loss=0.5164 val_cos=0.81593 (136.6s)
+    [Vision C8DB step 250/300] loss=0.5479 val_cos=0.81736 (170.7s)
+    [Vision C8DB step 300/300] loss=0.4753 val_cos=0.81879 (204.5s)
+[Stage 2 DONE] Vision Val Soft-Token Cosine: 0.75997 -> 0.81879 (keep=True)

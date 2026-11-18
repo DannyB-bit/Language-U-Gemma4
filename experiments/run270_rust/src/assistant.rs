@@ -204,11 +204,30 @@ impl AssistantCfg {
     }
 }
 
+/// Return `(argmax_idx, top1_val, top2_val)` over a non-empty logit slice.
+#[inline]
+fn argmax_with_top2(logits: &[f32]) -> (u32, f32, f32) {
+    let mut best_i = 0u32;
+    let mut best_v = f32::NEG_INFINITY;
+    let mut second_v = f32::NEG_INFINITY;
+    for (idx, &v) in logits.iter().enumerate() {
+        if v > best_v {
+            second_v = best_v;
+            best_v = v;
+            best_i = idx as u32;
+        } else if v > second_v {
+            second_v = v;
+        }
+    }
+    (best_i, best_v, second_v)
+}
+
 /// Resident KV-sharing Gemma4Assistant speculative draft model backed by `T16CModel`.
 pub struct AssistantRuntime {
     pub model: T16CModel,
     pub cfg: AssistantCfg,
     pub threads: usize,
+    pub embed_tile_norms_fp16: Vec<u16>,
 }
 
 impl AssistantRuntime {
@@ -230,18 +249,20 @@ impl AssistantRuntime {
     /// Construct from a pre-loaded `T16CModel` and validated config.
     pub fn from_model(model: T16CModel, cfg: AssistantCfg, threads: usize) -> Result<Self, String> {
         cfg.validate(&model)?;
+        let embed_tile_norms_fp16 = model.mat("model.embed_tokens.weight")?.compute_tile_norms_fp16();
         Ok(Self {
             model,
             cfg,
             threads: threads.max(1),
+            embed_tile_norms_fp16,
         })
     }
 
-    /// Total compressed weight + norm bytes resident for this assistant cell.
+    /// Total compressed weight + norm + cached CS norm bytes resident for this assistant cell.
     pub fn resident_bytes(&self) -> usize {
         let mat_b: usize = self.model.mats.values().map(|m| m.total_bytes()).sum();
         let norm_b: usize = self.model.norms.values().map(|v| v.len() * 4).sum();
-        mat_b + norm_b
+        mat_b + norm_b + self.embed_tile_norms_fp16.len() * 2
     }
 
     /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
@@ -259,6 +280,26 @@ impl AssistantRuntime {
         kv_len: usize,
         q_pos: usize,
     ) -> Result<(u32, Vec<f32>, Vec<f32>), String> {
+        self.forward_step_logits_cs(
+            tok_embed, backbone_h, kv_slide_k, kv_slide_v, kv_full_k, kv_full_v, kv_len, q_pos, None,
+        )
+        .map(|(tok, next_h, logits, _)| (tok, next_h, logits))
+    }
+
+    /// Execute one autoregressive speculative draft step with optional Cauchy-Schwarz LM-head pruning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_step_logits_cs(
+        &self,
+        tok_embed: &[f32],
+        backbone_h: &[f32],
+        kv_slide_k: &[f32],
+        kv_slide_v: &[f32],
+        kv_full_k: &[f32],
+        kv_full_v: &[f32],
+        kv_len: usize,
+        q_pos: usize,
+        lmhead_cs_sieve: Option<f32>,
+    ) -> Result<(u32, Vec<f32>, Vec<f32>, i64), String> {
         let bh = self.cfg.backbone_hidden;
         if tok_embed.len() != bh || backbone_h.len() != bh {
             return Err(format!(
@@ -338,9 +379,99 @@ impl AssistantRuntime {
         let fn_w = self.model.norm("model.norm.weight")?;
         let h_final = rmsn_raw(&state, Some(fn_w), eps);
         let next_backbone = self.model.mat("post_projection.weight")?.project_batch(&h_final, 1, native, self.threads)?;
-        let logits = self.model.mat("model.embed_tokens.weight")?.project_batch(&h_final, 1, native, self.threads)?;
+        let (logits, lm_skipped) = if let Some(sieve_frac) = lmhead_cs_sieve {
+            self.model.mat("model.embed_tokens.weight")?.project_lmhead_cs(
+                &h_final,
+                1,
+                native,
+                self.threads,
+                Some(&self.embed_tile_norms_fp16),
+                16,
+                sieve_frac,
+            )?
+        } else {
+            (
+                self.model.mat("model.embed_tokens.weight")?.project_batch(&h_final, 1, native, self.threads)?,
+                0,
+            )
+        };
         let next_tok = argmax_f32(&logits);
-        Ok((next_tok, next_backbone, logits))
+        Ok((next_tok, next_backbone, logits, lm_skipped))
+    }
+
+    /// Draft up to `draft_len` greedy candidate tokens with optional logit-margin cutoff
+    /// and CS LM-head pruning. Stops before appending any token whose top-1 vs top-2 margin
+    /// falls below `min_logit_margin`, returning `(drafts, margin_stopped, lmhead_skipped_blks)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_sequence_gated<F>(
+        &self,
+        first_tok: u32,
+        mut embed_fn: F,
+        first_backbone_h: &[f32],
+        kv_slide_k: &[f32],
+        kv_slide_v: &[f32],
+        kv_full_k: &[f32],
+        kv_full_v: &[f32],
+        kv_len: usize,
+        start_q_pos: usize,
+        draft_len: usize,
+        advance_pos: bool,
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+    ) -> Result<(Vec<u32>, usize, i64), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+    {
+        let mut drafts = Vec::with_capacity(draft_len);
+        let mut cur_tok = first_tok;
+        let mut cur_backbone = first_backbone_h.to_vec();
+        let mut margin_stopped = 0usize;
+        let mut total_skipped = 0i64;
+        for step in 0..draft_len {
+            let tok_emb = embed_fn(cur_tok)?;
+            let q_pos = if advance_pos { start_q_pos + step } else { start_q_pos };
+            let (raw_tok, next_h, mut logits, sk) = self.forward_step_logits_cs(
+                &tok_emb,
+                &cur_backbone,
+                kv_slide_k,
+                kv_slide_v,
+                kv_full_k,
+                kv_full_v,
+                kv_len,
+                q_pos,
+                lmhead_cs_sieve,
+            )?;
+            total_skipped += sk;
+            let (pred_tok, top1_v, top2_v) = if ban_tokens.is_empty() && min_logit_margin <= 0.0 {
+                (raw_tok, 0.0f32, 0.0f32)
+            } else {
+                if !ban_tokens.is_empty() {
+                    for &tid in ban_tokens {
+                        let u = tid as usize;
+                        if u < logits.len() {
+                            logits[u] = -1.0e9;
+                        }
+                    }
+                    if !(236770..=236820).contains(&cur_tok) && (cur_tok as usize) < logits.len() {
+                        logits[cur_tok as usize] = -1.0e9;
+                    }
+                }
+                argmax_with_top2(&logits)
+            };
+            if min_logit_margin > 0.0 && (top1_v - top2_v) < min_logit_margin {
+                margin_stopped += 1;
+                break;
+            }
+            drafts.push(pred_tok);
+            if eos.contains(&pred_tok) {
+                break;
+            }
+            cur_tok = pred_tok;
+            cur_backbone = next_h;
+        }
+        Ok((drafts, margin_stopped, total_skipped))
     }
 
     /// Draft up to `draft_len` greedy candidate tokens while optionally suppressing closed-thought
@@ -349,7 +480,7 @@ impl AssistantRuntime {
     pub fn draft_sequence_masked<F>(
         &self,
         first_tok: u32,
-        mut embed_fn: F,
+        embed_fn: F,
         first_backbone_h: &[f32],
         kv_slide_k: &[f32],
         kv_slide_v: &[f32],
@@ -365,44 +496,24 @@ impl AssistantRuntime {
     where
         F: FnMut(u32) -> Result<Vec<f32>, String>,
     {
-        let mut drafts = Vec::with_capacity(draft_len);
-        let mut cur_tok = first_tok;
-        let mut cur_backbone = first_backbone_h.to_vec();
-        for step in 0..draft_len {
-            let tok_emb = embed_fn(cur_tok)?;
-            let q_pos = if advance_pos { start_q_pos + step } else { start_q_pos };
-            let (raw_tok, next_h, mut logits) = self.forward_step_logits(
-                &tok_emb,
-                &cur_backbone,
-                kv_slide_k,
-                kv_slide_v,
-                kv_full_k,
-                kv_full_v,
-                kv_len,
-                q_pos,
-            )?;
-            let pred_tok = if ban_tokens.is_empty() {
-                raw_tok
-            } else {
-                for &tid in ban_tokens {
-                    let u = tid as usize;
-                    if u < logits.len() {
-                        logits[u] = -1.0e9;
-                    }
-                }
-                if !(236770..=236820).contains(&cur_tok) && (cur_tok as usize) < logits.len() {
-                    logits[cur_tok as usize] = -1.0e9;
-                }
-                argmax_f32(&logits)
-            };
-            drafts.push(pred_tok);
-            if eos.contains(&pred_tok) {
-                break;
-            }
-            cur_tok = pred_tok;
-            cur_backbone = next_h;
-        }
-        Ok(drafts)
+        self.draft_sequence_gated(
+            first_tok,
+            embed_fn,
+            first_backbone_h,
+            kv_slide_k,
+            kv_slide_v,
+            kv_full_k,
+            kv_full_v,
+            kv_len,
+            start_q_pos,
+            draft_len,
+            advance_pos,
+            eos,
+            ban_tokens,
+            0.0,
+            None,
+        )
+        .map(|(drafts, _, _)| drafts)
     }
 
     /// Draft up to `draft_len` greedy candidate tokens using target embedding lookup `embed_fn`.
@@ -699,5 +810,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(seq, vec![tok_got]);
+
+        // Margin gate stops drafting immediately when top1 - top2 falls below threshold,
+        // while keeping exact match when threshold <= 0.
+        let (gated_stop, m_stops, _) = rt
+            .draft_sequence_gated(
+                1,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                &kv_sk,
+                &kv_sv,
+                &kv_fk,
+                &kv_fv,
+                kv_len,
+                3,
+                3,
+                false,
+                &[],
+                &[],
+                1.0e6,
+                Some(0.0),
+            )
+            .unwrap();
+        assert!(gated_stop.is_empty());
+        assert_eq!(m_stops, 1);
     }
 }

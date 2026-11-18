@@ -9,12 +9,17 @@
 
 use run270_rust::codec::bf16_to_f32;
 use run270_rust::json;
-use run270_rust::math::{attn_decode, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
+use run270_rust::math::{attn_decode_range, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
+use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
 use run270_rust::assistant::AssistantRuntime;
 use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDraftController, FastNGramProposalEngine};
 use run270_rust::tokenizer::Tokenizer;
+use run270_rust::tri_modal::{
+    analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, render_tri_modal_rescue_canvas,
+    ConsensusConfig, ConsensusMode, TriModalConsensusGate,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -563,6 +568,29 @@ fn parse_hybrid_qat_layers(spec: &str, n_layers: usize) -> Result<Vec<usize>, St
     Ok(out)
 }
 
+fn parse_lmhead_cs_mode(s: &str) -> Result<Option<f32>, String> {
+    let low = s.trim().to_ascii_lowercase();
+    if low == "off" || low == "none" {
+        return Ok(None);
+    }
+    if low == "exact" {
+        return Ok(Some(0.0));
+    }
+    if low == "sieve" {
+        return Ok(Some(0.25));
+    }
+    if let Some(rest) = low.strip_prefix("sieve:") {
+        let frac: f32 = rest
+            .parse()
+            .map_err(|_| format!("invalid --lmhead-cs sieve fraction '{s}'"))?;
+        if !frac.is_finite() || frac <= 0.0 || frac > 1.0 {
+            return Err(format!("--lmhead-cs sieve fraction must be in (0, 1], got {frac}"));
+        }
+        return Ok(Some(frac));
+    }
+    Err(format!("invalid --lmhead-cs '{s}' (expected off|exact|sieve[:frac])"))
+}
+
 struct Runtime31B {
     cfg: Gemma4Cfg,
     sf: Option<SafeTensors>,
@@ -574,14 +602,19 @@ struct Runtime31B {
     t16c_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
     native_t16c: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
     c8d_bank: Option<run270_rust::cuneiform_tbi::CuneiformBank>,
+    apply_c8d_proj: bool,
     cs_skip_thresh: f32,
     cs_down_norms: Vec<Option<Vec<u16>>>,
     cs_skipped_blocks: u64,
+    embed_tile_norms: Option<Vec<u16>>,
+    lmhead_cs_sieve: Option<f32>,
+    lmhead_cs_skipped_blocks: u64,
     kv_quant: KvQuantMode,
     fp8_lut: [f32; 256],
     kv_raw_bytes: usize,
     kv_compressed_bytes: usize,
     kv: Vec<LayerKv>,
+    vision: Option<run270_rust::vision::VisionWeights>,
     threads: usize,
     ssd_bytes_read: u64,
 }
@@ -668,6 +701,26 @@ impl Runtime31B {
         Ok((count, bytes))
     }
 
+    fn enable_lmhead_cs(&mut self, sieve_opt: Option<f32>) -> Result<usize, String> {
+        self.lmhead_cs_sieve = sieve_opt;
+        self.embed_tile_norms = None;
+        if sieve_opt.is_none() {
+            return Ok(0);
+        }
+        match &self.embed {
+            Embed31B::T16C { mat, .. } => {
+                let norms = mat.compute_tile_norms_fp16();
+                let bytes = norms.len() * 2;
+                self.embed_tile_norms = Some(norms);
+                Ok(bytes)
+            }
+            _ => {
+                self.lmhead_cs_sieve = None;
+                Ok(0)
+            }
+        }
+    }
+
     fn norm(&self, key: &str) -> Result<&[f32], String> {
         self.norms
             .get(key)
@@ -746,10 +799,28 @@ impl Runtime31B {
         if seq_len == 0 {
             return Err("empty token slice".into());
         }
+        let states = self.embed_batch(ids)?;
+        self.forward_batch_with_embeds(states, seq_len, start_pos, verbose_layers, all_final, None)
+    }
+
+    fn forward_batch_with_embeds(
+        &mut self,
+        mut states: Vec<f32>,
+        seq_len: usize,
+        start_pos: usize,
+        verbose_layers: bool,
+        all_final: bool,
+        vis_kv_ends: Option<&[usize]>,
+    ) -> Result<Vec<f32>, String> {
+        if seq_len == 0 {
+            return Err("empty token slice".into());
+        }
         let d = self.cfg.d;
+        if states.len() != seq_len * d {
+            return Err(format!("embed state len {} != {}", states.len(), seq_len * d));
+        }
         let eps = self.cfg.eps;
         let n_heads = self.cfg.n_heads;
-        let mut states = self.embed_batch(ids)?;
 
         let cfg = &self.cfg;
         let sf_opt = &self.sf;
@@ -846,9 +917,11 @@ impl Runtime31B {
                     } else {
                         mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
                     };
-                    if let Some(ref bank) = self.c8d_bank {
-                        if let Some(entry) = bank.entries.get(&k1).or_else(|| bank.entries.get(&k2)) {
-                            entry.apply_batch_into(x_batch, seq_len, &mut out, bank.native.as_ref(), threads, None)?;
+                    if self.apply_c8d_proj {
+                        if let Some(ref bank) = self.c8d_bank {
+                            if let Some(entry) = bank.entries.get(&k1).or_else(|| bank.entries.get(&k2)) {
+                                entry.apply_batch_into(x_batch, seq_len, &mut out, bank.native.as_ref(), threads, None)?;
+                            }
                         }
                     }
                     return Ok(out);
@@ -966,7 +1039,12 @@ impl Runtime31B {
                 let mut ctx_batch = Vec::with_capacity(seq_len * n_heads * hd);
                 for t in 0..seq_len {
                     let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                    let c_t = attn_decode(q_t, &kv[l].k, &kv[l].v, base_t + t, start_pos + t, n_heads, n_kv, hd, sw);
+                    let kv_end = if !is_full {
+                        vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                    } else {
+                        base_t + t
+                    };
+                    let c_t = attn_decode_range(q_t, &kv[l].k, &kv[l].v, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
                     ctx_batch.extend_from_slice(&c_t);
                 }
                 drop(q_batch);
@@ -1033,10 +1111,12 @@ impl Runtime31B {
             rmsn_raw(last_state, Some(fn_gain), eps)
         };
         let n_out_tok = out.len() / d;
-        if let Some(ref bank) = self.c8d_bank {
-            if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
-                let x_in = out.clone();
-                entry.apply_batch_into(&x_in, n_out_tok, &mut out, bank.native.as_ref(), self.threads, None)?;
+        if self.apply_c8d_proj {
+            if let Some(ref bank) = self.c8d_bank {
+                if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
+                    let x_in = out.clone();
+                    entry.apply_batch_into(&x_in, n_out_tok, &mut out, bank.native.as_ref(), self.threads, None)?;
+                }
             }
         }
         Ok(out)
@@ -1047,11 +1127,21 @@ impl Runtime31B {
     }
 
     fn compute_logits_batch(&mut self, hidden_batch: &[f32], seq_len: usize) -> Result<Vec<f32>, String> {
+        self.compute_logits_batch_mode(hidden_batch, seq_len, true)
+    }
+
+    fn compute_logits_batch_mode(
+        &mut self,
+        hidden_batch: &[f32],
+        seq_len: usize,
+        allow_lmhead_cs: bool,
+    ) -> Result<Vec<f32>, String> {
         let d = self.cfg.d;
         let vocab = self.cfg.vocab;
         if hidden_batch.len() != seq_len * d {
             return Err(format!("hidden_batch len {} != {seq_len}*{d}", hidden_batch.len()));
         }
+        let mut lm_sk: u64 = 0;
         let mut logits = match &self.embed {
             Embed31B::Streamed => {
                 let sf = self.sf.as_ref().ok_or("streamed logits require --model")?;
@@ -1094,8 +1184,31 @@ impl Runtime31B {
                 }
                 out
             }
-            Embed31B::T16C { mat, native } => mat.project_batch(hidden_batch, seq_len, native.as_deref(), self.threads)?,
+            Embed31B::T16C { mat, native } => {
+                if allow_lmhead_cs {
+                    if let (Some(sieve_frac), Some(norms)) = (self.lmhead_cs_sieve, self.embed_tile_norms.as_deref()) {
+                        let (y, sk) = mat.project_lmhead_cs(
+                            hidden_batch,
+                            seq_len,
+                            native.as_deref(),
+                            self.threads,
+                            Some(norms),
+                            32,
+                            sieve_frac,
+                        )?;
+                        if sk > 0 {
+                            lm_sk = sk as u64;
+                        }
+                        y
+                    } else {
+                        mat.project_batch(hidden_batch, seq_len, native.as_deref(), self.threads)?
+                    }
+                } else {
+                    mat.project_batch(hidden_batch, seq_len, native.as_deref(), self.threads)?
+                }
+            }
         };
+        self.lmhead_cs_skipped_blocks += lm_sk;
         if let Some(cap) = self.cfg.final_softcap {
             for v in &mut logits {
                 *v = (*v / cap).tanh() * cap;
@@ -1195,14 +1308,19 @@ fn load_runtime_31b(
             t16c_mats: None,
             native_t16c: None,
             c8d_bank: None,
+            apply_c8d_proj: true,
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            embed_tile_norms: None,
+            lmhead_cs_sieve: None,
+            lmhead_cs_skipped_blocks: 0,
             kv_quant,
             fp8_lut: build_fp8_e4m3_lut(),
             kv_raw_bytes: 0,
             kv_compressed_bytes: 0,
             kv,
+            vision: None,
             threads,
             ssd_bytes_read: 0,
         },
@@ -1314,13 +1432,38 @@ fn load_runtime_31b_t16c(
         }
     }
 
+    let vision = run270_rust::vision::VisionWeights::try_load_from_t16c(
+        &mut t16c,
+        run270_rust::vision::VisionCfg::gemma4_31b(),
+    )?;
+    let vision_bytes = vision.as_ref().map_or(0usize, |vw| {
+        let pos_b = match &vw.pos_table {
+            run270_rust::vision::PosTableBackend::SplitMats { x, y } => x.total_bytes() + y.total_bytes(),
+            run270_rust::vision::PosTableBackend::NormF32(_) => 0,
+        };
+        let layer_b: usize = vw
+            .layers
+            .iter()
+            .map(|l| {
+                l.q_proj.total_bytes()
+                    + l.k_proj.total_bytes()
+                    + l.v_proj.total_bytes()
+                    + l.o_proj.total_bytes()
+                    + l.gate_proj.total_bytes()
+                    + l.up_proj.total_bytes()
+                    + l.down_proj.total_bytes()
+            })
+            .sum();
+        vw.input_proj.total_bytes() + pos_b + layer_b + vw.embed_proj.total_bytes()
+    });
     let body_bytes: usize = t16c.mats.values().map(|m| m.total_bytes()).sum();
     eprintln!(
-        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} norm_bytes={} embed_bytes={} hybrid_qat={:?} ({hybrid_bytes} B) kv_quant={kv_quant:?}",
+        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} vision_bytes={} norm_bytes={} embed_bytes={} hybrid_qat={:?} ({hybrid_bytes} B) kv_quant={kv_quant:?}",
         native_t16c.as_ref().map_or("disabled", |n| n.path.as_str()),
         t16c.mats.len(),
         t16c.norms.len(),
         body_bytes,
+        vision_bytes,
         norm_bytes,
         embed_bytes,
         hybrid_qat_layers
@@ -1339,18 +1482,23 @@ fn load_runtime_31b_t16c(
             t16c_mats: Some(t16c.mats),
             native_t16c,
             c8d_bank: None,
+            apply_c8d_proj: true,
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            embed_tile_norms: None,
+            lmhead_cs_sieve: None,
+            lmhead_cs_skipped_blocks: 0,
             kv_quant,
             fp8_lut: build_fp8_e4m3_lut(),
             kv_raw_bytes: 0,
             kv_compressed_bytes: 0,
             kv,
+            vision,
             threads,
             ssd_bytes_read: 0,
         },
-        body_bytes + norm_bytes + hybrid_bytes,
+        body_bytes + vision_bytes + norm_bytes + hybrid_bytes,
         embed_bytes,
     ))
 }
@@ -1424,6 +1572,122 @@ fn apply_degeneracy_guard(logits: &mut [f32], prompt_ids: &[u32], generated: &[u
     }
 }
 
+fn compute_vision_kv_ends(ids: &[u32]) -> Vec<usize> {
+    let mut ends: Vec<usize> = (0..ids.len()).collect();
+    let mut i = 0usize;
+    while i < ids.len() {
+        if ids[i] == GEMMA4_IMAGE_TOKEN_ID {
+            let mut j = i;
+            while j + 1 < ids.len() && ids[j + 1] == GEMMA4_IMAGE_TOKEN_ID {
+                j += 1;
+            }
+            for k in i..=j {
+                ends[k] = j;
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    ends
+}
+
+fn build_tri_modal_config(
+    base_lmhead_sieve: Option<f32>,
+    base_cs_skip: f32,
+    base_draft_k: usize,
+) -> ConsensusConfig {
+    ConsensusConfig {
+        base_sieve_frac: base_lmhead_sieve.unwrap_or(0.0),
+        base_cs_skip,
+        base_draft_k: base_draft_k.max(1),
+        transformer_relative: true,
+        ..ConsensusConfig::default()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_tri_modal_step(
+    step_idx: usize,
+    hidden: &[f32],
+    logits: &mut Vec<f32>,
+    allow_exact_rescue: bool,
+    base_lmhead_sieve: Option<f32>,
+    base_cs_skip: f32,
+    c8d_cold_va: bool,
+    rt: &mut Runtime31B,
+    gate: &mut TriModalConsensusGate,
+    apply_gate: bool,
+) -> Result<(usize, run270_rust::tri_modal::TriModalDecision), String> {
+    let hear = analyze_hear_fwht(hidden, 64, false)?;
+    let see = analyze_see_spatial(hidden, 64)?;
+    let read = analyze_read_logits(logits, true)?;
+    let mut decision = gate.evaluate(&read, &hear, &see, true);
+    eprintln!(
+        "[TRIMODAL] step={} mode={} score={:.4} read={:.3} hear={:.3} see={:.3} hf={:.2} cr={:.2} marg={:.3} prob={:.3} sieve={:.3} cs={:.2e} k={} c8db={}",
+        step_idx,
+        decision.mode.as_str(),
+        decision.consensus_score,
+        decision.read_score,
+        decision.hear_score,
+        decision.see_score,
+        hear.hf_ratio,
+        see.crest_factor,
+        read.margin,
+        read.top1_prob,
+        decision.lmhead_cs_sieve.unwrap_or(0.0),
+        decision.cs_skip_thresh,
+        decision.draft_k,
+        decision.engage_c8db_rescue,
+    );
+    if apply_gate {
+        let was_pruned = rt.lmhead_cs_sieve.is_some_and(|s| s > 0.0);
+        if allow_exact_rescue && decision.mode != ConsensusMode::Clean && was_pruned {
+            let exact = rt.compute_logits_batch_mode(hidden, 1, false)?;
+            *logits = exact;
+            let rescued_read = analyze_read_logits(logits, true)?;
+            let rescued = gate.evaluate(&rescued_read, &hear, &see, false);
+            eprintln!(
+                "[TRIMODAL-EXACT] step={} rescued_marg={:.3} rescued_score={:.4} mode={}",
+                step_idx,
+                rescued_read.margin,
+                rescued.consensus_score,
+                rescued.mode.as_str(),
+            );
+            decision = rescued;
+        }
+        if base_lmhead_sieve.is_some() && rt.embed_tile_norms.is_some() {
+            rt.lmhead_cs_sieve = decision.lmhead_cs_sieve;
+        }
+        if base_cs_skip > 0.0 && !rt.cs_down_norms.is_empty() {
+            rt.cs_skip_thresh = decision.cs_skip_thresh;
+        }
+        if c8d_cold_va && rt.c8d_bank.is_some() {
+            rt.apply_c8d_proj = decision.engage_c8db_rescue;
+        }
+        if decision.trigger_optical_self_analyze {
+            let (_img, crc) = render_tri_modal_rescue_canvas(
+                step_idx,
+                &decision,
+                &read,
+                &hear,
+                &see,
+                &[
+                    decision.read_score,
+                    decision.hear_score,
+                    decision.see_score,
+                    decision.consensus_score,
+                ],
+            );
+            eprintln!(
+                "[TRIMODAL-OPTICAL] step={} rescue_canvas_crc32=0x{:08x}",
+                step_idx, crc
+            );
+        }
+    }
+    Ok((decision.draft_k, decision))
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let get = |name: &str| -> Option<String> {
@@ -1461,6 +1725,13 @@ fn run() -> Result<(), String> {
     let spec_seed_arg = get("--spec-seed");
     let spec_assistant_arg = get("--spec-assistant");
     let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos");
+    let assistant_min_margin: f32 = match get("--assistant-min-margin") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --assistant-min-margin '{s}'"))?,
+        None => if spec_assistant_arg.is_some() { 0.75 } else { 0.0 },
+    };
+    if !assistant_min_margin.is_finite() || assistant_min_margin < 0.0 {
+        return Err(format!("--assistant-min-margin must be finite and >= 0.0, got {assistant_min_margin}"));
+    }
     let cs_skip_thresh: f32 = match get("--cs-skip") {
         Some(s) => s.parse().map_err(|_| format!("invalid --cs-skip '{s}'"))?,
         None => 0.0,
@@ -1468,6 +1739,10 @@ fn run() -> Result<(), String> {
     if !cs_skip_thresh.is_finite() || cs_skip_thresh < 0.0 {
         return Err(format!("--cs-skip must be finite and >= 0.0, got {cs_skip_thresh}"));
     }
+    let lmhead_cs_sieve: Option<f32> = match get("--lmhead-cs") {
+        Some(s) => parse_lmhead_cs_mode(&s)?,
+        None => Some(0.0),
+    };
     if (spec_seed_arg.is_some() || spec_assistant_arg.is_some()) && !speculative {
         return Err("--spec-seed and --spec-assistant require --speculative".into());
     }
@@ -1491,7 +1766,13 @@ fn run() -> Result<(), String> {
     };
     let prompt_text = get("--prompt-text").unwrap_or_else(|| "Who wrote the play Hamlet?".into());
     let raw_prompt = args.iter().any(|a| a == "--raw-prompt");
+    let image_arg = get("--image");
+    let optical_self_analyze = args.iter().any(|a| a == "--optical-self-analyze");
+    let tri_modal_gate = args.iter().any(|a| a == "--tri-modal-gate");
+    let tri_modal_log = tri_modal_gate || args.iter().any(|a| a == "--tri-modal-log");
     let dump_logits = get("--dump-logits");
+    let dump_vision_soft = get("--dump-vision-soft");
+    let vision_only = args.iter().any(|a| a == "--vision-only");
     let ids_arg = get("--ids");
 
     let cfg = load_gemma4_cfg(Path::new(&cfgp))?;
@@ -1550,6 +1831,12 @@ fn run() -> Result<(), String> {
             "[run31b] enabled Cauchy-Schwarz down_proj tile skip: thresh={cs_skip_thresh:.2e} mats={cs_mats} norms_bytes={cs_bytes}"
         );
     }
+    let lmhead_cs_bytes = rt.enable_lmhead_cs(lmhead_cs_sieve)?;
+    if let Some(sf_cs) = rt.lmhead_cs_sieve {
+        eprintln!(
+            "[run31b] enabled LM-head CS pruning: sieve_frac={sf_cs:.3} norms_bytes={lmhead_cs_bytes}"
+        );
+    }
     let assistant_state: Option<(AssistantRuntime, usize, usize)> = if let Some(ap) = spec_assistant_arg.as_deref() {
         let native_hint = so_arg
             .as_deref()
@@ -1593,25 +1880,149 @@ fn run() -> Result<(), String> {
     );
 
     let tk = Tokenizer::load(Path::new(&tkp))?;
+    let mut vision_soft: Option<(usize, Vec<f32>)> = None;
+    if image_arg.is_some() || optical_self_analyze {
+        let vw = rt
+            .vision
+            .as_ref()
+            .ok_or("Multimodal --image / --optical-self-analyze requires full .t16c with vision_tower")?;
+        let img = if optical_self_analyze {
+            let mut layer_bits: Vec<u8> = Vec::with_capacity(rt.cfg.n_layers + vw.layers.len());
+            if let Some(ref mats) = rt.t16c_mats {
+                for l in 0..rt.cfg.n_layers {
+                    let nb = mats
+                        .get(&format!("model.language_model.layers.{l}.mlp.gate_proj.weight"))
+                        .map_or(0, |m| m.n_bits);
+                    layer_bits.push(nb);
+                }
+            }
+            for lv in &vw.layers {
+                layer_bits.push(lv.gate_proj.n_bits);
+            }
+            let c8d_n = rt.c8d_bank.as_ref().map_or(0, |b| b.entries.len());
+            let l1 = format!("GEMMA4 31B FULL LM={} VIS={}", rt.cfg.n_layers, vw.layers.len());
+            let l2 = format!("PINNED={}MB C8DB={}", pinned_bytes / (1024 * 1024), c8d_n);
+            let (canvas, crc) = run270_rust::vision::render_optical_va_canvas(
+                &[&l1, &l2, &prompt_text],
+                &layer_bits,
+            );
+            eprintln!(
+                "[run31b] rendered optical VA canvas={}x{} crc32=0x{crc:08x} bars={}",
+                canvas.width,
+                canvas.height,
+                layer_bits.len()
+            );
+            canvas
+        } else {
+            run270_rust::vision::load_rgb_image(Path::new(image_arg.as_deref().unwrap()))?
+        };
+        let t_vis = std::time::Instant::now();
+        let (n_soft, soft) = vw.encode_image(
+            &img,
+            rt.native_t16c.as_deref(),
+            rt.c8d_bank.as_ref(),
+            rt.threads,
+        )?;
+        eprintln!(
+            "[run31b] vision encoded {}x{} -> n_soft={n_soft} in {:.2}s",
+            img.width,
+            img.height,
+            t_vis.elapsed().as_secs_f64()
+        );
+        if let Some(ref vp) = dump_vision_soft {
+            let bytes: Vec<u8> = soft.iter().flat_map(|v| v.to_le_bytes()).collect();
+            fs::write(vp, bytes).map_err(|e| format!("write {vp}: {e}"))?;
+            eprintln!("[run31b] dumped {n_soft}x{} vision soft tokens to {vp}", rt.cfg.d);
+        }
+        if vision_only {
+            return Ok(());
+        }
+        vision_soft = Some((n_soft, soft));
+    }
+
     let ids: Vec<u32> = match ids_arg {
         Some(s) => s
             .split(',')
             .map(|x| x.trim().parse::<u32>().map_err(|_| format!("invalid id in --ids '{s}'")))
             .collect::<Result<Vec<_>, _>>()?,
         None => {
-            let prompt = if raw_prompt {
-                prompt_text.clone()
+            if let Some((n_soft, _)) = &vision_soft {
+                let mut v_ids = Vec::new();
+                v_ids.extend(tk.encode("<|turn>user\n", true));
+                v_ids.push(run270_rust::vision::GEMMA4_BOI_TOKEN_ID);
+                v_ids.resize(v_ids.len() + *n_soft, run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID);
+                v_ids.push(run270_rust::vision::GEMMA4_EOI_TOKEN_ID);
+                let tail = format!("{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+                v_ids.extend(tk.encode(&tail, false));
+                v_ids
             } else {
-                format!("<|turn>user\n{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
-            };
-            tk.encode(&prompt, true)
+                let prompt = if raw_prompt {
+                    prompt_text.clone()
+                } else {
+                    format!("<|turn>user\n{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+                };
+                tk.encode(&prompt, true)
+            }
         }
     };
-    eprintln!("[run31b] prompt {} tokens ids={ids:?}", ids.len());
+    eprintln!("[run31b] prompt {} tokens ids={:?}", ids.len(), &ids[..ids.len().min(32)]);
 
     let t_pf = std::time::Instant::now();
-    let mut last_backbone_h = rt.forward_batch(&ids, 0, true)?;
-    let mut prefill_logits = rt.compute_logits(&last_backbone_h)?;
+    let mut prefill_states = rt.embed_batch(&ids)?;
+    if let Some((n_soft, soft_emb)) = vision_soft {
+        let d_h = rt.cfg.d;
+        let mut s_idx = 0usize;
+        for (t_idx, &tid) in ids.iter().enumerate() {
+            if tid == run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID {
+                if s_idx >= n_soft {
+                    return Err("More IMAGE_TOKEN_ID placeholders than encoded vision soft tokens".into());
+                }
+                prefill_states[t_idx * d_h..(t_idx + 1) * d_h]
+                    .copy_from_slice(&soft_emb[s_idx * d_h..(s_idx + 1) * d_h]);
+                s_idx += 1;
+            }
+        }
+        if s_idx != n_soft {
+            return Err(format!("Expected {n_soft} image placeholder slots, filled {s_idx}"));
+        }
+    }
+    let vis_kv_ends = compute_vision_kv_ends(&ids);
+    let mut last_backbone_h = rt.forward_batch_with_embeds(
+        prefill_states,
+        ids.len(),
+        0,
+        true,
+        false,
+        Some(&vis_kv_ends),
+    )?;
+    let mut prefill_logits = rt.compute_logits_batch_mode(&last_backbone_h, 1, dump_logits.is_none())?;
+    let mut tri_gate = if tri_modal_log {
+        Some(TriModalConsensusGate::new(build_tri_modal_config(
+            lmhead_cs_sieve,
+            cs_skip_thresh,
+            if speculative { (batch_k - 1).max(1) } else { 1 },
+        )))
+    } else {
+        None
+    };
+    let mut tri_draft_cap: usize = (batch_k - 1).max(1);
+    if let Some(ref mut gate) = tri_gate {
+        let (cap, _dec) = evaluate_tri_modal_step(
+            0,
+            &last_backbone_h,
+            &mut prefill_logits,
+            dump_logits.is_none(),
+            lmhead_cs_sieve,
+            cs_skip_thresh,
+            c8d_cold_va,
+            &mut rt,
+            gate,
+            tri_modal_gate,
+        )?;
+        if tri_modal_gate {
+            tri_draft_cap = cap;
+        }
+    }
     let prefill_s = t_pf.elapsed().as_secs_f64();
     eprintln!("[run31b] prefill done in {prefill_s:.2}s ssd_read_mb={:.1} vm={:?}", rt.ssd_bytes_read as f64 / 1e6, proc_status_kb());
 
@@ -1658,6 +2069,8 @@ fn run() -> Result<(), String> {
         let mut spec_accepted = 0usize;
         let mut spec_batches = 0usize;
         let mut spec_fallback_k1 = 0usize;
+        let mut spec_margin_stopped = 0usize;
+        let mut ast_lm_skipped_blocks = 0u64;
         let vocab = rt.cfg.vocab;
         let d_hidden = rt.cfg.d;
 
@@ -1678,30 +2091,43 @@ fn run() -> Result<(), String> {
             }
 
             let rem = max_tokens - generated.len();
-            let draft_budget = ctrl.current_k().min(rem.saturating_sub(1));
+            let draft_budget = if tri_modal_gate {
+                ctrl.current_k().min(tri_draft_cap).min(rem.saturating_sub(1))
+            } else {
+                ctrl.current_k().min(rem.saturating_sub(1))
+            };
             let drafts = if draft_budget > 0 {
                 let seed_first = ngram.propose_sequence(&history, draft_budget);
                 if !seed_first.is_empty() {
                     seed_first
                 } else if let Some((ref ast, sl_l, fl_l)) = assistant_state {
-                    let kv_tmp = std::mem::take(&mut rt.kv);
-                    let ast_res = ast.draft_sequence_masked(
-                        y0,
-                        |tok| rt.embed_batch(&[tok]),
-                        &last_backbone_h,
-                        &kv_tmp[sl_l].k,
-                        &kv_tmp[sl_l].v,
-                        &kv_tmp[fl_l].k,
-                        &kv_tmp[fl_l].v,
-                        cur_kv_len,
-                        cur_kv_len,
-                        draft_budget,
-                        assistant_step_pos,
-                        &eos,
-                        closed_thought_bans,
-                    );
-                    rt.kv = kv_tmp;
-                    ast_res?
+                    let (ast_drafts, m_stop, ast_sk) = {
+                        let kv_tmp = std::mem::take(&mut rt.kv);
+                        let ast_res = ast.draft_sequence_gated(
+                            y0,
+                            |tok| rt.embed_batch(&[tok]),
+                            &last_backbone_h,
+                            &kv_tmp[sl_l].k,
+                            &kv_tmp[sl_l].v,
+                            &kv_tmp[fl_l].k,
+                            &kv_tmp[fl_l].v,
+                            cur_kv_len,
+                            cur_kv_len,
+                            draft_budget,
+                            assistant_step_pos,
+                            &eos,
+                            closed_thought_bans,
+                            assistant_min_margin,
+                            lmhead_cs_sieve,
+                        );
+                        rt.kv = kv_tmp;
+                        ast_res?
+                    };
+                    spec_margin_stopped += m_stop;
+                    if ast_sk > 0 {
+                        ast_lm_skipped_blocks += ast_sk as u64;
+                    }
+                    ast_drafts
                 } else {
                     Vec::new()
                 }
@@ -1714,6 +2140,23 @@ fn run() -> Result<(), String> {
                 spec_fallback_k1 += 1;
                 let h = rt.forward_batch(&[y0], cur_kv_len, false)?;
                 let mut l = rt.compute_logits(&h)?;
+                if let Some(ref mut gate) = tri_gate {
+                    let (cap, _dec) = evaluate_tri_modal_step(
+                        step_idx + 1,
+                        &h,
+                        &mut l,
+                        true,
+                        lmhead_cs_sieve,
+                        cs_skip_thresh,
+                        c8d_cold_va,
+                        &mut rt,
+                        gate,
+                        tri_modal_gate,
+                    )?;
+                    if tri_modal_gate {
+                        tri_draft_cap = cap;
+                    }
+                }
                 apply_degeneracy_guard(&mut l, &ids, &generated);
                 last_backbone_h = h;
                 pending = Some(argmax_f32(&l));
@@ -1758,7 +2201,31 @@ fn run() -> Result<(), String> {
                     history.push(tok);
                     println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
                 }
-                pending = if outcome.hit_stop { None } else { outcome.next_pending };
+                let mut next_pending = if outcome.hit_stop { None } else { outcome.next_pending };
+                if let Some(ref mut gate) = tri_gate {
+                    let mut slot_logits = l_batch[acc * vocab..(acc + 1) * vocab].to_vec();
+                    let (cap, _dec) = evaluate_tri_modal_step(
+                        generated.len(),
+                        &last_backbone_h,
+                        &mut slot_logits,
+                        !outcome.hit_stop && next_pending.is_some(),
+                        lmhead_cs_sieve,
+                        cs_skip_thresh,
+                        c8d_cold_va,
+                        &mut rt,
+                        gate,
+                        tri_modal_gate,
+                    )?;
+                    if tri_modal_gate {
+                        tri_draft_cap = cap;
+                        if !outcome.hit_stop && next_pending.is_some() {
+                            let post_gen = generated.clone();
+                            apply_degeneracy_guard(&mut slot_logits, &ids, &post_gen);
+                            next_pending = Some(argmax_f32(&slot_logits));
+                        }
+                    }
+                }
+                pending = next_pending;
                 eprintln!(
                     "[run31b] spec batch={} drafted={} accepted={} next_k={} ewma={:.2} in {:.2}s vm={:?}",
                     spec_batches,
@@ -1779,7 +2246,7 @@ fn run() -> Result<(), String> {
             .as_ref()
             .map_or(0.0, |(a, _, _)| a.resident_bytes() as f64 / (1024.0 * 1024.0));
         println!(
-            "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} step_pos={assistant_step_pos} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
+            "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} step_pos={assistant_step_pos} min_margin={assistant_min_margin:.2} margin_stopped={spec_margin_stopped} ast_lm_skipped={ast_lm_skipped_blocks} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
             generated.len()
         );
     } else {
@@ -1796,6 +2263,20 @@ fn run() -> Result<(), String> {
                 let td = std::time::Instant::now();
                 let step_hidden = rt.forward_batch(&[nxt], ids.len() + step, false)?;
                 logits = rt.compute_logits(&step_hidden)?;
+                if let Some(ref mut gate) = tri_gate {
+                    let _ = evaluate_tri_modal_step(
+                        step + 1,
+                        &step_hidden,
+                        &mut logits,
+                        true,
+                        lmhead_cs_sieve,
+                        cs_skip_thresh,
+                        c8d_cold_va,
+                        &mut rt,
+                        gate,
+                        tri_modal_gate,
+                    )?;
+                }
                 apply_degeneracy_guard(&mut logits, &ids, &generated);
                 eprintln!("[run31b] decode step {step} in {:.2}s vm={:?}", td.elapsed().as_secs_f64(), proc_status_kb());
             }
@@ -1838,8 +2319,8 @@ fn run() -> Result<(), String> {
         );
     }
     println!(
-        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
-        rt.ssd_bytes_read, rt.cs_skipped_blocks
+        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} lmhead_cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
+        rt.ssd_bytes_read, rt.cs_skipped_blocks, rt.lmhead_cs_skipped_blocks
     );
     Ok(())
 }
@@ -2070,5 +2551,68 @@ mod tests {
         assert_eq!(parse_hybrid_qat_layers("59, 58, 59, 0", 60).unwrap(), vec![0, 58, 59]);
         assert!(parse_hybrid_qat_layers("60", 60).is_err());
         assert!(parse_hybrid_qat_layers("abc", 60).is_err());
+    }
+
+    #[test]
+    fn parse_lmhead_cs_mode_validates_variants() {
+        assert_eq!(parse_lmhead_cs_mode("off").unwrap(), None);
+        assert_eq!(parse_lmhead_cs_mode("NONE").unwrap(), None);
+        assert_eq!(parse_lmhead_cs_mode("exact").unwrap(), Some(0.0));
+        assert_eq!(parse_lmhead_cs_mode("sieve").unwrap(), Some(0.25));
+        assert_eq!(parse_lmhead_cs_mode("sieve:0.35").unwrap(), Some(0.35));
+        assert!(parse_lmhead_cs_mode("sieve:0").is_err());
+        assert!(parse_lmhead_cs_mode("sieve:1.5").is_err());
+        assert!(parse_lmhead_cs_mode("bad").is_err());
+    }
+
+    #[test]
+    fn tri_modal_config_and_gate_driver_transitions() {
+        let cfg = build_tri_modal_config(Some(0.25), 0.15, 4);
+        assert!((cfg.base_sieve_frac - 0.25).abs() < 1e-6);
+        assert!((cfg.base_cs_skip - 0.15).abs() < 1e-6);
+        assert_eq!(cfg.base_draft_k, 4);
+
+        let cfg_off = build_tri_modal_config(None, 0.0, 0);
+        assert!((cfg_off.base_sieve_frac - 0.0).abs() < 1e-6);
+        assert_eq!(cfg_off.base_draft_k, 1);
+
+        let mut gate = TriModalConsensusGate::new(cfg);
+        let d = 5376usize;
+        let smooth_h: Vec<f32> = (0..d)
+            .map(|i| ((i as f32) * std::f32::consts::TAU / d as f32).cos())
+            .collect();
+        let mut sharp_logits = vec![-2.0f32; 256];
+        sharp_logits[42] = 6.5;
+        sharp_logits[7] = 1.0;
+
+        let hear_clean = analyze_hear_fwht(&smooth_h, 64, false).unwrap();
+        let see_clean = analyze_see_spatial(&smooth_h, 64).unwrap();
+        let read_clean = analyze_read_logits(&sharp_logits, true).unwrap();
+        let dec_clean = gate.evaluate(&read_clean, &hear_clean, &see_clean, true);
+        assert_eq!(dec_clean.mode, ConsensusMode::Clean);
+        assert_eq!(dec_clean.lmhead_cs_sieve, Some(0.25));
+        assert!(!dec_clean.engage_c8db_rescue);
+        assert_eq!(dec_clean.draft_k, 4);
+
+        let mut noisy_h: Vec<f32> = (0..d)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        noisy_h[17] = 45.0;
+        let flat_logits = vec![0.05f32; 256];
+        let hear_bad = analyze_hear_fwht(&noisy_h, 64, false).unwrap();
+        let see_bad = analyze_see_spatial(&noisy_h, 64).unwrap();
+        let read_bad = analyze_read_logits(&flat_logits, true).unwrap();
+        let dec_bad = gate.evaluate(&read_bad, &hear_bad, &see_bad, true);
+        assert_ne!(dec_bad.mode, ConsensusMode::Clean);
+        assert_eq!(dec_bad.lmhead_cs_sieve, Some(0.0));
+        assert!(dec_bad.engage_c8db_rescue);
+        assert!(dec_bad.draft_k < 4);
+    }
+
+    #[test]
+    fn compute_vision_kv_ends_marks_contiguous_image_spans_only() {
+        let ids = vec![2, 255_999, 258_880, 258_880, 258_880, 258_882, 500];
+        let ends = compute_vision_kv_ends(&ids);
+        assert_eq!(ends, vec![0, 1, 4, 4, 4, 5, 6]);
     }
 }

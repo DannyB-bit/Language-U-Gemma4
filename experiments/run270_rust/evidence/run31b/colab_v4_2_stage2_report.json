@@ -1,0 +1,33 @@
+{
+  "total_time_s": 4755.75,
+  "unified_t16c": "/content/out_v4_2/gemma4_31b_v4_2_full.t16c",
+  "unified_t16c_bytes": 6347775616,
+  "unified_t16c_gib": 5.9118,
+  "lm_mats": 411,
+  "vision_mats": 193,
+  "total_mats": 604,
+  "total_norms": 585,
+  "c8db_path": "/content/out_v4_2/gemma4_31b_v4_2_c8d.c8d",
+  "c8db_bytes": 11874560,
+  "c8db_entries": [
+    "model.embed_vision.embedding_projection.weight",
+    "model.language_model.layers.58.self_attn.k_proj.weight",
+    "model.language_model.layers.58.self_attn.v_proj.weight",
+    "model.language_model.layers.59.self_attn.k_proj.weight",
+    "model.language_model.norm.post_cell60"
+  ],
+  "vision_val_cos_before": 0.7904963493347168,
+  "vision_val_cos_after": 0.801546573638916,
+  "l59_state_cos_before_c8d": 0.8303354382514954,
+  "l59_state_cos_after_c8d": 0.8609434962272644,
+  "post_cell60_val_kl_before": 3.181733658446893,
+  "post_cell60_val_kl_after": 2.8877700000119204,
+  "post_cell60_val_top1_before": 0.5469942020140373,
+  "post_cell60_val_top1_after": 0.5527921879768081,
+  "post_cell60_val_agree_before": 0.6136710405859017,
+  "post_cell60_val_agree_after": 0.6171803478791578,
+  "tokens_calibrated": 262144,
+  "dense_turns_packed": 2184,
+  "vision_frames_calibrated": 128,
+  "clean_dataset_examples": 82629
+}

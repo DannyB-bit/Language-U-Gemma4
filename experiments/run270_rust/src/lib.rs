@@ -9,3 +9,5 @@ pub mod sha256;
 pub mod speculative;
 pub mod t16c;
 pub mod tokenizer;
+pub mod tri_modal;
+pub mod vision;

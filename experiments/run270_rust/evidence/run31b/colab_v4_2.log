@@ -1,0 +1,99 @@
+[Colab GPU] NVIDIA L4 | VRAM=22.03 GiB | HIGH_VRAM_SINGLE=True | TF32=OFF (full IEEE FP32 solvers)
+[Gate 0] libfast_quant.so compiled and verified exact t16c_tblk_bytes parity.
+[Gate 0b] pack_matrix_gpu_gptq + Woodbury Dual + fwht_2sided_gpu + gptq_quant_gpu == C parity verified.
+[Gate 0c] Full-scale down_proj (5376x21504, r=16, n_ev=2048) peak VRAM PASS (gpu0=7.92GiB, dt=9.5s).
+
+[Stage 1] Downloading google/gemma-4-31B-it-qat-w4a16-ct...
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 9 files:  11%|█         | 1/9 [00:00<00:02,  3.93it/s]Fetching 9 files:  67%|██████▋   | 6/9 [00:00<00:00, 20.44it/s]Fetching 9 files:  89%|████████▉ | 8/9 [00:20<00:00, 20.44it/s]Fetching 9 files: 100%|██████████| 9/9 [01:05<00:00,  9.28s/it]Fetching 9 files: 100%|██████████| 9/9 [01:05<00:00,  7.22s/it]
+[Stage 1] Loading & auditing FULL clean text datasets (zero sample truncation, zero contamination)...
+Generating train split:   0%|          | 0/7473 [00:00<?, ? examples/s]Generating train split:  13%|█▎        | 1000/7473 [00:00<00:00, 7291.83 examples/s]Generating train split: 100%|██████████| 7473/7473 [00:00<00:00, 52167.63 examples/s]
+Generating test split:   0%|          | 0/1319 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 1319/1319 [00:00<00:00, 326388.61 examples/s]
+Generating train split:   0%|          | 0/18612 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 18612/18612 [00:00<00:00, 334509.09 examples/s]
+Generating train split:   0%|          | 0/51760 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 51760/51760 [00:00<00:00, 81268.47 examples/s]Generating train split: 100%|██████████| 51760/51760 [00:00<00:00, 80947.51 examples/s]
+Generating test split:   0%|          | 0/4358 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 4358/4358 [00:00<00:00, 479984.69 examples/s]
+Generating train split:   0%|          | 0/36718 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 36718/36718 [00:00<00:00, 828218.78 examples/s]
+Generating validation split:   0%|          | 0/3760 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 3760/3760 [00:00<00:00, 573788.72 examples/s]
+[Stage 1] Total clean corpus items audited: 82,629 examples across GSM8K/Code/Alpaca/WikiText-2.
+[Stage 1] Packed dense full-dataset tensor: (1024, 256) = 262,144 live tokens (2,184 clean turns), ans_tokens=149,641
+
+[Stage 2] Vision Tower Calibration (96 COCO + 32 Optical VA images -> 193 T16C mats)...
+[Stage 2] Prepared 128 multimodal vision frames (96 COCO + 32 Optical VA interleaved).
+[Stage 2] Vision Hessians collected over 33,416 soft tokens.
+[Stage 2] Packed ALL 193 Vision mats + 164 norms = 160.74 MB!
+[Stage 2 DONE] Vision Student Val Soft-Token Cosine (300 steps): 0.79050 -> 0.80155 (keep=True)
+[Budget Guard] Predicted unified .t16c: LM=6.181GB + VIS=160.7MB = 6,348,362,272 B (5.912 GiB)
+
+[Stage 3] Streaming 60 LM layers across 262,144 tokens on T4 GPU...
+[Stage 3] Packing embed_tokens.weight (3b_u0 @ b256)...
+  [LM L00/59 S] stud_vs_teach_cos=0.99772 dt=68.9s elap=404.7s ram=12.88GiB
+  [LM L02/59 S] stud_vs_teach_cos=0.99579 dt=68.1s elap=540.5s ram=12.84GiB
+  [LM L04/59 S] stud_vs_teach_cos=0.99641 dt=68.0s elap=676.2s ram=12.88GiB
+  [LM L05/59 F] stud_vs_teach_cos=0.99808 dt=80.1s elap=756.4s ram=12.81GiB
+  [LM L10/59 S] stud_vs_teach_cos=0.99791 dt=66.8s elap=1101.5s ram=12.83GiB
+  [LM L14/59 S] stud_vs_teach_cos=0.99775 dt=69.6s elap=1388.1s ram=12.82GiB
+  [LM L15/59 S] stud_vs_teach_cos=0.99739 dt=67.0s elap=1455.1s ram=12.82GiB
+  [LM L19/59 S] stud_vs_teach_cos=0.99603 dt=84.3s elap=1756.8s ram=12.84GiB
+  [LM L20/59 S] stud_vs_teach_cos=0.99558 dt=68.6s elap=1825.4s ram=12.82GiB
+  [LM L25/59 S] stud_vs_teach_cos=0.98028 dt=67.0s elap=2176.0s ram=12.81GiB
+  [LM L30/59 S] stud_vs_teach_cos=0.97067 dt=68.8s elap=2544.6s ram=12.80GiB
+  [LM L35/59 F] stud_vs_teach_cos=0.96896 dt=80.9s elap=2891.3s ram=12.80GiB
+  [LM L40/59 S] stud_vs_teach_cos=0.87958 dt=67.0s elap=3239.0s ram=12.86GiB
+  [LM L45/59 S] stud_vs_teach_cos=0.87578 dt=65.9s elap=3586.1s ram=12.75GiB
+  [LM L50/59 S] stud_vs_teach_cos=0.86161 dt=67.1s elap=3949.1s ram=12.79GiB
+  [LM L55/59 S] stud_vs_teach_cos=0.76588 dt=68.8s elap=4299.9s ram=12.78GiB
+  [LM L56/59 S] stud_vs_teach_cos=0.73642 dt=69.3s elap=4369.2s ram=12.77GiB
+  [LM L57/59 S] stud_vs_teach_cos=0.69202 dt=83.6s elap=4452.8s ram=12.82GiB
+  [LM L58/59 S] stud_vs_teach_cos=0.77864 dt=84.2s elap=4537.0s ram=14.33GiB
+  [LM L59/59 F] stud_vs_teach_cos=0.83034 dt=87.9s elap=4624.9s ram=14.24GiB
+[Stage 3 DONE] Unified .t16c flushed to /content/out_v4_2/gemma4_31b_v4_2_full.t16c (6,347,775,616 B, 5.912 GiB) | ram=14.23GiB
+
+[Stage 4] Training 300-step Multi-Layer C8DB Encyclopedia (L58->L59 Causal + Wiener + post_cell60 + Vision)...
+  [C8DB-KV] model.language_model.layers.58.self_attn.k_proj.weight: val_cos 0.88420 -> 0.91034 (300 steps, keep=True)
+  [C8DB-KV] model.language_model.layers.58.self_attn.v_proj.weight: val_cos 0.82407 -> 0.85263 (300 steps, keep=True)
+  [C8DB-KV] model.language_model.layers.59.self_attn.k_proj.weight: val_cos 0.84581 -> 0.86979 (300 steps, keep=True)
+  [Causal L58->L59 C8DB Parity] L59 state_cos: 0.83034 -> 0.86094 | ram=12.74GiB
+  [Wiener RMSNorm] val_mse 9.88267 -> 8.65400 using=Wiener
+  [post_cell60 Before] Val (n=6554): KL=3.1817 Top1=54.7% Agree=61.4% Margin=+0.486
+    step 001/300 loss=26.5524 | Va: KL=3.2898 Top1=54.6% Agree=61.1% Marg=+0.414
+    step 050/300 loss=21.4586 | Va: KL=2.8539 Top1=55.5% Agree=61.6% Marg=+0.575
+    step 100/300 loss=20.4814 | Va: KL=2.8878 Top1=55.3% Agree=61.7% Marg=+0.941
+    step 150/300 loss=19.6057 | Va: KL=2.8965 Top1=55.7% Agree=61.7% Marg=+0.779
+    step 200/300 loss=18.6501 | Va: KL=2.9418 Top1=55.5% Agree=61.4% Marg=+0.891
+    step 250/300 loss=19.1083 | Va: KL=2.9668 Top1=55.5% Agree=62.0% Marg=+0.912
+    step 300/300 loss=18.6149 | Va: KL=2.9721 Top1=55.4% Agree=61.9% Marg=+0.959
+  [post_cell60 Quantized INT8] Val KL: 3.1817->2.8878, Top1: 54.7%->55.3%, Agree: 61.4%->61.7%, Margin: +0.486->+0.941
+
+[STAGE 2 COMPLETE] {
+  "total_time_s": 4755.75,
+  "unified_t16c": "/content/out_v4_2/gemma4_31b_v4_2_full.t16c",
+  "unified_t16c_bytes": 6347775616,
+  "unified_t16c_gib": 5.9118,
+  "lm_mats": 411,
+  "vision_mats": 193,
+  "total_mats": 604,
+  "total_norms": 585,
+  "c8db_path": "/content/out_v4_2/gemma4_31b_v4_2_c8d.c8d",
+  "c8db_bytes": 11874560,
+  "c8db_entries": [
+    "model.embed_vision.embedding_projection.weight",
+    "model.language_model.layers.58.self_attn.k_proj.weight",
+    "model.language_model.layers.58.self_attn.v_proj.weight",
+    "model.language_model.layers.59.self_attn.k_proj.weight",
+    "model.language_model.norm.post_cell60"
+  ],
+  "vision_val_cos_before": 0.7904963493347168,
+  "vision_val_cos_after": 0.801546573638916,
+  "l59_state_cos_before_c8d": 0.8303354382514954,
+  "l59_state_cos_after_c8d": 0.8609434962272644,
+  "post_cell60_val_kl_before": 3.181733658446893,
+  "post_cell60_val_kl_after": 2.8877700000119204,
+  "post_cell60_val_top1_before": 0.5469942020140373,
+  "post_cell60_val_top1_after": 0.5527921879768081,
+  "post_cell60_val_agree_before": 0.6136710405859017,
+  "post_cell60_val_agree_after": 0.6171803478791578,
+  "tokens_calibrated": 262144,
+  "dense_turns_packed": 2184,
+  "vision_frames_calibrated": 128,
+  "clean_dataset_examples": 82629
+}
