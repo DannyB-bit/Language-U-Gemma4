@@ -1579,7 +1579,7 @@ def qat_optimize_attn_block(
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sch.step()
-        if (st + 1) == steps or (steps >= 40 and (st + 1) == steps // 2):
+        if (st + 1) == steps or (steps >= 30 and (st + 1) == steps // 2):
             cv = eval_val()
             if cv > best_cos + 1e-6:
                 best_cos = cv
@@ -1687,7 +1687,7 @@ def qat_optimize_mlp_block(
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sch.step()
-        if (st + 1) == steps or (steps >= 50 and (st + 1) == steps // 2):
+        if (st + 1) == steps or (steps >= 30 and (st + 1) == steps // 2):
             cv = eval_val(1.0)
             if cv > best_cos + 1e-6:
                 best_cos = cv
@@ -1908,12 +1908,12 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
                 _atomic_torch_save(X_stud_cpu, Path("/tmp/v5_x_stud_pre58.pt"))
 
             norms_g = {
-                "in": sf.get_tensor(p + "input_layernorm.weight").to(DEVICE),
-                "qn": sf.get_tensor(p + "self_attn.q_norm.weight").to(DEVICE),
-                "kn": sf.get_tensor(p + "self_attn.k_norm.weight").to(DEVICE),
-                "pa": sf.get_tensor(p + "post_attention_layernorm.weight").to(DEVICE),
-                "pf": sf.get_tensor(p + "pre_feedforward_layernorm.weight").to(DEVICE),
-                "pff": sf.get_tensor(p + "post_feedforward_layernorm.weight").to(DEVICE),
+                "in": sf.get_tensor(p + "input_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                "qn": sf.get_tensor(p + "self_attn.q_norm.weight").to(DEVICE, dtype=torch.float32),
+                "kn": sf.get_tensor(p + "self_attn.k_norm.weight").to(DEVICE, dtype=torch.float32),
+                "pa": sf.get_tensor(p + "post_attention_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                "pf": sf.get_tensor(p + "pre_feedforward_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                "pff": sf.get_tensor(p + "post_feedforward_layernorm.weight").to(DEVICE, dtype=torch.float32),
                 "lsc": sf.get_tensor(p + "layer_scalar").float().item(),
             }
             proj_names = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -2163,7 +2163,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
                     ("kn", "self_attn.k_norm.weight"), ("pa", "post_attention_layernorm.weight"),
                     ("pf", "pre_feedforward_layernorm.weight"), ("pff", "post_feedforward_layernorm.weight"),
                 ]:
-                    write_norm_inplace(t16c_fp, norm_offsets, p + nk_full, norms_g[nk_short].detach().cpu().numpy())
+                    write_norm_inplace(t16c_fp, norm_offsets, p + nk_full, norms_g[nk_short].detach().float().cpu().numpy())
                 write_norm_inplace(t16c_fp, norm_offsets, p + "layer_scalar", np.array([lsc], dtype="<f4"))
             else:
                 _atomic_torch_save({
@@ -2184,7 +2184,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
             del X_teach_next, X_stud_next
             torch.cuda.empty_cache()
 
-            if l_idx in (9, 19, 29, 39, 49, 55):
+            if l_idx in (4, 9, 14, 19, 24, 29, 34, 39, 44, 49, 55):
                 t16c_fp.flush()
                 os.fsync(t16c_fp.fileno())
                 _atomic_torch_save(X_teach_cpu, CKPT_X_TEACH)
@@ -2387,7 +2387,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
 
         # Export L56..L59 bundles, flush to OUT_T16C, update norms in-place, and recompute final L58/L59 student checkpoints!
         fn_distilled_cpu = p_final_norm.detach().cpu().clone()
-        write_norm_inplace(t16c_fp, norm_offsets, "model.language_model.norm.weight", fn_distilled_cpu.numpy())
+        write_norm_inplace(t16c_fp, norm_offsets, "model.language_model.norm.weight", fn_distilled_cpu.float().numpy())
 
         x_cur_tail = x_pre56_cpu
         h_ev_tail = h_ev_pre56_cpu
@@ -2424,7 +2424,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
                 ("kn", "self_attn.k_norm.weight"), ("pa", "post_attention_layernorm.weight"),
                 ("pf", "pre_feedforward_layernorm.weight"), ("pff", "post_feedforward_layernorm.weight"),
             ]:
-                write_norm_inplace(t16c_fp, norm_offsets, p + nk_f, nrm_out[nk_s].numpy())
+                write_norm_inplace(t16c_fp, norm_offsets, p + nk_f, nrm_out[nk_s].float().numpy())
             write_norm_inplace(t16c_fp, norm_offsets, p + "layer_scalar", np.array([nrm_out["lsc"]], dtype="<f4"))
 
             if li == 58:
@@ -2794,7 +2794,7 @@ if keep_c60:
         "c6d": exp_r60[0], "temperature": 0.5, "gate_scale": 1.0, "centroids": cents60, "expert_radicals": exp_r60, "experts": experts60,
     })
 
-c8d_norms = [("model.language_model.norm.weight", fn_eff_g.detach().cpu().numpy().astype("<f4"))]
+c8d_norms = [("model.language_model.norm.weight", fn_eff_g.detach().float().cpu().numpy().astype("<f4"))]
 c8d_sz = c8d.write_c8db_file(OUT_C8D, c8d_norms, c8db_entries)
 print(f"[Stage 4A DONE] Wrote {OUT_C8D} ({c8d_sz:,} B)", flush=True)
 del p_teach_store, ht_ans_g, hs_ans_g, nxt_ans_g, y_star_g, t_top1_g, log_tail_q0, model60, m60_cpu
