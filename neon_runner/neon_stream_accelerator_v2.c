@@ -4036,25 +4036,35 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
     const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)eff_bits * (size_t)bytes_per_plane_blk;
     const size_t luts_stride = (size_t)(d_in / 4) * 16;
     const int dual = x_needs_dual_plane_masked(x, d_in, block_size, k_tokens, col_blk_mask);
-    const int kc_step = dual ? 2 : 4;
+    const int kc_inner = dual ? 2 : 4;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    const int kc_step = dual ? 8 : 16; /* L1-cached tile-outer batch: 1 DRAM stream serves up to 8 (dual) or 16 (single) tokens */
+#else
+    const int kc_step = kc_inner;
+#endif
     const int kc_max = (k_tokens < kc_step) ? k_tokens : kc_step;
     const int slot_cap = dual ? (kc_max * 2) : kc_max;
     const int need_norm = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) ? 1 : 0;
     const int need_sum = (is_asym != 0) ? 1 : 0;
 
     const size_t sz_luts = neon_align64_sz((size_t)slot_cap * luts_stride);
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    const size_t sz_luts_i4 = (slot_cap >= 4) ? sz_luts : 0u;
+#else
+    const size_t sz_luts_i4 = 0u;
+#endif
     const size_t sz_subsc = neon_align64_sz((size_t)slot_cap * (size_t)n_subs * sizeof(float));
     const size_t sz_xnorm = need_norm ? neon_align64_sz((size_t)kc_max * (size_t)n_blks * sizeof(float)) : 0u;
     const size_t sz_xsum = need_sum ? neon_align64_sz((size_t)kc_max * (size_t)n_blks * sizeof(float)) : 0u;
     const size_t sz_tskips = (out_skipped != NULL) ? neon_align64_sz((size_t)n_tiles * sizeof(int32_t)) : 0u;
     const size_t sz_ablks = neon_align64_sz((size_t)n_blks * sizeof(int32_t));
     const size_t sz_atiles = (row_tile_mask != NULL) ? neon_align64_sz((size_t)n_tiles * sizeof(int32_t)) : 0u;
-    const size_t total_scratch = sz_luts + sz_subsc + sz_xnorm + sz_xsum + sz_tskips + sz_ablks + sz_atiles + 64u;
+    const size_t total_scratch = sz_luts + sz_luts_i4 + sz_subsc + sz_xnorm + sz_xsum + sz_tskips + sz_ablks + sz_atiles + 64u;
 
     uint8_t* scratch_raw = NULL;
     int scratch_heap_owned = 0;
 #if !defined(NEON_MSVC_FREESTANDING_DLL)
-    if (total_scratch <= (size_t)(2u * 1024u * 1024u)) {
+    if (total_scratch <= (size_t)(4u * 1024u * 1024u)) {
         if (g_tile16_tls_scratch.cap < total_scratch) {
             uint8_t* nb = (uint8_t*)neon_alloc(total_scratch);
             if (!nb) return -1;
@@ -4073,6 +4083,10 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
 
     uintptr_t p_cur = ((uintptr_t)scratch_raw + 63u) & ~(uintptr_t)63u;
     int8_t* luts = (int8_t*)p_cur; p_cur += sz_luts;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    int8_t* luts_i4 = (sz_luts_i4 > 0u) ? (int8_t*)p_cur : NULL;
+    p_cur += sz_luts_i4;
+#endif
     float* sub_scales = (float*)p_cur; p_cur += sz_subsc;
     float* blk_xnorm = need_norm ? (float*)p_cur : NULL; p_cur += sz_xnorm;
     float* blk_xsum = need_sum ? (float*)p_cur : NULL; p_cur += sz_xsum;
@@ -4151,6 +4165,26 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
         }
 
 #if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+        /* Interleave each full 4-slot group as [g_sub*8+bo][4][32] (128B = 2 contiguous L1 cache lines)
+           to eliminate 2-way Cortex-A72 L1D conflict misses when luts_stride >= 16 KiB! */
+        if (luts_i4 != NULL && slots >= 4) {
+            const int n_bo = n_subs * 8;
+            for (int s0 = 0; s0 + 4 <= slots; s0 += 4) {
+                const int8_t* s_0 = luts + (size_t)(s0 + 0) * luts_stride;
+                const int8_t* s_1 = luts + (size_t)(s0 + 1) * luts_stride;
+                const int8_t* s_2 = luts + (size_t)(s0 + 2) * luts_stride;
+                const int8_t* s_3 = luts + (size_t)(s0 + 3) * luts_stride;
+                int8_t* dst_g = luts_i4 + (size_t)s0 * luts_stride;
+                for (int bi = 0; bi < n_bo; bi++) {
+                    const size_t src_off = (size_t)bi * 32u;
+                    int8_t* d = dst_g + (size_t)bi * 128u;
+                    memcpy(d + 0,  s_0 + src_off, 32);
+                    memcpy(d + 32, s_1 + src_off, 32);
+                    memcpy(d + 64, s_2 + src_off, 32);
+                    memcpy(d + 96, s_3 + src_off, 32);
+                }
+            }
+        }
         if (kc == 1) {
             /* Zero-branch bit-exact Cortex-A72 k=1 decode fast path (matches k=4 IEEE-754 rounding bit-for-bit). */
 #if HAS_OMP
@@ -4303,6 +4337,246 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                 }
                 if (tile_skips) tile_skips[t] = t_skip;
             }
+        } else if (kc > kc_inner) {
+            /* L1-cached tile-outer multi-group NEON path (slots in 5..16): streams each 16-row weight tile
+               from LPDDR4 ONCE while keeping the 1 KiB tile_acc[16][16] and active block hot in 32 KiB L1D.
+               Bit-exact IEEE-754 parity with kc==1 and kc<=kc_inner paths. */
+#if HAS_OMP
+            #pragma omp parallel for schedule(static)
+#endif
+            for (int ati = 0; ati < n_active_tiles; ati++) {
+                const int t = active_tiles ? active_tiles[ati] : ati;
+                const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tile_blk_bytes;
+                const uint8x16_t mask0f = vdupq_n_u8(0x0F);
+                int32_t t_skip = col_skipped_per_tile;
+                NEON_ALIGN64 float tile_acc[16][16];
+                memset(tile_acc, 0, (size_t)slots * 16u * sizeof(float));
+
+                for (int ai = 0; ai < n_active_blks; ai++) {
+                    const int blk = active_blks[ai];
+                    if (need_norm) {
+                        float max_xnorm = 0.0f;
+                        for (int kk = 0; kk < kc; kk++) {
+                            float xn = blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
+                            if (xn > max_xnorm) max_xnorm = xn;
+                        }
+                        float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
+                        if (wnorm * max_xnorm <= cs_skip_thresh) {
+                            t_skip++;
+                            continue;
+                        }
+                    }
+                    const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                    if (ai + 1 < n_active_blks) {
+                        const uint8_t* nptr = tptr + (size_t)active_blks[ai + 1] * tile_blk_bytes;
+                        neon_prefetch(nptr);
+                        neon_prefetch(nptr + 256);
+                        neon_prefetch(nptr + 512);
+                    }
+                    uint16_t raw_sc[8];
+                    memcpy(raw_sc, bptr + 0, 16);
+                    float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                    memcpy(raw_sc, bptr + 16, 16);
+                    float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                    float32x4_t sc0 = vcvt_f32_f16(vget_low_f16(hsc0));
+                    float32x4_t sc1 = vcvt_f32_f16(vget_high_f16(hsc0));
+                    float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
+                    float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
+
+                    if (need_sum) {
+                        uint16_t raw_bi[8];
+                        memcpy(raw_bi, bptr + 32, 16);
+                        float16x8_t hbi0 = vreinterpretq_f16_u16(vld1q_u16(raw_bi));
+                        memcpy(raw_bi, bptr + 48, 16);
+                        float16x8_t hbi1 = vreinterpretq_f16_u16(vld1q_u16(raw_bi));
+                        float32x4_t bi0 = vcvt_f32_f16(vget_low_f16(hbi0));
+                        float32x4_t bi1 = vcvt_f32_f16(vget_high_f16(hbi0));
+                        float32x4_t bi2 = vcvt_f32_f16(vget_low_f16(hbi1));
+                        float32x4_t bi3 = vcvt_f32_f16(vget_high_f16(hbi1));
+                        for (int kk = 0; kk < kc; kk++) {
+                            const int dst_s = dual ? (kk * 2) : kk;
+                            float sx = blk_xsum[(size_t)kk * (size_t)n_blks + (size_t)blk];
+                            float* ta = tile_acc[dst_s];
+                            vst1q_f32(ta + 0,  vfmaq_n_f32(vld1q_f32(ta + 0),  bi0, sx));
+                            vst1q_f32(ta + 4,  vfmaq_n_f32(vld1q_f32(ta + 4),  bi1, sx));
+                            vst1q_f32(ta + 8,  vfmaq_n_f32(vld1q_f32(ta + 8),  bi2, sx));
+                            vst1q_f32(ta + 12, vfmaq_n_f32(vld1q_f32(ta + 12), bi3, sx));
+                        }
+                    }
+
+                    const uint8_t* planes = bptr + hdr_bytes;
+                    for (int s0 = 0; s0 < slots; s0 += 4) {
+                        const int sc_g = (slots - s0 >= 4) ? 4 : (slots - s0);
+                        float32x4_t acc00 = vld1q_f32(tile_acc[s0 + 0] + 0), acc01 = vld1q_f32(tile_acc[s0 + 0] + 4);
+                        float32x4_t acc02 = vld1q_f32(tile_acc[s0 + 0] + 8), acc03 = vld1q_f32(tile_acc[s0 + 0] + 12);
+                        float32x4_t acc10 = vdupq_n_f32(0.0f), acc11 = vdupq_n_f32(0.0f), acc12 = vdupq_n_f32(0.0f), acc13 = vdupq_n_f32(0.0f);
+                        float32x4_t acc20 = vdupq_n_f32(0.0f), acc21 = vdupq_n_f32(0.0f), acc22 = vdupq_n_f32(0.0f), acc23 = vdupq_n_f32(0.0f);
+                        float32x4_t acc30 = vdupq_n_f32(0.0f), acc31 = vdupq_n_f32(0.0f), acc32 = vdupq_n_f32(0.0f), acc33 = vdupq_n_f32(0.0f);
+                        if (sc_g >= 2) {
+                            acc10 = vld1q_f32(tile_acc[s0 + 1] + 0); acc11 = vld1q_f32(tile_acc[s0 + 1] + 4);
+                            acc12 = vld1q_f32(tile_acc[s0 + 1] + 8); acc13 = vld1q_f32(tile_acc[s0 + 1] + 12);
+                        }
+                        if (sc_g >= 3) {
+                            acc20 = vld1q_f32(tile_acc[s0 + 2] + 0); acc21 = vld1q_f32(tile_acc[s0 + 2] + 4);
+                            acc22 = vld1q_f32(tile_acc[s0 + 2] + 8); acc23 = vld1q_f32(tile_acc[s0 + 2] + 12);
+                        }
+                        if (sc_g == 4) {
+                            acc30 = vld1q_f32(tile_acc[s0 + 3] + 0); acc31 = vld1q_f32(tile_acc[s0 + 3] + 4);
+                            acc32 = vld1q_f32(tile_acc[s0 + 3] + 8); acc33 = vld1q_f32(tile_acc[s0 + 3] + 12);
+                        }
+
+                        for (int p = 0; p < eff_bits; p++) {
+                            const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
+                            float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
+                            if (sc_g == 4) {
+                                const int8_t* lg = luts_i4 + (size_t)s0 * luts_stride;
+                                for (int sb = 0; sb < subs_per_blk; sb++) {
+                                    int g_sub = blk * subs_per_blk + sb;
+                                    int16x8_t a0l = vdupq_n_s16(0), a0h = vdupq_n_s16(0);
+                                    int16x8_t a1l = vdupq_n_s16(0), a1h = vdupq_n_s16(0);
+                                    int16x8_t a2l = vdupq_n_s16(0), a2h = vdupq_n_s16(0);
+                                    int16x8_t a3l = vdupq_n_s16(0), a3h = vdupq_n_s16(0);
+                                    const int8_t* lp = lg + (size_t)g_sub * 8u * 128u;
+                                    for (int bo = 0; bo < 8; bo++, lp += 128) {
+                                        uint8x16_t bv = vld1q_u8(pptr + ((size_t)sb * 8 + (size_t)bo) * 16);
+                                        uint8x16_t nhi = vshrq_n_u8(bv, 4);
+                                        uint8x16_t nlo = vandq_u8(bv, mask0f);
+                                        int8x16_t rh, rl;
+                                        rh = vqtbl1q_s8(vld1q_s8(lp + 0),  nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 16),  nlo);
+                                        a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
+                                        a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                        rh = vqtbl1q_s8(vld1q_s8(lp + 32), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 48),  nlo);
+                                        a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
+                                        a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                        rh = vqtbl1q_s8(vld1q_s8(lp + 64), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 80),  nlo);
+                                        a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
+                                        a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                        rh = vqtbl1q_s8(vld1q_s8(lp + 96), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 112), nlo);
+                                        a3l = vaddw_s8(a3l, vget_low_s8(rh)); a3h = vaddw_high_s8(a3h, rh);
+                                        a3l = vaddw_s8(a3l, vget_low_s8(rl)); a3h = vaddw_high_s8(a3h, rl);
+                                    }
+                                    float m0 = sub_scales[(size_t)(s0 + 0) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                    float m1 = sub_scales[(size_t)(s0 + 1) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                    float m2 = sub_scales[(size_t)(s0 + 2) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                    float m3 = sub_scales[(size_t)(s0 + 3) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                    acc00 = vfmaq_f32(acc00, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0l))), m0));
+                                    acc01 = vfmaq_f32(acc01, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0l)), m0));
+                                    acc02 = vfmaq_f32(acc02, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0h))), m0));
+                                    acc03 = vfmaq_f32(acc03, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0h)), m0));
+                                    acc10 = vfmaq_f32(acc10, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1l))), m1));
+                                    acc11 = vfmaq_f32(acc11, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1l)), m1));
+                                    acc12 = vfmaq_f32(acc12, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1h))), m1));
+                                    acc13 = vfmaq_f32(acc13, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1h)), m1));
+                                    acc20 = vfmaq_f32(acc20, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a2l))), m2));
+                                    acc21 = vfmaq_f32(acc21, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a2l)), m2));
+                                    acc22 = vfmaq_f32(acc22, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a2h))), m2));
+                                    acc23 = vfmaq_f32(acc23, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a2h)), m2));
+                                    acc30 = vfmaq_f32(acc30, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a3l))), m3));
+                                    acc31 = vfmaq_f32(acc31, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a3l)), m3));
+                                    acc32 = vfmaq_f32(acc32, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a3h))), m3));
+                                    acc33 = vfmaq_f32(acc33, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a3h)), m3));
+                                }
+                            } else {
+                                const int8_t* l0 = luts + (size_t)(s0 + 0) * luts_stride;
+                                const int8_t* l1 = (sc_g >= 2) ? (luts + (size_t)(s0 + 1) * luts_stride) : l0;
+                                const int8_t* l2 = (sc_g >= 3) ? (luts + (size_t)(s0 + 2) * luts_stride) : l0;
+                                for (int sb = 0; sb < subs_per_blk; sb++) {
+                                    int g_sub = blk * subs_per_blk + sb;
+                                    int16x8_t a0l = vdupq_n_s16(0), a0h = vdupq_n_s16(0);
+                                    int16x8_t a1l = vdupq_n_s16(0), a1h = vdupq_n_s16(0);
+                                    int16x8_t a2l = vdupq_n_s16(0), a2h = vdupq_n_s16(0);
+                                    for (int bo = 0; bo < 8; bo++) {
+                                        size_t loff = ((size_t)g_sub * 8 + (size_t)bo) * 32;
+                                        uint8x16_t bv = vld1q_u8(pptr + ((size_t)sb * 8 + (size_t)bo) * 16);
+                                        uint8x16_t nhi = vshrq_n_u8(bv, 4);
+                                        uint8x16_t nlo = vandq_u8(bv, mask0f);
+                                        int8x16_t rh = vqtbl1q_s8(vld1q_s8(l0 + loff), nhi);
+                                        int8x16_t rl = vqtbl1q_s8(vld1q_s8(l0 + loff + 16), nlo);
+                                        a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
+                                        a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                        if (sc_g >= 2) {
+                                            rh = vqtbl1q_s8(vld1q_s8(l1 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l1 + loff + 16), nlo);
+                                            a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
+                                            a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                        }
+                                        if (sc_g >= 3) {
+                                            rh = vqtbl1q_s8(vld1q_s8(l2 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l2 + loff + 16), nlo);
+                                            a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
+                                            a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                        }
+                                    }
+                                    float m0 = sub_scales[(size_t)(s0 + 0) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                    acc00 = vfmaq_f32(acc00, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0l))), m0));
+                                    acc01 = vfmaq_f32(acc01, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0l)), m0));
+                                    acc02 = vfmaq_f32(acc02, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0h))), m0));
+                                    acc03 = vfmaq_f32(acc03, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0h)), m0));
+                                    if (sc_g >= 2) {
+                                        float m1 = sub_scales[(size_t)(s0 + 1) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                        acc10 = vfmaq_f32(acc10, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1l))), m1));
+                                        acc11 = vfmaq_f32(acc11, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1l)), m1));
+                                        acc12 = vfmaq_f32(acc12, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a1h))), m1));
+                                        acc13 = vfmaq_f32(acc13, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a1h)), m1));
+                                    }
+                                    if (sc_g >= 3) {
+                                        float m2 = sub_scales[(size_t)(s0 + 2) * (size_t)n_subs + (size_t)g_sub] * weight_p;
+                                        acc20 = vfmaq_f32(acc20, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a2l))), m2));
+                                        acc21 = vfmaq_f32(acc21, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a2l)), m2));
+                                        acc22 = vfmaq_f32(acc22, sc2, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a2h))), m2));
+                                        acc23 = vfmaq_f32(acc23, sc3, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a2h)), m2));
+                                    }
+                                }
+                            }
+                        }
+
+                        vst1q_f32(tile_acc[s0 + 0] + 0, acc00); vst1q_f32(tile_acc[s0 + 0] + 4, acc01);
+                        vst1q_f32(tile_acc[s0 + 0] + 8, acc02); vst1q_f32(tile_acc[s0 + 0] + 12, acc03);
+                        if (sc_g >= 2) {
+                            vst1q_f32(tile_acc[s0 + 1] + 0, acc10); vst1q_f32(tile_acc[s0 + 1] + 4, acc11);
+                            vst1q_f32(tile_acc[s0 + 1] + 8, acc12); vst1q_f32(tile_acc[s0 + 1] + 12, acc13);
+                        }
+                        if (sc_g >= 3) {
+                            vst1q_f32(tile_acc[s0 + 2] + 0, acc20); vst1q_f32(tile_acc[s0 + 2] + 4, acc21);
+                            vst1q_f32(tile_acc[s0 + 2] + 8, acc22); vst1q_f32(tile_acc[s0 + 2] + 12, acc23);
+                        }
+                        if (sc_g == 4) {
+                            vst1q_f32(tile_acc[s0 + 3] + 0, acc30); vst1q_f32(tile_acc[s0 + 3] + 4, acc31);
+                            vst1q_f32(tile_acc[s0 + 3] + 8, acc32); vst1q_f32(tile_acc[s0 + 3] + 12, acc33);
+                        }
+                    }
+                }
+
+                const int base_r = t * 16;
+                if (base_r + 16 <= d_out) {
+                    for (int kk = 0; kk < kc; kk++) {
+                        float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
+                        if (dual) {
+                            const float* hi = tile_acc[kk * 2];
+                            const float* lo = tile_acc[kk * 2 + 1];
+                            vst1q_f32(yk + 0,  vaddq_f32(vld1q_f32(hi + 0),  vld1q_f32(lo + 0)));
+                            vst1q_f32(yk + 4,  vaddq_f32(vld1q_f32(hi + 4),  vld1q_f32(lo + 4)));
+                            vst1q_f32(yk + 8,  vaddq_f32(vld1q_f32(hi + 8),  vld1q_f32(lo + 8)));
+                            vst1q_f32(yk + 12, vaddq_f32(vld1q_f32(hi + 12), vld1q_f32(lo + 12)));
+                        } else {
+                            const float* src = tile_acc[kk];
+                            vst1q_f32(yk + 0,  vld1q_f32(src + 0));
+                            vst1q_f32(yk + 4,  vld1q_f32(src + 4));
+                            vst1q_f32(yk + 8,  vld1q_f32(src + 8));
+                            vst1q_f32(yk + 12, vld1q_f32(src + 12));
+                        }
+                    }
+                } else {
+                    const int valid = d_out - base_r;
+                    for (int kk = 0; kk < kc; kk++) {
+                        float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
+                        if (dual) {
+                            for (int r = 0; r < valid; r++) yk[r] = tile_acc[kk * 2][r] + tile_acc[kk * 2 + 1][r];
+                        } else {
+                            for (int r = 0; r < valid; r++) yk[r] = tile_acc[kk][r];
+                        }
+                    }
+                }
+                if (tile_skips) tile_skips[t] = t_skip;
+            }
         } else
 #endif
         {
@@ -4396,32 +4670,28 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
                     float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
                     if (slots == 4) {
-                        const int8_t* l0 = luts + 0 * luts_stride;
-                        const int8_t* l1 = luts + 1 * luts_stride;
-                        const int8_t* l2 = luts + 2 * luts_stride;
-                        const int8_t* l3 = luts + 3 * luts_stride;
                         for (int sb = 0; sb < subs_per_blk; sb++) {
                             int g_sub = blk * subs_per_blk + sb;
                             int16x8_t a0l = vdupq_n_s16(0), a0h = vdupq_n_s16(0);
                             int16x8_t a1l = vdupq_n_s16(0), a1h = vdupq_n_s16(0);
                             int16x8_t a2l = vdupq_n_s16(0), a2h = vdupq_n_s16(0);
                             int16x8_t a3l = vdupq_n_s16(0), a3h = vdupq_n_s16(0);
-                            for (int bo = 0; bo < 8; bo++) {
-                                size_t loff = ((size_t)g_sub * 8 + (size_t)bo) * 32;
+                            const int8_t* lp = luts_i4 + (size_t)g_sub * 8u * 128u;
+                            for (int bo = 0; bo < 8; bo++, lp += 128) {
                                 uint8x16_t bv = vld1q_u8(pptr + ((size_t)sb * 8 + (size_t)bo) * 16);
                                 uint8x16_t nhi = vshrq_n_u8(bv, 4);
                                 uint8x16_t nlo = vandq_u8(bv, mask0f);
                                 int8x16_t rh, rl;
-                                rh = vqtbl1q_s8(vld1q_s8(l0 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l0 + loff + 16), nlo);
+                                rh = vqtbl1q_s8(vld1q_s8(lp + 0),  nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 16),  nlo);
                                 a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
                                 a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
-                                rh = vqtbl1q_s8(vld1q_s8(l1 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l1 + loff + 16), nlo);
+                                rh = vqtbl1q_s8(vld1q_s8(lp + 32), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 48),  nlo);
                                 a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
                                 a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
-                                rh = vqtbl1q_s8(vld1q_s8(l2 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l2 + loff + 16), nlo);
+                                rh = vqtbl1q_s8(vld1q_s8(lp + 64), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 80),  nlo);
                                 a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
                                 a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
-                                rh = vqtbl1q_s8(vld1q_s8(l3 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l3 + loff + 16), nlo);
+                                rh = vqtbl1q_s8(vld1q_s8(lp + 96), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 112), nlo);
                                 a3l = vaddw_s8(a3l, vget_low_s8(rh)); a3h = vaddw_high_s8(a3h, rh);
                                 a3l = vaddw_s8(a3l, vget_low_s8(rl)); a3h = vaddw_high_s8(a3h, rl);
                             }
@@ -6746,6 +7016,61 @@ NEON_API int neon_accelerator_self_test(void) {
             }
             neon_free(pk); neon_free(mx); neon_free(mx_z); neon_free(y_ref); neon_free(y_sp4); neon_free(y_sp1);
             if (!ok_m) return 0;
+        }
+        /* Gate M2: L1-cached tile-outer multi-group bit-exactness for k=8 (dual=1 outlier) and k=10 (dual=0) */
+        const int kt_cases[2] = { 8, 10 };
+        for (int ci = 0; ci < 2; ci++) {
+            const int ktc = kt_cases[ci];
+            const int nb = (ci == 0) ? (2 | T16C_GAUSS_BIT) : 1;
+            const int asym = (ci == 0) ? 0 : 1;
+            const int eff = nb & 0x7F;
+            const size_t tblk = (size_t)(asym ? 64 : 32) + (size_t)eff * (size_t)(bsz / 8) * 16u;
+            uint8_t* pk = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk);
+            float* mx = (float*)neon_alloc((size_t)ktc * (size_t)d_i * sizeof(float));
+            float* y_b = (float*)neon_alloc((size_t)ktc * (size_t)d_o * sizeof(float));
+            float* y_1 = (float*)neon_alloc((size_t)ktc * (size_t)d_o * sizeof(float));
+            if (!pk || !mx || !y_b || !y_1) {
+                neon_free(pk); neon_free(mx); neon_free(y_b); neon_free(y_1);
+                return 0;
+            }
+            uint64_t rng = 0xDEADBEEF00112233ULL ^ (uint64_t)ci;
+            for (size_t i = 0; i < (size_t)n_tiles * (size_t)n_blks * tblk; i++) {
+                rng = rng * 6364136223846793005ULL + 1ULL;
+                pk[i] = (uint8_t)(rng >> 24);
+            }
+            for (int t = 0; t < n_tiles; t++) {
+                for (int blk = 0; blk < n_blks; blk++) {
+                    uint8_t* bp = pk + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk;
+                    for (int r = 0; r < 16; r++) {
+                        write_u16_le(bp + (size_t)r * 2u, fp32_to_fp16(0.04f + 0.01f * (float)(r % 4)));
+                        if (asym) write_u16_le(bp + 32u + (size_t)r * 2u, fp32_to_fp16(-0.015f + 0.004f * (float)(r % 3)));
+                    }
+                }
+            }
+            for (int tok = 0; tok < ktc; tok++) {
+                for (int j = 0; j < d_i; j++) {
+                    mx[(size_t)tok * (size_t)d_i + (size_t)j] = (((tok * 17 + j * 11) % 23) - 11) * 0.08f;
+                }
+                if (ci == 0) {
+                    /* Force dual=1 high-dynamic-range outlier on every token in an active block */
+                    mx[(size_t)tok * (size_t)d_i + 3] = 28.5f + (float)tok * 0.5f;
+                }
+            }
+            int ok_m2 = (gemm_bitserial_tile16_sparse_batch(pk, NULL, mx, y_b, d_o, d_i, bsz, nb, asym, ktc, 0.0f, rmask, cmask, 2, NULL) == 0);
+            for (int tok = 0; tok < ktc && ok_m2; tok++) {
+                if (gemm_bitserial_tile16_sparse_batch(pk, NULL, mx + (size_t)tok * (size_t)d_i, y_1 + (size_t)tok * (size_t)d_o,
+                                                       d_o, d_i, bsz, nb, asym, 1, 0.0f, rmask, cmask, 2, NULL) != 0) ok_m2 = 0;
+            }
+            for (int tok = 0; tok < ktc && ok_m2; tok++) {
+                for (int r = 0; r < d_o; r++) {
+                    uint32_t ub = 0, u1 = 0;
+                    memcpy(&ub, &y_b[(size_t)tok * (size_t)d_o + (size_t)r], 4);
+                    memcpy(&u1, &y_1[(size_t)tok * (size_t)d_o + (size_t)r], 4);
+                    if (ub != u1) ok_m2 = 0;
+                }
+            }
+            neon_free(pk); neon_free(mx); neon_free(y_b); neon_free(y_1);
+            if (!ok_m2) return 0;
         }
     }
 
