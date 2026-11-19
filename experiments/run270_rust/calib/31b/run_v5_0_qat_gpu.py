@@ -416,21 +416,21 @@ class QuantLinearV5(nn.Module):
     def _build_w_rot_bf16(self) -> torch.Tensor:
         sc_q = self.sc + (self.sc.to(torch.float16).float() - self.sc).detach()
         with torch.no_grad():
-            qf = self.q_i8.to(COMPUTE_DTYPE)
+            qf = self.q_i8.float()
             if self.mode == 5:
-                # Exact polynomial identity on {-3,-1,+1,+3}: ±1 -> ±1.000, ±3 -> ±3.174000!
+                # Exact FP32 polynomial on {-3,-1,+1,+3}: ±1 -> ±1.000000, ±3 -> ±3.174000!
                 qf = qf * (1.0 + 0.00725 * (qf * qf - 1.0))
-        w = qf * sc_q.to(COMPUTE_DTYPE).unsqueeze(-1)
+        w = qf * sc_q.unsqueeze(-1)
         if self.bi is not None:
             bi_q = self.bi + (self.bi.to(torch.float16).float() - self.bi).detach()
-            w = w + bi_q.to(COMPUTE_DTYPE).unsqueeze(-1)
-        return w.reshape(self.d_out, self.d_in)
+            w = w + bi_q.unsqueeze(-1)
+        return w.reshape(self.d_out, self.d_in).to(torch.float16)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_sh = x.shape
         x2d = x.reshape(-1, self.d_in).float()
         x_sc = (x2d * self.inv_s) if self.inv_s is not None else x2d
-        x_rot = fwht_gpu(x_sc, self.bsize).to(COMPUTE_DTYPE)
+        x_rot = fwht_gpu(x_sc, self.bsize).to(torch.float16)
         w_rot = self._build_w_rot_bf16()
         y = F.linear(x_rot, w_rot).float()
         if self.U is not None and self.V is not None:
@@ -1966,7 +1966,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
             torch.cuda.empty_cache()
 
             # 3) REAL Block-Wise Attention QAT (loss.backward() + AdamW on scales, LR, norms!)
-            attn_steps = 50 if l_idx >= 36 else 25
+            attn_steps = 60 if l_idx >= 36 else 30
             w_attn_qat, norms_g, acos0, acos1 = qat_optimize_attn_block(
                 l_idx, attn_bundles, norms_g, X_stud_cpu, xm_teach_cpu, is_full, cos_r, sin_r, rot_d, hd, nkv, attn_steps
             )
@@ -2063,7 +2063,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
             torch.cuda.empty_cache()
 
             # 5) REAL Sparse-Aware GeGLU MLP Block-Wise QAT (loss.backward() + AdamW!)
-            mlp_steps = 75 if l_idx >= 36 else 30
+            mlp_steps = 100 if l_idx >= 36 else 40
             w_mlp_qat, norms_g, mcos0, mcos1, mcos_sp50 = qat_optimize_mlp_block(
                 l_idx, mlp_bundles, norms_g, xm_all, X_teach_next, mlp_steps
             )
@@ -2274,13 +2274,14 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
 
         params_3b = list(tail_mods.parameters()) + [p_final_norm]
         opt_3b = torch.optim.AdamW(params_3b, lr=3e-4, weight_decay=1e-4)
-        STEPS_3B = 100
+        STEPS_3B = 150
+        mb_3b = 8 if gpu_vram_gb >= 38.0 else 4
         sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=3e-5)
         best_kl_3b = kl_3b_0
         best_sd_3b = None
         for st in range(STEPS_3B):
             opt_3b.zero_grad()
-            sel = TRAIN_SEQ_IDX[np.random.choice(len(TRAIN_SEQ_IDX), size=4, replace=False)].tolist()
+            sel = TRAIN_SEQ_IDX[np.random.choice(len(TRAIN_SEQ_IDX), size=mb_3b, replace=False)].tolist()
             am = make_sliding_attn_mask_for_indices(sel, vlm_spans, SEQ_LEN, DEVICE)
             xin = x_pre56_cpu[sel].to(DEVICE).float().requires_grad_(True)
             hs_59 = run_tail_4layers(xin, am, True)
