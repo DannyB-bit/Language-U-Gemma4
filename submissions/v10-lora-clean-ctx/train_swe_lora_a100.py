@@ -700,9 +700,10 @@ def main() -> None:
 
     softcap = float(getattr(base_model.config.text_config, "final_logit_softcapping", 30.0) or 30.0)
 
-    # FAIL-CLOSED GATE 0: Verify unpacked W4A16->BF16 base LM produces exact Gemma 4 31B logits BEFORE training!
+    # FAIL-CLOSED GATE 0: Verify unpacked W4A16->BF16 base LM produces exact Gemma 4 31B-IT logits BEFORE training!
     with torch.no_grad():
-        probe_ids = tokenizer.encode("The capital of France is", return_tensors="pt").to(DEVICE)
+        chat_probe = "<|turn>user\nWhat is the capital of France?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>The capital of France is"
+        probe_ids = tokenizer.encode(chat_probe, return_tensors="pt").to(DEVICE)
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             ph = model.get_base_model().model.language_model(input_ids=probe_ids, use_cache=False, return_dict=True).last_hidden_state[:, -1, :]
         plog = model.get_base_model().lm_head(ph).float()
@@ -710,7 +711,7 @@ def main() -> None:
             plog = torch.tanh(plog / softcap) * softcap
         tv, ti = torch.topk(plog[0], 5)
         top5 = [(tokenizer.decode([int(i)]), round(float(v), 2)) for v, i in zip(tv, ti)]
-        print(f"[Gate 0 Base Sanity] 'The capital of France is' -> TOP5={top5}", flush=True)
+        print(f"[Gate 0 Base Sanity] chat('capital of France') -> TOP5={top5}", flush=True)
         assert any("Paris" in tok for tok, _ in top5), f"FAIL-CLOSED: Base LM sanity failed! top5={top5}"
 
     # Step 0 held-out validation baseline (must be sane pretrained loss, NOT random noise!)
