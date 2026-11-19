@@ -60,7 +60,28 @@ static inline float round_fp16(float v) {
     return f16_bits_to_f32(f32_to_f16_bits(v));
 }
 
-/* mode: 0=1b_asym, 1=tern, 2=2b_sym, 3=2b_asym */
+/* Exact non-uniform Gaussian bit-plane grids matching t16c.rs::plane_weight & neon_stream_accelerator_v2.c */
+static const float GAUSS2_LV[4]  = { -3.174f, -1.000f,  1.000f,  3.174f };
+static const float GAUSS2_MID[3] = { -2.087f,  0.000f,  2.087f };
+static const float GAUSS3_LV[8]  = { -7.430f, -5.430f, -3.270f, -1.270f,  1.270f,  3.270f,  5.430f,  7.430f };
+static const float GAUSS3_MID[7] = { -6.430f, -4.350f, -2.270f,  0.000f,  2.270f,  4.350f,  6.430f };
+
+static inline int quant_gauss2_idx(float u) {
+    if (u < GAUSS2_MID[1]) return (u < GAUSS2_MID[0]) ? 0 : 1;
+    return (u < GAUSS2_MID[2]) ? 2 : 3;
+}
+
+static inline int quant_gauss3_idx(float u) {
+    if (u < GAUSS3_MID[3]) {
+        if (u < GAUSS3_MID[1]) return (u < GAUSS3_MID[0]) ? 0 : 1;
+        return (u < GAUSS3_MID[2]) ? 2 : 3;
+    } else {
+        if (u < GAUSS3_MID[5]) return (u < GAUSS3_MID[4]) ? 4 : 5;
+        return (u < GAUSS3_MID[6]) ? 6 : 7;
+    }
+}
+
+/* mode: 0=1b_asym, 1=tern, 2=2b_sym, 3=2b_asym, 4=3b_sym, 5=2b_gaus, 6=3b_gaus */
 void rtn_quant_blocks_f32(float* W, int rows, int d_in, int bsize, int mode, int use_fp16) {
     int nblks = d_in / bsize;
     #pragma omp parallel for schedule(static)
@@ -206,6 +227,30 @@ void rtn_quant_blocks_f32(float* W, int rows, int d_in, int bsize, int mode, int
                     if (q > 7.0f) q = 7.0f;
                     blk[j] = sc * (2.0f * q - 7.0f);
                 }
+            } else if (mode == 5 || mode == 6) {
+                /* 2-bit / 3-bit non-uniform Gaussian symmetric (T16C_GAUSS_BIT) */
+                float init_k = (mode == 5) ? 0.470f : 0.275f;
+                double sq = 0.0;
+                for (int j = 0; j < bsize; j++) sq += (double)blk[j] * (double)blk[j];
+                float sc = init_k * (float)sqrt(sq / (double)bsize);
+                for (int it = 0; it < 4; it++) {
+                    double num = 0.0, den = 0.0;
+                    float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                    for (int j = 0; j < bsize; j++) {
+                        float u = blk[j] * inv_s;
+                        float lv = (mode == 5) ? GAUSS2_LV[quant_gauss2_idx(u)] : GAUSS3_LV[quant_gauss3_idx(u)];
+                        num += (double)lv * (double)blk[j];
+                        den += (double)lv * (double)lv;
+                    }
+                    sc = den > 0.0 ? (float)(num / den) : 0.0f;
+                }
+                if (use_fp16) sc = round_fp16(sc);
+                float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                for (int j = 0; j < bsize; j++) {
+                    float u = blk[j] * inv_s;
+                    float lv = (mode == 5) ? GAUSS2_LV[quant_gauss2_idx(u)] : GAUSS3_LV[quant_gauss3_idx(u)];
+                    blk[j] = sc * lv;
+                }
             }
         }
     }
@@ -282,6 +327,23 @@ void gptq_quant_chunk_f32(
                     sc = den > 0.0 ? (float)(num / den) : 0.0f;
                 }
                 if (use_fp16) sc = round_fp16(sc);
+            } else if (mode == 5 || mode == 6) {
+                float init_k = (mode == 5) ? 0.470f : 0.275f;
+                double sq = 0.0;
+                for (int j = 0; j < bsize; j++) sq += (double)blk[j] * (double)blk[j];
+                sc = init_k * (float)sqrt(sq / (double)bsize);
+                for (int it = 0; it < 4; it++) {
+                    double num = 0.0, den = 0.0;
+                    float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                    for (int j = 0; j < bsize; j++) {
+                        float u = blk[j] * inv_s;
+                        float lv = (mode == 5) ? GAUSS2_LV[quant_gauss2_idx(u)] : GAUSS3_LV[quant_gauss3_idx(u)];
+                        num += (double)lv * (double)blk[j];
+                        den += (double)lv * (double)lv;
+                    }
+                    sc = den > 0.0 ? (float)(num / den) : 0.0f;
+                }
+                if (use_fp16) sc = round_fp16(sc);
             }
 
             /* Step 2: Intrablock column-by-column GPTQ error diffusion */
@@ -297,6 +359,11 @@ void gptq_quant_chunk_f32(
                 } else if (mode == 1) {
                     float tau = 0.5f * sc;
                     qval = (val > tau) ? sc : ((val < -tau) ? -sc : 0.0f);
+                } else if (mode == 5 || mode == 6) {
+                    float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                    float u = val * inv_s;
+                    float lv = (mode == 5) ? GAUSS2_LV[quant_gauss2_idx(u)] : GAUSS3_LV[quant_gauss3_idx(u)];
+                    qval = sc * lv;
                 } else {
                     float max_lvl = (mode == 2) ? 3.0f : 7.0f;
                     float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
@@ -369,12 +436,12 @@ size_t t16c_tblk_bytes(int bsize, int mode) {
         return (size_t)32 + (size_t)quintets * 16u;
     }
     int is_asym = (mode == 0 || mode == 3) ? 1 : 0;
-    int n_bits = (mode == 0) ? 1 : ((mode == 2 || mode == 3) ? 2 : 3);
+    int n_bits = (mode == 0) ? 1 : ((mode == 2 || mode == 3 || mode == 5) ? 2 : 3);
     return (size_t)(is_asym ? 64 : 32) + (size_t)n_bits * (size_t)(bsize / 8) * 16u;
 }
 
 /* Quantize W_rot[rows, d_in] in-place AND write exact T16C tile16 bytes into out_bytes.
- * mode: 0=1b_asym, 1=tern_5trit(n_bits=5), 2=2b_sym, 4=3b_sym. */
+ * mode: 0=1b_asym, 1=tern_5trit(n_bits=5), 2=2b_sym, 4=3b_sym, 5=2b_gaus, 6=3b_gaus. */
 void quant_and_pack_t16c_f32(float* W, int rows, int d_in, int bsize, int mode, uint8_t* out_bytes) {
     int nblks = d_in / bsize;
     int n_tiles = (rows + 15) / 16;
@@ -513,6 +580,80 @@ void quant_and_pack_t16c_f32(float* W, int rows, int d_in, int bsize, int mode, 
                             dst[32u + (size_t)p * plane_b + (size_t)bo * 16u + (size_t)r_off] = bv[p];
                         }
                     }
+                } else if (mode == 5 || mode == 6) {
+                    int n_bits = (mode == 5) ? 2 : 3;
+                    float init_k = (mode == 5) ? 0.470f : 0.275f;
+                    double sq = 0.0;
+                    for (int j = 0; j < bsize; j++) sq += (double)blk[j] * (double)blk[j];
+                    float sc = init_k * (float)sqrt(sq / (double)bsize);
+                    for (int it = 0; it < 4; it++) {
+                        double num = 0.0, den = 0.0;
+                        float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                        for (int j = 0; j < bsize; j++) {
+                            float u = blk[j] * inv_s;
+                            float lv = (mode == 5) ? GAUSS2_LV[quant_gauss2_idx(u)] : GAUSS3_LV[quant_gauss3_idx(u)];
+                            num += (double)lv * (double)blk[j];
+                            den += (double)lv * (double)lv;
+                        }
+                        sc = den > 0.0 ? (float)(num / den) : 0.0f;
+                    }
+                    uint16_t sc16 = f32_to_f16_bits(sc);
+                    sc = f16_bits_to_f32(sc16);
+                    dst[r_off * 2] = (uint8_t)(sc16 & 0xFFu);
+                    dst[r_off * 2 + 1] = (uint8_t)(sc16 >> 8);
+                    float inv_s = sc > 1e-12f ? 1.0f / sc : 0.0f;
+                    size_t plane_b = (size_t)bpr * 16u;
+                    for (int bo = 0; bo < bpr; bo++) {
+                        uint8_t bv[3] = {0, 0, 0};
+                        for (int bit = 0; bit < 8; bit++) {
+                            int j = bo * 8 + bit;
+                            float u = blk[j] * inv_s;
+                            int qi = (mode == 5) ? quant_gauss2_idx(u) : quant_gauss3_idx(u);
+                            blk[j] = sc * ((mode == 5) ? GAUSS2_LV[qi] : GAUSS3_LV[qi]);
+                            for (int p = 0; p < n_bits; p++) {
+                                if ((qi >> p) & 1) bv[p] |= (uint8_t)(1u << (7 - bit));
+                            }
+                        }
+                        for (int p = 0; p < n_bits; p++) {
+                            dst[32u + (size_t)p * plane_b + (size_t)bo * 16u + (size_t)r_off] = bv[p];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* Update FP16 block scales (and optional biases when is_asym != 0) inside an already-packed
+ * T16C buffer after differentiable Block-Wise QAT without altering any quantized bit-planes. */
+void update_t16c_headers_f32(
+    uint8_t* packed_bytes,
+    int rows,
+    int d_in,
+    int bsize,
+    int mode,
+    const float* sc_f32,
+    const float* bi_f32
+) {
+    int nblks = d_in / bsize;
+    int n_tiles = (rows + 15) / 16;
+    size_t tblk_b = t16c_tblk_bytes(bsize, mode);
+    int is_asym = (mode == 0 || mode == 3) ? 1 : 0;
+    #pragma omp parallel for schedule(static)
+    for (int t = 0; t < n_tiles; t++) {
+        int r_base = t * 16;
+        int r_end = (r_base + 16 <= rows) ? (r_base + 16) : rows;
+        for (int b = 0; b < nblks; b++) {
+            uint8_t* dst = packed_bytes + ((size_t)t * (size_t)nblks + (size_t)b) * tblk_b;
+            for (int r_off = 0; r_off < r_end - r_base; r_off++) {
+                size_t idx = (size_t)(r_base + r_off) * (size_t)nblks + (size_t)b;
+                uint16_t sc16 = f32_to_f16_bits(sc_f32[idx]);
+                dst[r_off * 2] = (uint8_t)(sc16 & 0xFFu);
+                dst[r_off * 2 + 1] = (uint8_t)(sc16 >> 8);
+                if (is_asym && bi_f32 != NULL) {
+                    uint16_t bi16 = f32_to_f16_bits(bi_f32[idx]);
+                    dst[32 + r_off * 2] = (uint8_t)(bi16 & 0xFFu);
+                    dst[32 + r_off * 2 + 1] = (uint8_t)(bi16 >> 8);
                 }
             }
         }

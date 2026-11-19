@@ -361,6 +361,30 @@ NEON_API int gemm_bitserial_tile16_batch(
     int64_t* NEON_RESTRICT out_skipped
 );
 
+/**
+ * Sparse block/tile bit-serial Tile-16 GEMM/GEMV for Gate-Guided Block-Sparse GeGLU.
+ * - `row_tile_mask` (optional, len = ceil(d_out/16)): 0 skips the entire 16-row tile in DRAM and writes 0.0f.
+ * - `col_blk_mask` (optional, len = d_in/block_size): 0 skips the input block in DRAM across all tiles.
+ * When both masks are NULL, bit-identical to `gemm_bitserial_tile16_batch`.
+ */
+NEON_API int gemm_bitserial_tile16_sparse_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym,
+    int k_tokens,
+    float cs_skip_thresh,
+    const uint8_t* NEON_RESTRICT row_tile_mask,
+    const uint8_t* NEON_RESTRICT col_blk_mask,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+);
+
 NEON_API int gemv_bitserial_tile16_mmap(
     const uint8_t* NEON_RESTRICT packed,
     const uint16_t* NEON_RESTRICT tile_norm_fp16,

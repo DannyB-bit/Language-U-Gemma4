@@ -649,6 +649,17 @@ struct Runtime31B {
     cs_skip_thresh: f32,
     cs_down_norms: Vec<Option<Vec<u16>>>,
     cs_skipped_blocks: u64,
+    mlp_top_p: f32,
+    mlp_sparse_skipped_blks: u64,
+    mlp_sparse_total_blks: u64,
+    profile_components: bool,
+    prof_attn_s: f64,
+    prof_gate_s: f64,
+    prof_up_s: f64,
+    prof_down_s: f64,
+    prof_norm_kv_s: f64,
+    prof_lmhead_s: f64,
+    prof_steps: usize,
     embed_tile_norms: Option<Vec<u16>>,
     lmhead_cs_sieve: Option<f32>,
     lmhead_cs_skipped_blocks: u64,
@@ -904,6 +915,8 @@ impl Runtime31B {
         let hybrid_pinned = &self.hybrid_pinned;
         let cs_down_norms = &self.cs_down_norms;
         let cs_skip_thresh = self.cs_skip_thresh;
+        let mlp_top_p = self.mlp_top_p;
+        let profile_components = self.profile_components;
         let kv_quant = self.kv_quant;
         let fp8_lut = &self.fp8_lut;
         let kv = &mut self.kv;
@@ -911,6 +924,13 @@ impl Runtime31B {
         let threads = self.threads;
         let mut read_bytes = 0u64;
         let mut cs_skipped_step = 0u64;
+        let mut mlp_sp_skipped_step = 0u64;
+        let mut mlp_sp_total_step = 0u64;
+        let mut prof_attn_step = 0.0f64;
+        let mut prof_gate_step = 0.0f64;
+        let mut prof_up_step = 0.0f64;
+        let mut prof_down_step = 0.0f64;
+        let mut prof_norm_kv_step = 0.0f64;
         let mut kv_raw_step = 0usize;
         let mut kv_cmp_step = 0usize;
 
@@ -950,7 +970,12 @@ impl Runtime31B {
                     None
                 };
 
-            let mut run_proj = |layer: usize, proj_suffix: &'static str, x_batch: &[f32]| -> Result<Vec<f32>, String> {
+            let mut run_proj_masked = |layer: usize,
+                                       proj_suffix: &'static str,
+                                       x_batch: &[f32],
+                                       row_mask: Option<&[u8]>,
+                                       col_mask: Option<&[u8]>|
+             -> Result<Vec<f32>, String> {
                 if let Some(pl) = hybrid_pinned.get(&layer) {
                     let p = match proj_suffix {
                         "self_attn.q_proj" => &pl.q,
@@ -972,7 +997,24 @@ impl Runtime31B {
                         .get(&k1)
                         .or_else(|| mats.get(&k2))
                         .ok_or_else(|| format!("T16C missing {k1}"))?;
-                    let mut out = if proj_suffix == "mlp.down_proj" && cs_skip_thresh > 0.0 {
+                    let mut out = if row_mask.is_some() || col_mask.is_some() {
+                        let (y_sp, skipped) = mat.project_batch_sparse(
+                            x_batch,
+                            seq_len,
+                            native_t16c.as_deref(),
+                            threads,
+                            row_mask,
+                            col_mask,
+                        )?;
+                        let n_tiles_m = mat.d_out.div_ceil(16) as u64;
+                        let n_blks_m = (mat.d_in / mat.block_size) as u64;
+                        let passes = (seq_len.div_ceil(4)).max(1) as u64;
+                        mlp_sp_total_step += n_tiles_m * n_blks_m * passes;
+                        if skipped > 0 {
+                            mlp_sp_skipped_step += skipped as u64;
+                        }
+                        y_sp
+                    } else if proj_suffix == "mlp.down_proj" && cs_skip_thresh > 0.0 {
                         let d_norms = cs_down_norms.get(layer).and_then(|o| o.as_deref());
                         let (y_cs, skipped) = mat.project_batch_cs(
                             x_batch,
@@ -1052,14 +1094,19 @@ impl Runtime31B {
                     }
                 }
 
-                let mut q_batch = run_proj(l, "self_attn.q_proj", &inp)?;
-                let k_raw = run_proj(l, "self_attn.k_proj", &inp)?;
+                let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, None, None)?;
+                let k_raw = run_proj_masked(l, "self_attn.k_proj", &inp, None, None)?;
                 let mut v_batch = if is_full && cfg.attention_k_eq_v {
                     k_raw.clone()
                 } else {
-                    run_proj(l, "self_attn.v_proj", &inp)?
+                    run_proj_masked(l, "self_attn.v_proj", &inp, None, None)?
                 };
+                if let Some(t0) = t_ap0 {
+                    prof_attn_step += t0.elapsed().as_secs_f64();
+                }
                 drop(inp);
+                let t_kv0 = if profile_components { Some(std::time::Instant::now()) } else { None };
 
                 let mut k_batch = k_raw;
                 {
@@ -1159,8 +1206,16 @@ impl Runtime31B {
                 drop(k_batch);
                 drop(v_batch);
 
-                let attn_o = run_proj(l, "self_attn.o_proj", &ctx_batch)?;
+                if let Some(t0) = t_kv0 {
+                    prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                }
+                let t_ao0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let attn_o = run_proj_masked(l, "self_attn.o_proj", &ctx_batch, None, None)?;
+                if let Some(t0) = t_ao0 {
+                    prof_attn_step += t0.elapsed().as_secs_f64();
+                }
                 drop(ctx_batch);
+                let t_n1 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 {
                     let g_pa = get_norm(&format!("{pfx}.post_attention_layernorm.weight"))?;
                     for t in 0..seq_len {
@@ -1179,15 +1234,111 @@ impl Runtime31B {
                         inp2.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_pf), eps));
                     }
                 }
-                let gate = run_proj(l, "mlp.gate_proj", &inp2)?;
-                let up = run_proj(l, "mlp.up_proj", &inp2)?;
-                drop(inp2);
-                let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_scalar(a) * b).collect();
+                if let Some(t0) = t_n1 {
+                    prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                }
+                let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None)?;
+                if let Some(t0) = t_g0 {
+                    prof_gate_step += t0.elapsed().as_secs_f64();
+                }
+                let gelu_gate: Vec<f32> = gate.iter().map(|&a| gelu_tanh_scalar(a)).collect();
                 drop(gate);
+
+                // Gate-Guided Block-Sparse GeGLU: only active when mlp_top_p < 1.0 and up/down are native bit-serial.
+                let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
+                    t16c_mats.as_ref().and_then(|mats| {
+                        let ku1 = format!("model.language_model.layers.{l}.mlp.up_proj.weight");
+                        let ku2 = format!("model.layers.{l}.mlp.up_proj.weight");
+                        let kd1 = format!("model.language_model.layers.{l}.mlp.down_proj.weight");
+                        let kd2 = format!("model.layers.{l}.mlp.down_proj.weight");
+                        let um = mats.get(&ku1).or_else(|| mats.get(&ku2))?;
+                        let dm = mats.get(&kd1).or_else(|| mats.get(&kd2))?;
+                        let ue = um.n_bits & 0x7F;
+                        let de = dm.n_bits & 0x7F;
+                        if ue == 5 || ue == 8 || de == 5 || de == 8 {
+                            return None;
+                        }
+                        let bsize = dm.block_size;
+                        let ff = cfg.ff;
+                        if bsize == 0 || ff % bsize != 0 || bsize % 16 != 0 {
+                            return None;
+                        }
+                        let n_blks = ff / bsize;
+                        let tiles_per_blk = bsize / 16;
+                        let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n_blks);
+                        for b in 0..n_blks {
+                            let mut max_e = 0.0f32;
+                            for t in 0..seq_len {
+                                let sl = &gelu_gate[t * ff + b * bsize..t * ff + (b + 1) * bsize];
+                                let e: f32 = sl.iter().map(|&v| v * v).sum();
+                                if e > max_e {
+                                    max_e = e;
+                                }
+                            }
+                            scores.push((b, max_e));
+                        }
+                        scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                        let keep = ((n_blks as f32 * mlp_top_p).ceil() as usize).clamp(1, n_blks);
+                        let mut col_mask = vec![0u8; n_blks];
+                        let mut row_mask = vec![0u8; ff.div_ceil(16)];
+                        for &(b, _) in &scores[..keep] {
+                            col_mask[b] = 1;
+                            let t0 = b * tiles_per_blk;
+                            for dt in 0..tiles_per_blk {
+                                if t0 + dt < row_mask.len() {
+                                    row_mask[t0 + dt] = 1;
+                                }
+                            }
+                        }
+                        Some((row_mask, col_mask, bsize))
+                    })
+                } else {
+                    None
+                };
+
+                let t_u0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let up = if let Some((ref rmask, _, _)) = sparse_masks {
+                    run_proj_masked(l, "mlp.up_proj", &inp2, Some(rmask), None)?
+                } else {
+                    run_proj_masked(l, "mlp.up_proj", &inp2, None, None)?
+                };
+                if let Some(t0) = t_u0 {
+                    prof_up_step += t0.elapsed().as_secs_f64();
+                }
+                drop(inp2);
+                let act: Vec<f32> = if let Some((_, ref cmask, bsize)) = sparse_masks {
+                    let ff = cfg.ff;
+                    let mut out_a = vec![0.0f32; seq_len * ff];
+                    for t in 0..seq_len {
+                        let base = t * ff;
+                        for (b, &active) in cmask.iter().enumerate() {
+                            if active != 0 {
+                                let off = base + b * bsize;
+                                for j in 0..bsize {
+                                    out_a[off + j] = gelu_gate[off + j] * up[off + j];
+                                }
+                            }
+                        }
+                    }
+                    out_a
+                } else {
+                    gelu_gate.iter().zip(up.iter()).map(|(&a, &b)| a * b).collect()
+                };
+                drop(gelu_gate);
                 drop(up);
-                let down = run_proj(l, "mlp.down_proj", &act)?;
+                let t_d0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let down = if let Some((_, ref cmask, _)) = sparse_masks {
+                    run_proj_masked(l, "mlp.down_proj", &act, None, Some(cmask))?
+                } else {
+                    run_proj_masked(l, "mlp.down_proj", &act, None, None)?
+                };
+                if let Some(t0) = t_d0 {
+                    prof_down_step += t0.elapsed().as_secs_f64();
+                }
                 drop(act);
 
+                let t_n2 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 let g_pff = get_norm(&format!("{pfx}.post_feedforward_layernorm.weight"))?;
                 let ls = scalars[l];
                 for t in 0..seq_len {
@@ -1195,6 +1346,9 @@ impl Runtime31B {
                     for i in 0..d {
                         states[t * d + i] = (states[t * d + i] + norm_d[i]) * ls;
                     }
+                }
+                if let Some(t0) = t_n2 {
+                    prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 if verbose_layers && (l == 0 || l == 5 || l % 15 == 14 || l + 1 == cfg.n_layers) {
                     eprintln!("[run31b] layer {l:02}/{} done in {:.2}s (pinned={})", cfg.n_layers, tl.elapsed().as_secs_f64(), all_pinned || l < pinned.len());
@@ -1204,6 +1358,16 @@ impl Runtime31B {
         })?;
         self.ssd_bytes_read += read_bytes;
         self.cs_skipped_blocks += cs_skipped_step;
+        self.mlp_sparse_skipped_blks += mlp_sp_skipped_step;
+        self.mlp_sparse_total_blks += mlp_sp_total_step;
+        if profile_components {
+            self.prof_attn_s += prof_attn_step;
+            self.prof_gate_s += prof_gate_step;
+            self.prof_up_s += prof_up_step;
+            self.prof_down_s += prof_down_step;
+            self.prof_norm_kv_s += prof_norm_kv_step;
+            self.prof_steps += 1;
+        }
         self.kv_raw_bytes += kv_raw_step;
         self.kv_compressed_bytes += kv_cmp_step;
 
@@ -1249,6 +1413,7 @@ impl Runtime31B {
         if hidden_batch.len() != seq_len * d {
             return Err(format!("hidden_batch len {} != {seq_len}*{d}", hidden_batch.len()));
         }
+        let t_lm0 = if self.profile_components { Some(std::time::Instant::now()) } else { None };
         let mut lm_sk: u64 = 0;
         let mut logits = match &self.embed {
             Embed31B::Streamed => {
@@ -1316,6 +1481,9 @@ impl Runtime31B {
                 }
             }
         };
+        if let Some(t0) = t_lm0 {
+            self.prof_lmhead_s += t0.elapsed().as_secs_f64();
+        }
         self.lmhead_cs_skipped_blocks += lm_sk;
         if let Some(cap) = self.cfg.final_softcap {
             for v in &mut logits {
@@ -1421,6 +1589,17 @@ fn load_runtime_31b(
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            mlp_top_p: 1.0,
+            mlp_sparse_skipped_blks: 0,
+            mlp_sparse_total_blks: 0,
+            profile_components: false,
+            prof_attn_s: 0.0,
+            prof_gate_s: 0.0,
+            prof_up_s: 0.0,
+            prof_down_s: 0.0,
+            prof_norm_kv_s: 0.0,
+            prof_lmhead_s: 0.0,
+            prof_steps: 0,
             embed_tile_norms: None,
             lmhead_cs_sieve: None,
             lmhead_cs_skipped_blocks: 0,
@@ -1597,6 +1776,17 @@ fn load_runtime_31b_t16c(
             cs_skip_thresh: 0.0,
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
+            mlp_top_p: 1.0,
+            mlp_sparse_skipped_blks: 0,
+            mlp_sparse_total_blks: 0,
+            profile_components: false,
+            prof_attn_s: 0.0,
+            prof_gate_s: 0.0,
+            prof_up_s: 0.0,
+            prof_down_s: 0.0,
+            prof_norm_kv_s: 0.0,
+            prof_lmhead_s: 0.0,
+            prof_steps: 0,
             embed_tile_norms: None,
             lmhead_cs_sieve: None,
             lmhead_cs_skipped_blocks: 0,
@@ -2097,6 +2287,15 @@ fn run() -> Result<(), String> {
     if !cs_skip_thresh.is_finite() || cs_skip_thresh < 0.0 {
         return Err(format!("--cs-skip must be finite and >= 0.0, got {cs_skip_thresh}"));
     }
+    let mlp_top_p: f32 = match get("--mlp-top-p") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --mlp-top-p '{s}'"))?,
+        None => 1.0,
+    };
+    if !mlp_top_p.is_finite() || mlp_top_p <= 0.0 || mlp_top_p > 1.0 {
+        return Err(format!("--mlp-top-p must be finite in (0.0, 1.0], got {mlp_top_p}"));
+    }
+    let profile_components = args.iter().any(|a| a == "--profile-components");
+    let prompt_batch_arg = get("--prompt-batch");
     let lmhead_cs_sieve: Option<f32> = match get("--lmhead-cs") {
         Some(s) => parse_lmhead_cs_mode(&s)?,
         None => Some(0.0),
@@ -2186,6 +2385,11 @@ fn run() -> Result<(), String> {
         eprintln!(
             "[run31b] enabled Cauchy-Schwarz down_proj tile skip: thresh={cs_skip_thresh:.2e} mats={cs_mats} norms_bytes={cs_bytes}"
         );
+    }
+    rt.mlp_top_p = mlp_top_p;
+    rt.profile_components = profile_components;
+    if mlp_top_p < 0.9999 {
+        eprintln!("[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p={mlp_top_p:.3}");
     }
     let lmhead_cs_bytes = rt.enable_lmhead_cs(lmhead_cs_sieve)?;
     if let Some(sf_cs) = rt.lmhead_cs_sieve {
@@ -2296,6 +2500,66 @@ fn run() -> Result<(), String> {
         vision_soft = Some((n_soft, soft));
     }
 
+    let batch_prompts: Vec<String> = if let Some(ref pbf) = prompt_batch_arg {
+        let raw = fs::read_to_string(pbf).map_err(|e| format!("read --prompt-batch {pbf}: {e}"))?;
+        let lines: Vec<String> = raw
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect();
+        if lines.is_empty() {
+            return Err(format!("--prompt-batch {pbf} contains no active prompts"));
+        }
+        lines
+    } else {
+        vec![prompt_text.clone()]
+    };
+    let is_multi_prompt = batch_prompts.len() > 1;
+
+    for (prompt_idx, raw_line) in batch_prompts.iter().enumerate() {
+        if prompt_idx > 0 {
+            rt.truncate_kv(0)?;
+            rt.mlp_sparse_skipped_blks = 0;
+            rt.mlp_sparse_total_blks = 0;
+            rt.prof_attn_s = 0.0;
+            rt.prof_gate_s = 0.0;
+            rt.prof_up_s = 0.0;
+            rt.prof_down_s = 0.0;
+            rt.prof_norm_kv_s = 0.0;
+            rt.prof_lmhead_s = 0.0;
+            rt.prof_steps = 0;
+        }
+        let (cur_prompt_text, cur_vision_override): (String, Option<(usize, Vec<f32>)>) =
+            if let Some(rest) = raw_line.strip_prefix("IMAGE:") {
+                let (img_path_s, p_txt) = rest
+                    .split_once('|')
+                    .ok_or_else(|| format!("invalid IMAGE:<path>|<prompt> line: {raw_line}"))?;
+                let img = run270_rust::vision::load_rgb_image(Path::new(img_path_s.trim()))?;
+                let vw = rt.vision.as_ref().ok_or("IMAGE: batch line requires .t16c with vision weights")?;
+                let t_vis = std::time::Instant::now();
+                let (n_soft, soft) = vw.encode_image(
+                    &img,
+                    rt.native_t16c.as_deref(),
+                    rt.c8d_bank.as_ref(),
+                    rt.threads,
+                )?;
+                eprintln!(
+                    "[run31b] batch vision encoded {} ({}x{}) -> n_soft={n_soft} in {:.2}s",
+                    img_path_s.trim(),
+                    img.width,
+                    img.height,
+                    t_vis.elapsed().as_secs_f64()
+                );
+                (p_txt.trim().to_string(), Some((n_soft, soft)))
+            } else {
+                (raw_line.clone(), None)
+            };
+        let active_vision: Option<&(usize, Vec<f32>)> = cur_vision_override.as_ref().or(vision_soft.as_ref());
+        if is_multi_prompt {
+            println!("=== BATCH_PROMPT {}/{} prompt={cur_prompt_text:?} ===", prompt_idx + 1, batch_prompts.len());
+        }
+
     let ids: Vec<u32> = if let Some(ref in_ppm) = optical_ctx_in {
         let img = run270_rust::vision::load_rgb_image(Path::new(in_ppm))?;
         let (decoded_ids, hdr, dec_ms) = decode_tokens_from_optical_frame(&img, 4)?;
@@ -2305,26 +2569,26 @@ fn run() -> Result<(), String> {
         );
         decoded_ids
     } else {
-        match ids_arg {
+        match ids_arg.as_deref() {
             Some(s) => s
                 .split(',')
                 .map(|x| x.trim().parse::<u32>().map_err(|_| format!("invalid id in --ids '{s}'")))
                 .collect::<Result<Vec<_>, _>>()?,
             None => {
-                if let Some((n_soft, _)) = &vision_soft {
+                if let Some((n_soft, _)) = active_vision {
                     let mut v_ids = Vec::new();
                     v_ids.extend(tk.encode("<|turn>user\n", true));
                     v_ids.push(run270_rust::vision::GEMMA4_BOI_TOKEN_ID);
                     v_ids.resize(v_ids.len() + *n_soft, run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID);
                     v_ids.push(run270_rust::vision::GEMMA4_EOI_TOKEN_ID);
-                    let tail = format!("{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+                    let tail = format!("{cur_prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
                     v_ids.extend(tk.encode(&tail, false));
                     v_ids
                 } else {
                     let prompt = if raw_prompt {
-                        prompt_text.clone()
+                        cur_prompt_text.clone()
                     } else {
-                        format!("<|turn>user\n{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+                        format!("<|turn>user\n{cur_prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
                     };
                     tk.encode(&prompt, true)
                 }
@@ -2358,7 +2622,8 @@ fn run() -> Result<(), String> {
 
     let t_pf = std::time::Instant::now();
     let mut prefill_states = rt.embed_batch(&ids)?;
-    if let Some((n_soft, soft_emb)) = vision_soft {
+    if let Some((n_soft, soft_emb)) = active_vision {
+        let n_soft = *n_soft;
         let d_h = rt.cfg.d;
         let mut s_idx = 0usize;
         for (t_idx, &tid) in ids.iter().enumerate() {
@@ -2415,9 +2680,9 @@ fn run() -> Result<(), String> {
     let prefill_s = t_pf.elapsed().as_secs_f64();
     eprintln!("[run31b] prefill done in {prefill_s:.2}s ssd_read_mb={:.1} vm={:?}", rt.ssd_bytes_read as f64 / 1e6, proc_status_kb());
 
-    if let Some(dp) = dump_logits {
+    if let Some(ref dp) = dump_logits {
         let bytes: Vec<u8> = prefill_logits.iter().flat_map(|v| v.to_le_bytes()).collect();
-        fs::write(&dp, bytes).map_err(|e| format!("write {dp}: {e}"))?;
+        fs::write(dp, bytes).map_err(|e| format!("write {dp}: {e}"))?;
     }
 
     apply_degeneracy_guard(&mut prefill_logits, &ids, &[]);
@@ -2746,10 +3011,36 @@ fn run() -> Result<(), String> {
             rt.kv_quant, rt.kv_raw_bytes, rt.kv_compressed_bytes
         );
     }
+    if rt.mlp_top_p < 0.9999 {
+        let pct = if rt.mlp_sparse_total_blks > 0 {
+            100.0 * (rt.mlp_sparse_skipped_blks as f64) / (rt.mlp_sparse_total_blks as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "MLP_SPARSE top_p={:.3} skipped_blks={} total_blks={} dram_saved_pct={:.1}%",
+            rt.mlp_top_p, rt.mlp_sparse_skipped_blks, rt.mlp_sparse_total_blks, pct
+        );
+    }
+    if rt.profile_components && rt.prof_steps > 0 {
+        let n = rt.prof_steps as f64;
+        println!(
+            "PROFILE31B steps={} attn_s={:.3} gate_s={:.3} up_s={:.3} down_s={:.3} norm_kv_s={:.3} lmhead_s={:.3} avg_step_s={:.3}",
+            rt.prof_steps,
+            rt.prof_attn_s,
+            rt.prof_gate_s,
+            rt.prof_up_s,
+            rt.prof_down_s,
+            rt.prof_norm_kv_s,
+            rt.prof_lmhead_s,
+            (rt.prof_attn_s + rt.prof_gate_s + rt.prof_up_s + rt.prof_down_s + rt.prof_norm_kv_s + rt.prof_lmhead_s) / n
+        );
+    }
     println!(
         "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} lmhead_cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
         rt.ssd_bytes_read, rt.cs_skipped_blocks, rt.lmhead_cs_skipped_blocks
     );
+    }
     Ok(())
 }
 
