@@ -1,0 +1,12 @@
+name: swe_agent
+model: gemma-4-31b-it-qat-w4a16-ct
+description: Runtime-safe v9 single 31B SWE repair agent combining the 0.17 28-call parallel-propagation contract with v8 bounded pacing and fast exit.
+instruction: !include prompts/system.md
+tools:
+  - run_command
+  - read_file
+  - edit_file
+  - write_file
+  - get_status
+  - submit_patch
+generate_content_config: !include configs/sampling.yaml
