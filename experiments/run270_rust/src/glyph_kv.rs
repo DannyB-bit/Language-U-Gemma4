@@ -627,6 +627,20 @@ impl GlyphKvLayer {
                 self.total_seen
             ));
         }
+        if keep_tokens == 0 {
+            self.glyph_len = 0;
+            self.glyph_write_pos = 0;
+            self.glyph_pos.clear();
+            self.k_sink.clear();
+            self.v_sink.clear();
+            self.sink_pos.clear();
+            self.k_tail.clear();
+            self.v_tail.clear();
+            self.tail_pos.clear();
+            self.total_seen = 0;
+            self.rollback_log.clear();
+            return Ok(());
+        }
         let stride = self.n_kv * self.hd;
         let head_stride = self.glyph_cap * self.head_glyph_bytes;
         while self.total_seen > keep_tokens {

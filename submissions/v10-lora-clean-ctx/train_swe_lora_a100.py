@@ -41,7 +41,10 @@ from huggingface_hub import snapshot_download
 from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from transformers import AutoConfig, AutoTokenizer
-from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+from transformers.models.gemma4.modeling_gemma4 import (
+    Gemma4ForConditionalGeneration,
+    Gemma4TextRotaryEmbedding,
+)
 from peft import LoraConfig, get_peft_model
 
 SEED = 42
@@ -493,9 +496,10 @@ def load_exact_w4a16_as_bf16_model(model_dir: Path) -> Gemma4ForConditionalGener
     assert sf_files, f"No safetensors shards in {model_dir}"
     print(f"[Model] Streaming & unpacking {len(sf_files)} W4A16-CT shards -> exact BF16 LM weights...", flush=True)
 
-    # Gather parameter map for direct zero-copy assignment
+    # Track exact loaded parameters so zero LM params or buffers remain uninitialized garbage!
     param_map = dict(model.named_parameters())
     buf_map = dict(model.named_buffers())
+    loaded_lm_params = set()
     shifts = torch.arange(0, 32, 4, device=DEVICE, dtype=torch.int32)
     packed_done = 0
     direct_done = 0
@@ -519,11 +523,13 @@ def load_exact_w4a16_as_bf16_model(model_dir: Path) -> Gemma4ForConditionalGener
                     nibs = ((wp.unsqueeze(-1) >> shifts) & 0xF) - 8
                     w_bf16 = (nibs.to(torch.float32).reshape(wp.shape[0], -1, 32) * ws.unsqueeze(-1)).reshape(wp.shape[0], -1).to(torch.bfloat16)
                     param_map[w_name].data = w_bf16
+                    loaded_lm_params.add(w_name)
                     del wp, ws, nibs
                     packed_done += 1
                 else:
                     if k in param_map:
                         param_map[k].data = f.get_tensor(k).to(device=DEVICE, dtype=torch.bfloat16)
+                        loaded_lm_params.add(k)
                         direct_done += 1
                     elif k in buf_map:
                         buf_map[k].data = f.get_tensor(k).to(device=DEVICE)
@@ -531,11 +537,32 @@ def load_exact_w4a16_as_bf16_model(model_dir: Path) -> Gemma4ForConditionalGener
     # Tie lm_head weight to embed_tokens if tied
     if getattr(cfg.text_config, "tie_word_embeddings", True):
         model.lm_head.weight = model.model.language_model.embed_tokens.weight
+        loaded_lm_params.add("lm_head.weight")
 
-    # Ensure any remaining LM buffers (e.g. rotary inv_freq) are on CUDA
-    for n, b in model.model.language_model.named_buffers():
+    # CRITICAL: Re-initialize all non-persistent LM buffers that `to_empty()` leaves as uninitialized memory!
+    # 1) Exact FP32 Rotary Embeddings (full & sliding attention inv_freq)
+    lm_mod = model.model.language_model
+    lm_mod.rotary_emb = Gemma4TextRotaryEmbedding(cfg.text_config, device=DEVICE)
+    # 2) Exact ScaledWordEmbedding `embed_scale = sqrt(hidden_size)`
+    emb_mod = lm_mod.embed_tokens
+    if hasattr(emb_mod, "embed_scale"):
+        scale_val = float(cfg.text_config.hidden_size) ** 0.5
+        if torch.is_tensor(emb_mod.embed_scale):
+            emb_mod.embed_scale = torch.tensor(scale_val, device=DEVICE, dtype=torch.bfloat16)
+        else:
+            emb_mod.embed_scale = scale_val
+    # 3) Check any remaining non-loaded LM parameters (fail-closed!)
+    missing_lm = [
+        n for n, _ in model.named_parameters()
+        if ("vision_tower" not in n and "embed_vision" not in n) and n not in loaded_lm_params
+    ]
+    print(f"[Model] Missing LM params={len(missing_lm)} {missing_lm[:10]}", flush=True)
+    assert len(missing_lm) == 0, f"Unloaded LM parameters remain garbage: {missing_lm[:10]}"
+    # 4) Verify all LM buffers are finite & on CUDA
+    for bn, b in lm_mod.named_buffers():
         if b.device.type != "cuda":
             b.data = b.data.to(DEVICE)
+        assert torch.isfinite(b).all(), f"Non-finite buffer after init: {bn}"
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -673,9 +700,23 @@ def main() -> None:
 
     softcap = float(getattr(base_model.config.text_config, "final_logit_softcapping", 30.0) or 30.0)
 
-    # Step 0 held-out validation baseline
+    # FAIL-CLOSED GATE 0: Verify unpacked W4A16->BF16 base LM produces exact Gemma 4 31B logits BEFORE training!
+    with torch.no_grad():
+        probe_ids = tokenizer.encode("The capital of France is", return_tensors="pt").to(DEVICE)
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            ph = model.get_base_model().model.language_model(input_ids=probe_ids, use_cache=False, return_dict=True).last_hidden_state[:, -1, :]
+        plog = model.get_base_model().lm_head(ph).float()
+        if softcap > 0.0:
+            plog = torch.tanh(plog / softcap) * softcap
+        tv, ti = torch.topk(plog[0], 5)
+        top5 = [(tokenizer.decode([int(i)]), round(float(v), 2)) for v, i in zip(tv, ti)]
+        print(f"[Gate 0 Base Sanity] 'The capital of France is' -> TOP5={top5}", flush=True)
+        assert any("Paris" in tok for tok, _ in top5), f"FAIL-CLOSED: Base LM sanity failed! top5={top5}"
+
+    # Step 0 held-out validation baseline (must be sane pretrained loss, NOT random noise!)
     val_loss_0, val_acc_0 = evaluate_val(model, val_samples, softcap)
     print(f"[Val Step 000] loss={val_loss_0:.4f} | action_top1={val_acc_0*100:.2f}% | VRAM={torch.cuda.memory_allocated(DEVICE)/(1024**3):.2f} GiB", flush=True)
+    assert val_loss_0 < 4.0 and val_acc_0 > 0.40, f"FAIL-CLOSED: Step-0 base model sanity failed (loss={val_loss_0:.4f}, acc={val_acc_0:.4f})!"
 
     opt = torch.optim.AdamW(lora_params, lr=LR, weight_decay=0.01, betas=(0.9, 0.95), foreach=False)
     total_opt_steps = max(1, (len(train_samples) * EPOCHS + GRAD_ACCUM - 1) // GRAD_ACCUM)
