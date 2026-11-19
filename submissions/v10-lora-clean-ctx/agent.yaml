@@ -1,0 +1,13 @@
+name: swe_agent
+model: gemma-4-31b-it-qat-w4a16-ct
+adapter: main_lora
+description: Clean-context v10 single 31B SWE repair agent with thought-masked r=32 multi-turn SWE LoRA (main_lora) and stripped thought history (include_thoughts=false).
+instruction: !include prompts/system.md
+tools:
+  - run_command
+  - read_file
+  - edit_file
+  - write_file
+  - get_status
+  - submit_patch
+generate_content_config: !include configs/sampling.yaml
