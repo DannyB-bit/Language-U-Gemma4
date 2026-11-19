@@ -10,9 +10,9 @@
     <img src="https://img.shields.io/badge/Lean_4-Verified_(0_sorry)-brightgreen.svg" alt="Lean 4 Verified" />
     <img src="https://img.shields.io/badge/Pi_4_8GB-60%2F60_Layers_VmSwap%3D0-success.svg" alt="Pi 4 VmSwap 0" />
     <img src="https://img.shields.io/badge/Competition-gemma--4--developer--agent-purple.svg" alt="Gemma 4 Developer Agent Competition" />
-    <img src="https://img.shields.io/badge/Audit-42_JSONs_·_SHA--256_Locked-teal.svg" alt="Receipt Parity Locked" />
+    <img src="https://img.shields.io/badge/Audit-43_JSONs_·_SHA--256_Locked-teal.svg" alt="Receipt Parity Locked" />
   </p>
-  <p><em>Sub-Byte Gyroscopic Glyphs · Native Rust + ARMv8-A NEON &amp; AVX2 Kernels · 21.21x 128K KV Compression (Kernel Self-Test) · L1-Cache Trinity Retrieval + Lean 4 Trust Gates · Reproducible SWE-Agent Competition Fleet</em></p>
+  <p><em>Sub-Byte Gyroscopic Glyphs · Native Rust + ARMv8-A NEON &amp; AVX2 Kernels · Live Tri-Modal Read+Hear+See Gating &amp; Bidirectional Vision · 21.21x 128K KV Compression (Kernel Self-Test) · L1-Cache Trinity Retrieval + Lean 4 Trust Gates · Reproducible SWE-Agent Competition Fleet</em></p>
 </div>
 
 ---
@@ -22,20 +22,21 @@
 No trust required — clone the repository and verify every numerical claim, SHA-256 submission checksum, native C/Rust invariant, and Lean 4 gate offline:
 
 ```bash
-# 1. Fail-closed audit of all 42 evidence JSONs, local Markdown links, submission SHA-256s, and doc claims (6 gates)
+# 1. Fail-closed audit of all 43 evidence JSONs, local Markdown links, submission SHA-256s, and doc claims (6 gates)
 python scripts/verify_receipt_parity.py --selftest
 
-# 2. Pure-Rust + native FFI release test suite (40 tests: T16C, FP8 KV, Hybrid QAT, C8DB, speculative verification)
+# 2. Pure-Rust + native FFI release test suite (56 tests: T16C, Tri-Modal Read+Hear+See, Bidirectional Vision, FP8 KV, Hybrid QAT, C8DB, speculative verification)
 RUSTFLAGS="-D warnings" cargo test --manifest-path experiments/run270_rust/Cargo.toml --release
+cargo run --release --manifest-path experiments/run270_rust/Cargo.toml --bin tri_modal_probe
 
 # 3. Full Python offline verification suites + L1 retrieval + Lean 4 constant parity + PI4 barrier tests
 python -m unittest discover -s tests -v
 python -m unittest discover -s tests/retrieval -v
 python trinity_retrieval/edge_self_test.py
 
-# 4. Deterministic validation of all 6 declared competition submission bundles (note: running build_and_validate.py re-packs zips locally with host zlib while keeping member payload SHA-256s identical)
+# 4. Deterministic validation of all 8 declared competition submission bundles (note: running build_and_validate.py re-packs zips locally with host zlib while keeping member payload SHA-256s identical)
 python agent/build.py --check
-for s in v2-measured v3-converged v4-loop-guard v5-restored v5-analyzer-coder; do python "submissions/$s/build_and_validate.py"; done
+for s in v2-measured v3-converged v4-loop-guard v5-restored v5-analyzer-coder v6-optimal v8-runtime-safe; do python "submissions/$s/build_and_validate.py"; done
 ```
 
 ---
@@ -44,13 +45,13 @@ for s in v2-measured v3-converged v4-loop-guard v5-restored v5-analyzer-coder; d
 
 ```mermaid
 flowchart LR
-    QAT["Gemma 4 31B QAT Weights (17+ GB INT4)"] --> T16C["T16C V3 + C8DB Cell 60 (5.81 GB Pinned, 60/60 Layers)"]
-    T16C --> KERN["C11 NEON / AVX2 + Rust Kernels (Adaptive Q8 + OLS, FP8 KV 3.94x)"]
-    KERN --> PI4["Raspberry Pi 4 8GB Silicon (VmSwap 0 kB, 5.850 s/tok k=1, 29.04x Prefill)"]
+    QAT["Gemma 4 31B QAT Weights (17+ GB INT4)"] --> T16C["T16C V4.2 262K + C8DB (5.81 GB Pinned, 60/60 LM + 27 ViT)"]
+    T16C --> KERN["C11 NEON / AVX2 + Rust + Tri-Modal Gate + Bidir Vision (FP8 KV 3.94x)"]
+    KERN --> PI4["Raspberry Pi 4 8GB Silicon (VmSwap 0 kB, 3.723 s/tok Spec+Gate, 29.04x Prefill)"]
 
     KV["128K Global KV & Context"] --> GA["GlyphAttentionV2 + OpticalCarrierV1 (Kernel Self-Tests: 21.21x KV Shrink, 6,522.2 FPS)"]
     CODE["Repo Codebase Index (1,962 Docs)"] --> TRIN["Trinity H64 + BM25 + MRL RRF (61.31 KiB, 96.0x Shrink, Lean 4 Gates)"]
-    FLEET["gemma-4-developer-agent Fleet (PRs #1-#28)"] --> AB["Wheelhouse Paired L4x4 A/B + Deterministic Zip SHA-256 Builders"]
+    FLEET["gemma-4-developer-agent Fleet (PRs #1-#28 + v6/v8)"] --> AB["Wheelhouse Paired L4x4 A/B + Deterministic Zip SHA-256 Builders"]
 ```
 
 ---
@@ -75,6 +76,7 @@ Frontier 31-billion-parameter models hit **three hard physical walls** on an 8 G
 
 | Bottleneck / Component | Target Hardware | Measured Proof on Physical Silicon | Raw Telemetry / Evidence |
 | :--- | :--- | :--- | :--- |
+| **1c. 31B V4.2 (`4K` Pi 4 & `262K` Colab L4) + Live Tri-Modal + Bidirectional Vision** | **Pi 4 (8 GB) & L4** | **Colab `262K`-tok V4.2 (`4,755.75s`, `82,629` items):** `L59 cos 0.83034->0.86094`, `post_cell60 KL 3.1817->2.8878`, Top-1 `54.7%->55.3%`, Vision `0.79050->0.80155` (`6,347,775,616 B` `.t16c`, `11,874,560 B` `.c8d`, SHA-256 locked). **Pi 4 `run31b` live (`60/60` pinned, `ssd_read_bytes=0`):** `"What is the capital of France?"` -> **`"The capital of France is ****Paris**.<turn|>"`** (`prefill_s=28.86..33.30s`, `decode_s=23.24..25.38s`, `1,902,964` LM blocks skipped under `--tri-modal-gate`); `"What is 2 + 2?"` -> **`"The result is 4.<turn|>"`** (`sieve:0.25 --tri-modal-gate` `decode_s=15.87s`; speculative `k=4` + `--tri-modal-gate` **`3.723..3.745 s/tok`**, `ast_lm_skipped=1,520,940`, `lmhead_cs_skipped=693,856`, optical rescue `crc32=0x5e6e669f`). **Tri-Modal Probe:** `Pearson r=0.8858`, C8DB rescue `0.72156->0.96390`. **Bidirectional Vision (`frame_01_coco.png`):** HF `!is_full` sliding-window mask (`attn_decode_range`) + 4-thread ViT (`1,390.99s -> 939.50s`), ViT+`embed_vision` soft-token HF cosine `0.78462` (`pi4_4k`) -> **`0.81212`** (`colab_262k`) | [colab_v4_2_stage2_report.json](experiments/run270_rust/evidence/run31b/colab_v4_2_stage2_report.json)<br>[colab_v4_2.log](experiments/run270_rust/evidence/run31b/colab_v4_2.log)<br>[colab_v4_2_SHA256SUMS.txt](experiments/run270_rust/evidence/run31b/colab_v4_2_SHA256SUMS.txt)<br>[pi4_colab_v4_2_text_spec_ab.log](experiments/run270_rust/evidence/run31b/pi4_colab_v4_2_text_spec_ab.log)<br>[pi4_colab_v4_2_post_bidir_sanity.log](experiments/run270_rust/evidence/run31b/pi4_colab_v4_2_post_bidir_sanity.log)<br>[pi4_trimodal_ab_v2.log](experiments/run270_rust/evidence/run31b/pi4_trimodal_ab_v2.log)<br>[pi4_colab_v4_2_vision_bidir.log](experiments/run270_rust/evidence/run31b/pi4_colab_v4_2_vision_bidir.log) |
 | **1b. 31B V3 + Cell 60 (`C8DB`) + Adaptive `Q8` + Speculative `k=4`** | **Pi 4 (8 GB)** | `gemma4_31b_v3_c8d.c8d` (`91.68 MB`, `63` entries): clean `271`-tok `post_cell60` (`val_cos 0.68875 -> 0.72910`, `0/8` turn-start `"_"`/`"s"` glitches); adaptive single-plane `Q8` + OLS sub-scale (`dual=0, kc_step=4`): FFI parity **`cos = 0.9997202955`** (**`29.04x`** prefill `37.83s` vs `1098.74s`, `top1=818`, `10/10` top-10); `8`-prompt `k=1` **`5.850 s/tok`** ILT (`0.1709 tok/s`, `42.34s` mean prefill, `VmSwap=0`, `ssd_read=0`); Speculative `k=4` **`7/7` modes bit-exact vs `k=1`** (`S2_P4` seed-only `5.868 s/tok`, `S0` Assistant `10.454 s/tok`, `S4` `--kv-quant fp8` **`3.94x`** KV shrink at `6.616 s/tok`, `--hybrid-qat-layers 59` `286.45 MiB` overlay `VmSwap=0`); Contiguous CS LM-head **`8/8` exact top-1** (`static_16band` `1.14x`/`1.05x`, `subspace_sieve` **`4.04x`** `182.51 ms` on 31B / **`2.87x`** `48.44 ms` on Assistant, `84.22%` MACs saved) | [run31b_v3_verified.json](experiments/run270_rust/evidence/run31b/run31b_v3_verified.json)<br>[run31b_v3_ffi_parity.txt](experiments/run270_rust/evidence/run31b/run31b_v3_ffi_parity.txt)<br>[run31b_v3_prompt_battery_k1.log](experiments/run270_rust/evidence/run31b/run31b_v3_prompt_battery_k1.log)<br>[run31b_v3_speculative_k4.log](experiments/run270_rust/evidence/run31b/run31b_v3_speculative_k4.log)<br>[run31b_v3_hybrid_qat_l59.log](experiments/run270_rust/evidence/run31b/run31b_v3_hybrid_qat_l59.log)<br>[run31b_v3_cs_lmhead_bench.log](experiments/run270_rust/evidence/run31b/run31b_v3_cs_lmhead_bench.log) |
 | **1. 31B Full RAM Residency (`T16C v1`, `5.71 GiB`)** | **Pi 4 (8 GB)** | **`60/60` layers pinned**, **`VmSwap: 0 kB`**, **`ssd_read_bytes = 0`**, `VmHWM = 6,238,800 kB`, **`1.291 s/tok`** (`k=4` batch), **`26.32x` NEON FFI prefill speedup** (`33.78s` vs `889.23s` pure Rust; logit `cos = 0.999299`, top-1 `(715, 715)`) | [run31b_cal_v2_2plus2.log](experiments/run270_rust/evidence/run31b/run31b_cal_v2_2plus2.log)<br>[run31b_cal_v2_2plus2_proc.log](experiments/run270_rust/evidence/run31b/run31b_cal_v2_2plus2_proc.log)<br>[run31b_cal_v2_ffi_parity.txt](experiments/run270_rust/evidence/run31b/run31b_cal_v2_ffi_parity.txt) |
 | **31B Coherent Generation (`QAT pin10` + NEON)** | **Pi 4 (8 GB)** | **Barrier broken (`<4.6 GiB` coherent 31B, slow `76.2-78.9 s/tok` streamed):** emits **`"William Shakespeare wrote the play *Hamlet*.<turn|>"`**, **`cos = 0.999995`**, `rel_l2 = 0.003402`, exact top-1 & top-5 match vs FP32 reference, `VmHWM = 4,725,968 kB` (`4.51 GiB`) | [a_hamlet_q8emb_pin10_neon.log](experiments/run270_rust/evidence/run31b/a_hamlet_q8emb_pin10_neon.log)<br>[run31b_parity_2plus2.json](experiments/run270_rust/evidence/run31b/run31b_parity_2plus2.json) |
@@ -113,6 +115,9 @@ Science requires publishing **where compression breaks** right alongside where i
 - **270M Sub-Byte Cliff (23-Config Pareto Sweep):**
   - *Lossless / High Fidelity:* `exact`, `q8_eq8` (`285.02 MB`), and `Q14-norms` match baseline `10/28` frozen & `6/30` fresh exact-match scores; `q10+h8` passes the `5/5` strict parity gate.
   - *Sweet Spot vs Floor:* `q5+h8` achieves `8/28` frozen & `10/30` fresh (`q4+h8` improves via FWHT over unrotated `q4`), whereas uncalibrated `OPT4` (`cos ~ 0.9718` matrix-level, `cos=0.9219` logits), `b1+h8` (`1.27 bpw`), and Windows `v6_e2e_s2.t16c` (`1.54 bpw` PTQ) establish the exact `0/28` / `0/30` strict-match floor ([FRONTIER_RECEIPTS.md](experiments/run270_rust/FRONTIER_RECEIPTS.md)).
+- **V4.2 `262K` Scaling & Multimodal Vision Boundary:**
+  - Scaling V4.2 Hessian + C8DB calibration from `4,096` tokens on Pi 4 ([pi4_phase_b_v4_2.log](experiments/run270_rust/evidence/run31b/pi4_phase_b_v4_2.log)) to `262,144` tokens on Colab Pro L4 ([colab_v4_2_stage2_report.json](experiments/run270_rust/evidence/run31b/colab_v4_2_stage2_report.json)) upgraded live Pi 4 greedy generation from `"**France**"` / `"Depending on the context, it is "` to exact EOS-terminated `"The capital of France is ****Paris**.<turn|>"` and `"The result is 4.<turn|>"` ([pi4_colab_v4_2_text_spec_ab.log](experiments/run270_rust/evidence/run31b/pi4_colab_v4_2_text_spec_ab.log)), while live Tri-Modal `--tri-modal-gate` (`transformer_relative` mode) caught `sieve:0.25` pruning flips and restored exact decoding with `951K–1.90M` LM-head blocks skipped.
+  - **Honest Multimodal Vision Limit:** On `frame_01_coco.png`, implementing HuggingFace's exact bidirectional vision sliding-window mask (`attn_decode_range` on `!is_full` layers) and 4-thread ViT head parallelism (`1,390.99s -> 939.50s`) plus `262K` calibration improved ViT+`embed_vision` soft-token cosine vs HF FP32 from `0.78462` to **`0.81212`**. However, because the 60-layer LM Hessians were calibrated strictly on text-only prompts without interleaved image soft tokens, raw visual patch prefill (`prefill_s=596.36s`, `vm_rss_kb=7,148,036`) still decodes generic text (`"The provided text is a nonsensical sequence of words that appears to be written in an unconventional way."`, [pi4_colab_v4_2_vision_bidir.log](experiments/run270_rust/evidence/run31b/pi4_colab_v4_2_vision_bidir.log)) until multimodal VLM Hessian calibration is added.
 - **Scoped Residual & Compiler Studies:**
   - The rank-15 INT8 stored residual ([experiments/packed_corrections/](experiments/packed_corrections/README.md): `83,196 B`, `cos = 0.96593`, `2.67e-7` relative error vs independent `float64` oracle) and lossless `GBF1` BF16 Zstd block compiler ([BF16_GLYPHS.md](experiments/native_language/BF16_GLYPHS.md) / [GLYPH_INTEGRATION.md](experiments/native_language/GLYPH_INTEGRATION.md)) are explicitly scoped to their documented component benchmarks, not full-model Pi 4 generation claims.
 
@@ -141,6 +146,8 @@ Every bundle below builds deterministically in declarative YAML/Markdown (zero P
 | **`v4-loop-guard`** | `v3-converged` + loop guards (`LG1` no verbatim repeat, `LG2` 3-call progress, `LG3` empty=absent) | [submissions/v4-loop-guard/build/submission.zip](submissions/v4-loop-guard/build/submission.zip) · `4,530 B` (`4,508 B` local zlib)<br>Zip: `7e89e9c072b57c4c25b0d52d0732614c3ab93baf83db529af13fb5a1a546b4ef`<br>Members: `5f1b9880dffbfbd3e2759867820ffc7b10a868ac70c2770478018147ab7ac512` | `python submissions/v4-loop-guard/build_and_validate.py` (`24/24 PASS`)<br>[SCORE-MAXIMIZATION-PLAN.md](docs/SCORE-MAXIMIZATION-PLAN.md) (PR #6) |
 | **`v5-restored`** | Byte-exact `0.17` (`234969ef...`) prompt restored + `16384` output headroom (`0.15` regression fix) | [submissions/v5-restored/build/submission.zip](submissions/v5-restored/build/submission.zip) · `8,859 B`<br>Zip: `0b32f172f496d5ffe1e055e107de5bee05364175d15564a14c79db7b2a3171d2`<br>Members: `1e21642b879b959f5d1c1fcfe864fe55dfe04f7d49136c315c07607dbd249f46` | `python submissions/v5-restored/build_and_validate.py` (`19/19 PASS`)<br>[ANALYSIS_015_REGRESSION.md](docs/fleet/ANALYSIS_015_REGRESSION.md) (PR #11, #14, #16) |
 | **`v5-analyzer-coder`** | Two-agent `0.24`-lineage chassis (`code_analyzer` agent tool + isolated 6-tool `coder`) | [submissions/v5-analyzer-coder/build/submission.zip](submissions/v5-analyzer-coder/build/submission.zip) · `3,277 B` (`3,265 B` local zlib)<br>Zip: `60b98087c13b9b2bd370f31ca98f5c0cd02b7b557cb7c65036ee0da624386d0c`<br>Members: `ac506d13ded5412eeb3a3854b52eecfe04a291ed72494fcec9bdd72d53769bfa` | `python submissions/v5-analyzer-coder/build_and_validate.py` (`29/29 PASS`)<br>[SCORING_POSTMORTEM_015.md](docs/fleet/SCORING_POSTMORTEM_015.md) (PR #15) |
+| **`v6-optimal`** | Single-agent 6-tool 31B (`T=1.0`, `top_k=64`, `out=12288`, `think=4096`, `90s` / `34` calls / `8m` / `100` turns) | [submissions/v6-optimal/build/submission.zip](submissions/v6-optimal/build/submission.zip) · `2,907 B`<br>Zip: `0069ff8d3da3e58d6a280c73e78618d1d63c9271a116b9c20d765eef7f109f2d`<br>Members: `77781d0968faa6fba7f46e16c8a6374c611ad04088bdbd81d4ad6a8d683f4d1b` | `python submissions/v6-optimal/build_and_validate.py` (`24/24 PASS`)<br>[submissions/v6-optimal/agent.yaml](submissions/v6-optimal/agent.yaml) |
+| **`v8-runtime-safe`** | Tightened 6-tool 31B (`T=1.0`, `top_k=64`, `out=8192`, `think=2560`, hard cap `60s` / `24` calls / `5m` / `45` turns, edit by call 8) | [submissions/v8-runtime-safe/build/submission.zip](submissions/v8-runtime-safe/build/submission.zip) · `2,479 B`<br>Zip: `6a45b24c296b3d8298e7abeac40373f30dbffc5196812d4c1bc2b3941f38010b`<br>Members: `04c1c83d7fceb4d0ee7d528397207eaa22940351347ec3fa269429bfe198124f` | `python submissions/v8-runtime-safe/build_and_validate.py` (`24/24 PASS`)<br>[submissions/v8-runtime-safe/agent.yaml](submissions/v8-runtime-safe/agent.yaml) |
 
 **Wheelhouse Paired `L4x4` A/B Harness & Noise-Band Gate:** Competition scores sit inside a documented draw-to-draw variance band (`4-13` tasks on byte-identical zips), so [submissions/wheelhouse-eval/README.md](submissions/wheelhouse-eval/README.md) and [submissions/wheelhouse-eval/run_ab.py](submissions/wheelhouse-eval/run_ab.py) enforce paired `40`-task (`4xL4` vLLM) A/B evaluations with statistical pre-registration (`net >= +3` tasks to ship), paired with [scripts/score_stats.py](scripts/score_stats.py), [POST_015_ANALYSIS.md](docs/POST_015_ANALYSIS.md), [CANDIDATE-COMPARISON.md](docs/fleet/CANDIDATE-COMPARISON.md), and [SCORE-ANALYSIS-015.md](docs/fleet/SCORE-ANALYSIS-015.md) (PRs #5, #8–#13).
 
@@ -155,7 +162,7 @@ Every bundle below builds deterministically in declarative YAML/Markdown (zero P
 | **`PR #21`** | `ramfit` pure-C mixed `92B`/`36B` 2-means binary encoder for Pi 4 Gate 1 stream | [neon_runner/ramfit/](neon_runner/ramfit/README.md) | [c_packed92_chat_2plus2.log](experiments/run270_rust/evidence/run31b/c_packed92_chat_2plus2.log) |
 | **`PR #23` + `gemma-bf16-glyph-compiler`** | C++17 closed-grammar semantic compiler (`semantic.cpp`), `LUJ1` bridge (`glyph_bridge.cpp`), lossless `GBF1` Zstd compiler (`compile_bf16.cpp`) | [experiments/native_language/](experiments/native_language/BF16_GLYPHS.md) · [GLYPH_INTEGRATION.md](experiments/native_language/GLYPH_INTEGRATION.md) | C++17 regression suite (`ASan`/`UBSan`) |
 | **`PR #25–#27`** | Gemma 3 270M native C++ `Q12`/`Q14` strict full-vocab logit parity gates & blind reasoning validation | [experiments/gemma270_luj/](experiments/gemma270_luj/README.md) | [HF 4.55.0 & Q14 parity ledger](experiments/gemma270_luj/README.md) |
-| **`PR #28` + `proof-reconciliation`** | Zero-dep Rust (`run270`, `run31b`, `T16C V3`, `C8DB`, `FP8 KV`, Hybrid QAT) + NEON/AVX2 kernels & CS LM-head | [experiments/run270_rust/](experiments/run270_rust/RECEIPTS.md) · [FRONTIER_RECEIPTS.md](experiments/run270_rust/FRONTIER_RECEIPTS.md) | `cargo test --release` (`40` Rust tests) + Pi 4 `31B` silicon suite |
+| **`PR #28` + `proof-reconciliation`** | Zero-dep Rust (`run270`, `run31b`, `tri_modal_probe`, `T16C V3/V4.2`, `C8DB`, `FP8 KV`, Hybrid QAT, live Tri-Modal Read+Hear+See gating, Bidirectional Vision) + NEON/AVX2 kernels, `262K` Colab L4 / Pi 4 V4.2 scripts, `v6-optimal` & `v8-runtime-safe` bundles | [experiments/run270_rust/](experiments/run270_rust/RECEIPTS.md) · [FRONTIER_RECEIPTS.md](experiments/run270_rust/FRONTIER_RECEIPTS.md) | `cargo test --release` (`56` Rust tests) + `tri_modal_probe` + Pi 4 `31B` V4.2 silicon suite |
 
 ---
 
@@ -164,12 +171,12 @@ Every bundle below builds deterministically in declarative YAML/Markdown (zero P
 ```text
 Language-U-Gemma4/
 ├── experiments/
-│   ├── run270_rust/                  # Zero-dep Rust runtimes (run270, run31b, t16c, encode_model, probe270)
-│   │   ├── src/                      # codec.rs, packed.rs, t16c.rs, math.rs, tokenizer.rs, bin/run31b.rs
-│   │   ├── calib/                    # Parameterized T16C calibration scripts (270M + 31B + bench_cs_lmhead.c)
-│   │   ├── evidence/                 # Raw Pi 4 & Windows logs, /proc IO proofs, 23-config Pareto JSONs
+│   ├── run270_rust/                  # Zero-dep Rust runtimes (run270, run31b, tri_modal_probe, t16c, encode_model, probe270)
+│   │   ├── src/                      # codec.rs, packed.rs, t16c.rs, math.rs, vision.rs, tri_modal.rs, tokenizer.rs, bin/run31b.rs
+│   │   ├── calib/                    # Parameterized T16C V3/V4/V4.2 & GPU 262K calibration scripts (270M + 31B + bench_cs_lmhead.c)
+│   │   ├── evidence/                 # Raw Pi 4, Colab L4 262K & Windows logs, /proc IO proofs, 23-config Pareto JSONs
 │   │   ├── RECEIPTS.md               # Exactness & parity ledger (run270 + OPT4 boundary)
-│   │   └── FRONTIER_RECEIPTS.md      # 23-config Pareto, run31b QAT/packed92, T16C V3 60/60 RAM receipts
+│   │   └── FRONTIER_RECEIPTS.md      # 23-config Pareto, run31b QAT/packed92, T16C V3/V4.2 60/60 RAM, Tri-Modal & Vision receipts
 │   ├── native_language/              # C++17 closed-grammar compiler, LUJ1 glyph_bridge.cpp, GBF1 BF16 Zstd compiler
 │   ├── gemma270_luj/                 # Q14-norms LUJ storage & HF Transformers parity gate
 │   ├── joint_glyphs/                 # C++17 native neural glyph planner + Windows AVX2 benchmarks
@@ -180,7 +187,7 @@ Language-U-Gemma4/
 ├── compression/                      # Language-U glyph & embeddinggemma codec modules
 ├── gemma4_e4b/ & model/              # Gemma 4 E4B census checks & verified sample glyph containers
 ├── agent/ & fleet-consensus-v1/      # KOFI v11 & canonical 0.17 consensus baseline + agent/build.py --check
-├── submissions/                      # v2-measured, v3-converged, v4-loop-guard, v5-restored, v5-analyzer-coder, wheelhouse-eval
+├── submissions/                      # v2-measured, v3-converged, v4-loop-guard, v5-restored, v5-analyzer-coder, v6-optimal, v8-runtime-safe, wheelhouse-eval
 ├── scripts/                          # verify_receipt_parity.py, score_stats.py, Pi 4 prep, optical & KV benchmarks
 ├── docs/                             # Hero emblem, infographic, paper_arxiv.tex, fleet postmortems & reviews
 └── tests/                            # Offline unit test suites + tests/retrieval/
@@ -192,9 +199,10 @@ Language-U-Gemma4/
 
 ### 1. Build & Test Native Rust Runtimes + Calibration Tools (ARM64 Linux / Windows x86_64)
 ```bash
-# Release binaries (run270, run31b, encode_model, probe270) + pure-Rust test suite
+# Release binaries (run270, run31b, tri_modal_probe, encode_model, probe270) + pure-Rust test suite (56 tests)
 RUSTFLAGS="-D warnings" cargo test --manifest-path experiments/run270_rust/Cargo.toml --release
 RUSTFLAGS="-D warnings" cargo build --manifest-path experiments/run270_rust/Cargo.toml --release --bins
+cargo run --release --manifest-path experiments/run270_rust/Cargo.toml --bin tri_modal_probe
 
 # Verify Python calibration scripts compile & parse cleanly
 python -m compileall -q experiments/run270_rust/calib
@@ -214,6 +222,17 @@ python neon_runner/build_native.py
 
 ### 3. Run Gemma 4 31B Inference (`run31b`)
 ```bash
+# V4.2 262K + C8DB + Speculative k=4 + Live Tri-Modal Read+Hear+See Gating + FP8 E4M3 KV on Pi 4 (VmSwap=0):
+./experiments/run270_rust/target/release/run31b \
+  --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c \
+  --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json \
+  --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json \
+  --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d \
+  --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so \
+  --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_31b_assistant.t16c \
+  --lmhead-cs sieve:0.25 --tri-modal-gate \
+  --kv-quant fp8 --threads 4 --max-tokens 16 --prompt-text "What is 2 + 2?"
+
 # V3 + Cell 60 C8DB + N-gram seed speculative k=4 + FP8 E4M3 KV cache on Pi 4 (VmSwap=0):
 ./experiments/run270_rust/target/release/run31b \
   --t16c /mnt/SHE-VAULT/gemma4_31b_v3.t16c \

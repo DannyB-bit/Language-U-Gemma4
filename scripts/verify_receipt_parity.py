@@ -451,6 +451,36 @@ def _verify_run31b_receipts(root: Path, readme: str, frontier_md: str, errors: L
             claims += 13
         claims += 12
 
+    # V4.2 Colab 262K + Pi 4 Tri-Modal + Bidirectional Vision receipts
+    v42_json = r31 / "colab_v4_2_stage2_report.json"
+    if v42_json.is_file():
+        v42 = _load_json_strict(v42_json)
+        if int(v42.get("tokens_calibrated", 0)) != 262144:
+            errors.append(f"colab_v4_2_stage2_report.json unexpected tokens_calibrated={v42.get('tokens_calibrated')}")
+        if int(v42.get("unified_t16c_bytes", 0)) != 6347775616 or int(v42.get("c8db_bytes", 0)) != 11874560:
+            errors.append(f"colab_v4_2_stage2_report.json artifact byte mismatch: {v42}")
+        if float(v42.get("l59_state_cos_after_c8d", 0.0)) <= float(v42.get("l59_state_cos_before_c8d", 1.0)):
+            errors.append("colab_v4_2_stage2_report.json L59 C8DB cosine did not improve")
+        if float(v42.get("post_cell60_val_kl_after", 99.0)) >= float(v42.get("post_cell60_val_kl_before", 0.0)):
+            errors.append("colab_v4_2_stage2_report.json post_cell60 KL did not improve")
+        if float(v42.get("vision_val_cos_after", 0.0)) <= float(v42.get("vision_val_cos_before", 1.0)):
+            errors.append("colab_v4_2_stage2_report.json vision cosine did not improve")
+        _assert_contains("README.md", readme, "6,347,775,616 B", errors)
+        _assert_contains("README.md", readme, "0.86094", errors)
+        _assert_contains("README.md", readme, "0.81212", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "5b9ae4d6bde2a893d073649350e11e27cf9e5f208fdca19b2ed7fbbf46f1c9b1", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "3b8618a462d204ba82d54eb2fd4a3b2aef8cf8bc8d0ec26715de19b547b401bc", errors)
+        if (r31 / "pi4_colab_v4_2_post_bidir_sanity.log").is_file() and (r31 / "pi4_colab_v4_2_vision_bidir.log").is_file():
+            san_log = _read_text(r31 / "pi4_colab_v4_2_post_bidir_sanity.log")
+            vis_log = _read_text(r31 / "pi4_colab_v4_2_vision_bidir.log")
+            _assert_contains("pi4_colab_v4_2_post_bidir_sanity.log", san_log, "POST_EDIT_SANITY_OK", errors)
+            _assert_contains("pi4_colab_v4_2_post_bidir_sanity.log", san_log, 'GEN31B text="The capital of France is ****Paris**.<turn|>"', errors)
+            _assert_contains("pi4_colab_v4_2_post_bidir_sanity.log", san_log, 'GEN31B text="The result is 4.<turn|>"', errors)
+            _assert_contains("pi4_colab_v4_2_post_bidir_sanity.log", san_log, "ssd_read_bytes=0", errors)
+            _assert_contains("pi4_colab_v4_2_vision_bidir.log", vis_log, "939.50s", errors)
+            claims += 5
+        claims += 10
+
     return claims
 
 
@@ -500,6 +530,18 @@ def _verify_submission_bundles(root: Path, readme: str, errors: List[str]) -> in
             "submissions/v5-analyzer-coder/build/submission.zip",
             "60b98087c13b9b2bd370f31ca98f5c0cd02b7b557cb7c65036ee0da624386d0c",
             "ac506d13ded5412eeb3a3854b52eecfe04a291ed72494fcec9bdd72d53769bfa",
+            False,
+        ),
+        (
+            "submissions/v6-optimal/build/submission.zip",
+            "0069ff8d3da3e58d6a280c73e78618d1d63c9271a116b9c20d765eef7f109f2d",
+            "77781d0968faa6fba7f46e16c8a6374c611ad04088bdbd81d4ad6a8d683f4d1b",
+            False,
+        ),
+        (
+            "submissions/v8-runtime-safe/build/submission.zip",
+            "6a45b24c296b3d8298e7abeac40373f30dbffc5196812d4c1bc2b3941f38010b",
+            "04c1c83d7fceb4d0ee7d528397207eaa22940351347ec3fa269429bfe198124f",
             False,
         ),
     ]
