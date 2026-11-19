@@ -1,0 +1,18 @@
+{
+  "version": "v10-lora-clean-ctx",
+  "gpu": "NVIDIA A100-SXM4-80GB",
+  "elapsed_s": 1939.36,
+  "r": 32,
+  "lora_alpha": 64,
+  "train_samples": 317,
+  "val_samples": 43,
+  "val_loss_before": 0.7281,
+  "val_loss_after": 0.2487,
+  "val_action_top1_before": 0.8997,
+  "val_action_top1_after": 0.9464,
+  "n_lora_tensors": 820,
+  "adapter_safetensors_bytes": 489841600,
+  "adapter_safetensors_mib": 467.15,
+  "adapter_safetensors_sha256": "9c4d8d6cb0db4e84f4180a254cc22a7197cdd58ef191b7e1d03e1bb0d72df220",
+  "adapter_config_sha256": "cba60cde09176f0d1e0b7d7bb53a99d529d57e47197af80921cc423e57f594d7"
+}

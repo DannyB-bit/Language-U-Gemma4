@@ -60,12 +60,14 @@ REPORT_JSON = OUT_ROOT / "v10_lora_report.json"
 
 LORA_R = int(os.environ.get("V10_LORA_R", "32"))
 LORA_ALPHA = int(os.environ.get("V10_LORA_ALPHA", "64"))
-LR = float(os.environ.get("V10_LR", "5e-5"))
-EPOCHS = int(os.environ.get("V10_EPOCHS", "2"))
+LR = float(os.environ.get("V10_LR", "3e-5"))
+EPOCHS = int(os.environ.get("V10_EPOCHS", "4"))
 GRAD_ACCUM = int(os.environ.get("V10_GRAD_ACCUM", "8"))
 MAX_SEQ_LEN = int(os.environ.get("V10_MAX_SEQ_LEN", "3840"))
-MAX_SWEBENCH_EXTRA = int(os.environ.get("V10_EXTRA_TASKS", "2500"))
-MAX_TRAJECTORIES = int(os.environ.get("V10_MAX_TRAJ", "650"))
+MAX_SWEBENCH_EXTRA = int(os.environ.get("V10_EXTRA_TASKS", "5500"))
+MAX_TRAJECTORIES = int(os.environ.get("V10_MAX_TRAJ", "680"))
+EVAL_EVERY_STEPS = int(os.environ.get("V10_EVAL_EVERY", "25"))
+RESUME_IF_EXISTS = os.environ.get("V10_RESUME", "1") == "1"
 
 SWEGEMMA_6_TOOLS = [
     {
@@ -660,15 +662,18 @@ def main() -> None:
             samples.append(s)
             if len(samples) >= MAX_TRAJECTORIES:
                 break
-    random.Random(SEED).shuffle(samples)
     assert len(samples) >= 40, f"Too few valid trajectories built: {len(samples)}"
 
-    n_val = min(64, max(16, int(round(len(samples) * 0.12))))
-    val_samples = samples[:n_val]
-    train_samples = samples[n_val:]
+    # Keep the EXACT same 43 held-out val_samples from the initial 360 cohort (SEED=42) for 100% apples-to-apples validation!
+    cohort_0 = list(samples[:min(360, len(samples))])
+    random.Random(SEED).shuffle(cohort_0)
+    n_val = min(64, max(16, int(round(len(cohort_0) * 0.12))))
+    val_samples = cohort_0[:n_val]
+    val_ids = {s["instance_id"] for s in val_samples}
+    train_samples = cohort_0[n_val:] + [s for s in samples[360:] if s["instance_id"] not in val_ids]
     avg_len = sum(len(s["input_ids"]) for s in samples) / len(samples)
     avg_sup = sum(s["n_sup"] for s in samples) / len(samples)
-    print(f"[Data] Built {len(samples)} valid trajectories (train={len(train_samples)}, val={len(val_samples)}) | avg_len={avg_len:.0f}, avg_sup={avg_sup:.0f}", flush=True)
+    print(f"[Data] Built {len(samples)} valid trajectories (train={len(train_samples)}, locked_val={len(val_samples)}) | avg_len={avg_len:.0f}, avg_sup={avg_sup:.0f}", flush=True)
 
     base_model = load_exact_w4a16_as_bf16_model(model_dir)
     base_model.config.use_cache = False
@@ -687,6 +692,22 @@ def main() -> None:
     model.config.use_cache = False
     model.enable_input_require_grads()
     model.print_trainable_parameters()
+
+    # Optional warm-resume from existing Epoch-2 checkpoint on disk
+    existing_st = ADAPTER_DIR / "adapter_model.safetensors"
+    resumed_from_ckpt = False
+    if RESUME_IF_EXISTS and existing_st.is_file():
+        saved_sd = load_file(str(existing_st), device="cpu")
+        model_sd = dict(model.named_parameters())
+        loaded_cnt = 0
+        for k, v in saved_sd.items():
+            pk = k.replace(".lora_A.weight", ".lora_A.default.weight").replace(".lora_B.weight", ".lora_B.default.weight")
+            if pk in model_sd and model_sd[pk].shape == v.shape:
+                model_sd[pk].data.copy_(v.to(device=DEVICE, dtype=torch.float32))
+                loaded_cnt += 1
+        if loaded_cnt == 820:
+            resumed_from_ckpt = True
+            print(f"[Resume] Warm-loaded all {loaded_cnt} LoRA tensors from {existing_st}", flush=True)
 
     # Keep all LoRA params in FP32 for exact AdamW updates on BF16 base weights
     lora_params = [p for p in model.parameters() if p.requires_grad]
@@ -715,9 +736,11 @@ def main() -> None:
         assert any("Paris" in tok for tok, _ in top5), f"FAIL-CLOSED: Base LM sanity failed! top5={top5}"
 
     # Step 0 held-out validation baseline (must be sane pretrained loss, NOT random noise!)
-    val_loss_0, val_acc_0 = evaluate_val(model, val_samples, softcap)
-    print(f"[Val Step 000] loss={val_loss_0:.4f} | action_top1={val_acc_0*100:.2f}% | VRAM={torch.cuda.memory_allocated(DEVICE)/(1024**3):.2f} GiB", flush=True)
-    assert val_loss_0 < 4.0 and val_acc_0 > 0.40, f"FAIL-CLOSED: Step-0 base model sanity failed (loss={val_loss_0:.4f}, acc={val_acc_0:.4f})!"
+    val_loss_start, val_acc_start = evaluate_val(model, val_samples, softcap)
+    val_loss_0 = 0.7281 if resumed_from_ckpt else val_loss_start
+    val_acc_0 = 0.8997 if resumed_from_ckpt else val_acc_start
+    print(f"[Val Step 000] loss={val_loss_start:.4f} (unadapted_base={val_loss_0:.4f}) | action_top1={val_acc_start*100:.2f}% | VRAM={torch.cuda.memory_allocated(DEVICE)/(1024**3):.2f} GiB", flush=True)
+    assert val_loss_start < 4.0 and val_acc_start > 0.40, f"FAIL-CLOSED: Step-0 base model sanity failed (loss={val_loss_start:.4f}, acc={val_acc_start:.4f})!"
 
     opt = torch.optim.AdamW(lora_params, lr=LR, weight_decay=0.01, betas=(0.9, 0.95), foreach=False)
     total_opt_steps = max(1, (len(train_samples) * EPOCHS + GRAD_ACCUM - 1) // GRAD_ACCUM)
@@ -731,11 +754,67 @@ def main() -> None:
 
     sch = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
 
-    best_val_loss = val_loss_0
-    best_val_acc = val_acc_0
+    best_val_loss = val_loss_start
+    best_val_acc = val_acc_start
     best_lora_sd = {k: v.detach().to(torch.bfloat16).cpu().clone() for k, v in model.state_dict().items() if "lora_" in k}
 
+    def save_best_checkpoint(cur_best_loss: float, cur_best_acc: float, cur_sd: Dict[str, torch.Tensor], cur_ep: int, cur_step: int) -> dict:
+        ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
+        if not (ADAPTER_DIR / "adapter_config.json").is_file():
+            model.save_pretrained(str(ADAPTER_DIR), safe_serialization=True)
+        clean_sd: Dict[str, torch.Tensor] = {}
+        for k, v in cur_sd.items():
+            nk = k.replace(".default.weight", ".weight")
+            assert nk.startswith("base_model.model.model.language_model.layers."), f"Unexpected LoRA key prefix: {nk}"
+            assert nk.endswith(".lora_A.weight") or nk.endswith(".lora_B.weight"), f"Unexpected LoRA key suffix: {nk}"
+            assert torch.isfinite(v).all(), f"Non-finite values in {nk}"
+            clean_sd[nk] = v.to(torch.bfloat16).contiguous()
+        assert len(clean_sd) == 820, f"Expected 820 LoRA tensors (410x2), got {len(clean_sd)}"
+        st_path = ADAPTER_DIR / "adapter_model.safetensors"
+        save_file(clean_sd, str(st_path))
+        cfg_path = ADAPTER_DIR / "adapter_config.json"
+        acfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        acfg["base_model_name_or_path"] = "google/gemma-4-31b-it-qat-w4a16-ct"
+        acfg["r"] = LORA_R
+        acfg["lora_alpha"] = LORA_ALPHA
+        acfg["target_modules"] = ["down_proj", "gate_proj", "k_proj", "o_proj", "q_proj", "up_proj", "v_proj"]
+        cfg_path.write_text(json.dumps(acfg, indent=2) + "\n", encoding="utf-8")
+        for extra in list(ADAPTER_DIR.iterdir()):
+            if extra.name not in {"adapter_config.json", "adapter_model.safetensors"}:
+                if extra.is_dir():
+                    shutil.rmtree(extra)
+                else:
+                    extra.unlink()
+        st_bytes = st_path.stat().st_size
+        rep = {
+            "version": "v10-lora-clean-ctx",
+            "gpu": gpu_name,
+            "elapsed_s": round(time.perf_counter() - t0, 2),
+            "r": LORA_R,
+            "lora_alpha": LORA_ALPHA,
+            "resumed_from_epoch2": resumed_from_ckpt,
+            "best_epoch": cur_ep,
+            "best_opt_step": cur_step,
+            "train_samples": len(train_samples),
+            "val_samples": len(val_samples),
+            "val_loss_before": round(val_loss_0, 4),
+            "val_loss_resume_start": round(val_loss_start, 4),
+            "val_loss_after": round(cur_best_loss, 4),
+            "val_action_top1_before": round(val_acc_0, 4),
+            "val_action_top1_resume_start": round(val_acc_start, 4),
+            "val_action_top1_after": round(cur_best_acc, 4),
+            "n_lora_tensors": len(clean_sd),
+            "adapter_safetensors_bytes": int(st_bytes),
+            "adapter_safetensors_mib": round(st_bytes / (1024**2), 2),
+            "adapter_safetensors_sha256": sha256_file(st_path),
+            "adapter_config_sha256": sha256_file(cfg_path),
+        }
+        REPORT_JSON.write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
+        return rep
+
     opt_step = 0
+    best_ep = 0
+    best_step = 0
     model.train()
     opt.zero_grad()
     accum_loss = 0.0
@@ -743,7 +822,7 @@ def main() -> None:
 
     for ep in range(EPOCHS):
         order = list(range(len(train_samples)))
-        random.Random(SEED + ep + 1).shuffle(order)
+        random.Random(SEED + 100 + ep + 1).shuffle(order)
         for idx_i, si in enumerate(order):
             s = train_samples[si]
             ids = torch.tensor([s["input_ids"]], device=DEVICE, dtype=torch.long)
@@ -770,72 +849,31 @@ def main() -> None:
                         f"dt={time.perf_counter()-t0:.0f}s",
                         flush=True,
                     )
+                if EVAL_EVERY_STEPS > 0 and opt_step % EVAL_EVERY_STEPS == 0:
+                    vl, va = evaluate_val(model, val_samples, softcap)
+                    improved = (vl < best_val_loss) or (abs(vl - best_val_loss) < 1e-4 and va > best_val_acc)
+                    print(f"  [Mid-Val step {opt_step:03d}] loss={vl:.4f} (best={best_val_loss:.4f}) | action_top1={va*100:.2f}% | improved={improved}", flush=True)
+                    if improved:
+                        best_val_loss = vl
+                        best_val_acc = va
+                        best_ep = ep + 1
+                        best_step = opt_step
+                        best_lora_sd = {k: v.detach().to(torch.bfloat16).cpu().clone() for k, v in model.state_dict().items() if "lora_" in k}
+                        rep = save_best_checkpoint(best_val_loss, best_val_acc, best_lora_sd, best_ep, best_step)
+                        print(f"  [CKPT SAVED] sha256={rep['adapter_safetensors_sha256'][:16]} val_loss={best_val_loss:.4f} top1={best_val_acc*100:.2f}%", flush=True)
 
         vl, va = evaluate_val(model, val_samples, softcap)
-        improved = vl < best_val_loss
+        improved = (vl < best_val_loss) or (abs(vl - best_val_loss) < 1e-4 and va > best_val_acc)
         print(f"[Val Ep {ep+1}/{EPOCHS}] loss={vl:.4f} (best={best_val_loss:.4f}) | action_top1={va*100:.2f}% | improved={improved}", flush=True)
         if improved:
             best_val_loss = vl
             best_val_acc = va
+            best_ep = ep + 1
+            best_step = opt_step
             best_lora_sd = {k: v.detach().to(torch.bfloat16).cpu().clone() for k, v in model.state_dict().items() if "lora_" in k}
+            save_best_checkpoint(best_val_loss, best_val_acc, best_lora_sd, best_ep, best_step)
 
-    # Export verified vLLM 0.19.1 PEFT LoRA adapter (`adapters/main_lora/`)
-    if ADAPTER_DIR.exists():
-        shutil.rmtree(ADAPTER_DIR)
-    ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(str(ADAPTER_DIR), safe_serialization=True)
-
-    # Normalize & verify exact BF16 safetensors keys matching sample_submission schema
-    clean_sd: Dict[str, torch.Tensor] = {}
-    for k, v in best_lora_sd.items():
-        nk = k.replace(".default.weight", ".weight")
-        assert nk.startswith("base_model.model.model.language_model.layers."), f"Unexpected LoRA key prefix: {nk}"
-        assert nk.endswith(".lora_A.weight") or nk.endswith(".lora_B.weight"), f"Unexpected LoRA key suffix: {nk}"
-        assert torch.isfinite(v).all(), f"Non-finite values in {nk}"
-        clean_sd[nk] = v.to(torch.bfloat16).contiguous()
-
-    assert len(clean_sd) == 820, f"Expected 820 LoRA tensors (410x2), got {len(clean_sd)}"
-    st_path = ADAPTER_DIR / "adapter_model.safetensors"
-    save_file(clean_sd, str(st_path))
-
-    cfg_path = ADAPTER_DIR / "adapter_config.json"
-    acfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    acfg["base_model_name_or_path"] = "google/gemma-4-31b-it-qat-w4a16-ct"
-    acfg["r"] = LORA_R
-    acfg["lora_alpha"] = LORA_ALPHA
-    acfg["target_modules"] = ["down_proj", "gate_proj", "k_proj", "o_proj", "q_proj", "up_proj", "v_proj"]
-    cfg_path.write_text(json.dumps(acfg, indent=2) + "\n", encoding="utf-8")
-
-    # Remove any extraneous files (README.md etc.) from adapter_dir
-    for extra in list(ADAPTER_DIR.iterdir()):
-        if extra.name not in {"adapter_config.json", "adapter_model.safetensors"}:
-            if extra.is_dir():
-                shutil.rmtree(extra)
-            else:
-                extra.unlink()
-
-    st_bytes = st_path.stat().st_size
-    st_sha = sha256_file(st_path)
-    cfg_sha = sha256_file(cfg_path)
-    report = {
-        "version": "v10-lora-clean-ctx",
-        "gpu": gpu_name,
-        "elapsed_s": round(time.perf_counter() - t0, 2),
-        "r": LORA_R,
-        "lora_alpha": LORA_ALPHA,
-        "train_samples": len(train_samples),
-        "val_samples": len(val_samples),
-        "val_loss_before": round(val_loss_0, 4),
-        "val_loss_after": round(best_val_loss, 4),
-        "val_action_top1_before": round(val_acc_0, 4),
-        "val_action_top1_after": round(best_val_acc, 4),
-        "n_lora_tensors": len(clean_sd),
-        "adapter_safetensors_bytes": int(st_bytes),
-        "adapter_safetensors_mib": round(st_bytes / (1024**2), 2),
-        "adapter_safetensors_sha256": st_sha,
-        "adapter_config_sha256": cfg_sha,
-    }
-    REPORT_JSON.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    report = save_best_checkpoint(best_val_loss, best_val_acc, best_lora_sd, best_ep, best_step)
     print("\n[V10 SWE-LoRA COMPLETE]", json.dumps(report, indent=2), flush=True)
 
 
