@@ -60,8 +60,9 @@ LORA_ALPHA = int(os.environ.get("V10_LORA_ALPHA", "64"))
 LR = float(os.environ.get("V10_LR", "5e-5"))
 EPOCHS = int(os.environ.get("V10_EPOCHS", "2"))
 GRAD_ACCUM = int(os.environ.get("V10_GRAD_ACCUM", "8"))
-MAX_SEQ_LEN = int(os.environ.get("V10_MAX_SEQ_LEN", "2304"))
-MAX_SWEBENCH_EXTRA = int(os.environ.get("V10_EXTRA_TASKS", "750"))
+MAX_SEQ_LEN = int(os.environ.get("V10_MAX_SEQ_LEN", "3840"))
+MAX_SWEBENCH_EXTRA = int(os.environ.get("V10_EXTRA_TASKS", "2500"))
+MAX_TRAJECTORIES = int(os.environ.get("V10_MAX_TRAJ", "650"))
 
 SWEGEMMA_6_TOOLS = [
     {
@@ -630,10 +631,12 @@ def main() -> None:
         s = build_trajectory(t, tokenizer, sys_prompt, MAX_SEQ_LEN)
         if s is not None:
             samples.append(s)
+            if len(samples) >= MAX_TRAJECTORIES:
+                break
     random.Random(SEED).shuffle(samples)
     assert len(samples) >= 40, f"Too few valid trajectories built: {len(samples)}"
 
-    n_val = max(16, int(round(len(samples) * 0.15)))
+    n_val = min(64, max(16, int(round(len(samples) * 0.12))))
     val_samples = samples[:n_val]
     train_samples = samples[n_val:]
     avg_len = sum(len(s["input_ids"]) for s in samples) / len(samples)
