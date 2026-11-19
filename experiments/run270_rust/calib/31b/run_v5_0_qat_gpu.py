@@ -396,11 +396,14 @@ class QuantLinearV5(nn.Module):
         else:
             self.inv_s = None
 
-        self.sc = nn.Parameter(bundle["sc_f32"].to(device, dtype=torch.float32).clone())
+        self.register_buffer("sc_base", bundle["sc_f32"].to(device, dtype=torch.float32).clone(), persistent=False)
+        self.sc_mult = nn.Parameter(torch.ones_like(self.sc_base))
         if bundle["bi_f32"] is not None:
-            self.bi = nn.Parameter(bundle["bi_f32"].to(device, dtype=torch.float32).clone())
+            self.register_buffer("bi_base", bundle["bi_f32"].to(device, dtype=torch.float32).clone(), persistent=False)
+            self.bi_delta = nn.Parameter(torch.zeros_like(self.bi_base))
         else:
-            self.bi = None
+            self.bi_base = None
+            self.bi_delta = None
 
         lr = bundle["lr"]
         if lr is not None and self.lr_rank > 0:
@@ -413,16 +416,22 @@ class QuantLinearV5(nn.Module):
             self.U = None
             self.V = None
 
+    def _eff_sc_bi(self) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        sc_eff = self.sc_base * self.sc_mult
+        bi_eff = (self.bi_base + self.sc_base.abs().clamp(min=1e-4) * self.bi_delta) if self.bi_delta is not None else None
+        return sc_eff, bi_eff
+
     def _build_w_rot_bf16(self) -> torch.Tensor:
-        sc_q = self.sc + (self.sc.to(torch.float16).float() - self.sc).detach()
+        sc_eff, bi_eff = self._eff_sc_bi()
+        sc_q = sc_eff + (sc_eff.to(torch.float16).float() - sc_eff).detach()
         with torch.no_grad():
             qf = self.q_i8.float()
             if self.mode == 5:
                 # Exact FP32 polynomial on {-3,-1,+1,+3}: ±1 -> ±1.000000, ±3 -> ±3.174000!
                 qf = qf * (1.0 + 0.00725 * (qf * qf - 1.0))
         w = qf * sc_q.unsqueeze(-1)
-        if self.bi is not None:
-            bi_q = self.bi + (self.bi.to(torch.float16).float() - self.bi).detach()
+        if bi_eff is not None:
+            bi_q = bi_eff + (bi_eff.to(torch.float16).float() - bi_eff).detach()
             w = w + bi_q.unsqueeze(-1)
         return w.reshape(self.d_out, self.d_in).to(torch.float16)
 
@@ -446,11 +455,13 @@ class QuantLinearV5(nn.Module):
     @torch.no_grad()
     def export_into_bundle(self, bundle: dict) -> torch.Tensor:
         """Write updated FP16 scales/biases into bundle['pb'] and INT8 low-rank into bundle['lr']; return W_eff_f16."""
-        sc_f16 = self.sc.detach().to(torch.float16).float()
+        sc_eff, bi_eff = self._eff_sc_bi()
+        sc_f16 = sc_eff.detach().to(torch.float16).float()
         sc_np = np.ascontiguousarray(sc_f16.cpu().numpy(), dtype=np.float32)
         bi_np = None
-        if self.bi is not None:
-            bi_f16 = self.bi.detach().to(torch.float16).float()
+        bi_f16 = None
+        if bi_eff is not None:
+            bi_f16 = bi_eff.detach().to(torch.float16).float()
             bi_np = np.ascontiguousarray(bi_f16.cpu().numpy(), dtype=np.float32)
         pb_copy = np.ascontiguousarray(bundle["pb"], dtype=np.uint8)
         LIB_FQ.update_t16c_headers_f32(
@@ -464,13 +475,13 @@ class QuantLinearV5(nn.Module):
         )
         bundle["pb"] = pb_copy
         bundle["sc_f32"] = sc_f16.cpu()
-        bundle["bi_f32"] = bi_f16.cpu() if self.bi is not None else None
+        bundle["bi_f32"] = bi_f16.cpu() if bi_f16 is not None else None
 
         qf = self.q_i8.float()
         if self.mode == 5:
             qf = qf * (1.0 + 0.00725 * (qf * qf - 1.0))
         w_rot = qf * sc_f16.unsqueeze(-1)
-        if self.bi is not None:
+        if bi_f16 is not None:
             w_rot = w_rot + bi_f16.unsqueeze(-1)
         w_eff = fwht_gpu(w_rot.reshape(self.d_out, self.d_in), self.bsize)
         if self.inv_s is not None:
@@ -480,6 +491,28 @@ class QuantLinearV5(nn.Module):
             lr_tup = quantize_lr_arrays(self.U.detach(), self.V.detach())
             bundle["lr"] = lr_tup
             su, sv, ui, vi = lr_tup
+            u_q = torch.from_numpy(ui.astype(np.float32)).to(w_eff.device) * torch.from_numpy(su).to(w_eff.device).unsqueeze(1)
+            v_q = torch.from_numpy(vi.astype(np.float32)).to(w_eff.device) * torch.from_numpy(sv).to(w_eff.device).unsqueeze(1)
+            w_eff.add_(u_q @ v_q)
+        return w_eff.to(torch.float16)
+
+    @torch.no_grad()
+    def dequant_w_eff_f16(self) -> torch.Tensor:
+        """Read-only dequantized W_eff_f16 matching current (or initial) weights without mutating bundle."""
+        sc_eff, bi_eff = self._eff_sc_bi()
+        sc_f16 = sc_eff.detach().to(torch.float16).float()
+        bi_f16 = bi_eff.detach().to(torch.float16).float() if bi_eff is not None else None
+        qf = self.q_i8.float()
+        if self.mode == 5:
+            qf = qf * (1.0 + 0.00725 * (qf * qf - 1.0))
+        w_rot = qf * sc_f16.unsqueeze(-1)
+        if bi_f16 is not None:
+            w_rot = w_rot + bi_f16.unsqueeze(-1)
+        w_eff = fwht_gpu(w_rot.reshape(self.d_out, self.d_in), self.bsize)
+        if self.inv_s is not None:
+            w_eff.mul_(self.inv_s.unsqueeze(0))
+        if self.U is not None and self.V is not None:
+            su, sv, ui, vi = quantize_lr_arrays(self.U.detach(), self.V.detach())
             u_q = torch.from_numpy(ui.astype(np.float32)).to(w_eff.device) * torch.from_numpy(su).to(w_eff.device).unsqueeze(1)
             v_q = torch.from_numpy(vi.astype(np.float32)).to(w_eff.device) * torch.from_numpy(sv).to(w_eff.device).unsqueeze(1)
             w_eff.add_(u_q @ v_q)
@@ -708,7 +741,9 @@ for _m_t, _rk_t in [(0, 8), (5, 8), (4, 8)]:
         _init_rel = float((_y_ql0 - _y_we).norm() / _y_we.norm().clamp(min=1e-6))
         assert _init_rel < 5e-3, f"mode={_m_t} QuantLinearV5 init mismatch rel={_init_rel}"
     _yt = _xt @ _wt.to(DEVICE).T
-    _opt = torch.optim.AdamW(_ql.parameters(), lr=5e-3)
+    _p_sc = [p for n, p in _ql.named_parameters() if n in ("sc_mult", "bi_delta")]
+    _p_lr = [p for n, p in _ql.named_parameters() if n in ("U", "V")]
+    _opt = torch.optim.AdamW([{"params": _p_sc, "lr": 5e-3}, {"params": _p_lr, "lr": 5e-4}])
     _loss0 = float(F.mse_loss(_ql(_xt).detach(), _yt).item())
     for _st in range(25):
         _opt.zero_grad()
@@ -1522,10 +1557,11 @@ def qat_optimize_attn_block(
             return cos_sum / max(cnt, 1)
 
     cos0 = eval_val()
-    params = list(ql_q.parameters()) + list(ql_k.parameters()) + list(ql_o.parameters()) + [p_in, p_qn, p_kn, p_pa]
-    if ql_v is not None:
-        params += list(ql_v.parameters())
-    opt = torch.optim.AdamW(params, lr=7e-4, weight_decay=1e-4)
+    q_mods = [ql_q, ql_k, ql_o] + ([ql_v] if ql_v is not None else [])
+    p_unit = [p for m in q_mods for n, p in m.named_parameters() if n in ("sc_mult", "bi_delta")] + [p_in, p_qn, p_kn, p_pa]
+    p_lowr = [p for m in q_mods for n, p in m.named_parameters() if n in ("U", "V")]
+    params = p_unit + p_lowr
+    opt = torch.optim.AdamW([{"params": p_unit, "lr": 1.5e-3}, {"params": p_lowr, "lr": 3e-4}], weight_decay=1e-4)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=7e-5)
 
     best_cos = cos0
@@ -1576,11 +1612,12 @@ def qat_optimize_attn_block(
             w_out["v_proj"] = ql_v.export_into_bundle(bundles["v_proj"])
         w_out["o_proj"] = ql_o.export_into_bundle(bundles["o_proj"])
     else:
-        w_out["q_proj"] = ql_q.export_into_bundle(bundles["q_proj"])
-        w_out["k_proj"] = ql_k.export_into_bundle(bundles["k_proj"])
+        # Strict monotonic non-regression: keep initial quantized bundles untouched!
+        w_out["q_proj"] = QuantLinearV5(bundles["q_proj"], DEVICE).dequant_w_eff_f16()
+        w_out["k_proj"] = QuantLinearV5(bundles["k_proj"], DEVICE).dequant_w_eff_f16()
         if ql_v is not None:
-            w_out["v_proj"] = ql_v.export_into_bundle(bundles["v_proj"])
-        w_out["o_proj"] = ql_o.export_into_bundle(bundles["o_proj"])
+            w_out["v_proj"] = QuantLinearV5(bundles["v_proj"], DEVICE).dequant_w_eff_f16()
+        w_out["o_proj"] = QuantLinearV5(bundles["o_proj"], DEVICE).dequant_w_eff_f16()
 
     del ql_q, ql_k, ql_v, ql_o, p_in, p_qn, p_kn, p_pa, opt, sch, best_state
     torch.cuda.empty_cache()
@@ -1626,8 +1663,11 @@ def qat_optimize_mlp_block(
             return cos_sum / max(cnt, 1)
 
     cos0 = eval_val(1.0)
-    params = list(ql_g.parameters()) + list(ql_u.parameters()) + list(ql_d.parameters()) + [p_pf, p_pff, p_lsc]
-    opt = torch.optim.AdamW(params, lr=1e-3, weight_decay=1e-4)
+    q_mods = [ql_g, ql_u, ql_d]
+    p_unit = [p for m in q_mods for n, p in m.named_parameters() if n in ("sc_mult", "bi_delta")] + [p_pf, p_pff, p_lsc]
+    p_lowr = [p for m in q_mods for n, p in m.named_parameters() if n in ("U", "V")]
+    params = p_unit + p_lowr
+    opt = torch.optim.AdamW([{"params": p_unit, "lr": 2e-3}, {"params": p_lowr, "lr": 4e-4}], weight_decay=1e-4)
     sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=1e-4)
 
     best_cos = cos0
@@ -1668,12 +1708,31 @@ def qat_optimize_mlp_block(
         new_norms["pf"] = best_state["pf"].to(DEVICE)
         new_norms["pff"] = best_state["pff"].to(DEVICE)
         new_norms["lsc"] = best_state["lsc"]
-    cos_sp50 = eval_val(0.50)
-    w_out = {
-        "gate_proj": ql_g.export_into_bundle(bundles["gate_proj"]),
-        "up_proj": ql_u.export_into_bundle(bundles["up_proj"]),
-        "down_proj": ql_d.export_into_bundle(bundles["down_proj"]),
-    }
+        with torch.no_grad():
+            p_pf.copy_(new_norms["pf"])
+            p_pff.copy_(new_norms["pff"])
+            p_lsc.fill_(float(new_norms["lsc"]))
+        cos_sp50 = eval_val(0.50)
+        w_out = {
+            "gate_proj": ql_g.export_into_bundle(bundles["gate_proj"]),
+            "up_proj": ql_u.export_into_bundle(bundles["up_proj"]),
+            "down_proj": ql_d.export_into_bundle(bundles["down_proj"]),
+        }
+    else:
+        # Strict monotonic non-regression: restore exact initial modules for cos_sp50 and keep bundles untouched!
+        ql_g = QuantLinearV5(bundles["gate_proj"], DEVICE)
+        ql_u = QuantLinearV5(bundles["up_proj"], DEVICE)
+        ql_d = QuantLinearV5(bundles["down_proj"], DEVICE)
+        with torch.no_grad():
+            p_pf.copy_(norms_g["pf"].float())
+            p_pff.copy_(norms_g["pff"].float())
+            p_lsc.fill_(float(norms_g["lsc"]))
+        cos_sp50 = eval_val(0.50)
+        w_out = {
+            "gate_proj": ql_g.dequant_w_eff_f16(),
+            "up_proj": ql_u.dequant_w_eff_f16(),
+            "down_proj": ql_d.dequant_w_eff_f16(),
+        }
     del ql_g, ql_u, ql_d, p_pf, p_pff, p_lsc, opt, sch, best_state
     torch.cuda.empty_cache()
     return w_out, new_norms, cos0, best_cos, cos_sp50
@@ -2272,13 +2331,18 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         kl_3b_0, agr_3b_0, cos_3b_0 = eval_tail_val_kl()
         print(f"  [Stage 3B Before] Val L59 Cand-KL={kl_3b_0:.4f} Teacher-Agree={agr_3b_0*100:.1f}% FinalCos={cos_3b_0:.5f}", flush=True)
 
-        params_3b = list(tail_mods.parameters()) + [p_final_norm]
-        opt_3b = torch.optim.AdamW(params_3b, lr=3e-4, weight_decay=1e-4)
+        p_unit_3b = [p for n, p in tail_mods.named_parameters() if not n.endswith((".U", ".V"))] + [p_final_norm]
+        p_lowr_3b = [p for n, p in tail_mods.named_parameters() if n.endswith((".U", ".V"))]
+        params_3b = p_unit_3b + p_lowr_3b
+        opt_3b = torch.optim.AdamW([{"params": p_unit_3b, "lr": 8e-4}, {"params": p_lowr_3b, "lr": 2e-4}], weight_decay=1e-4)
         STEPS_3B = 150
         mb_3b = 8 if gpu_vram_gb >= 38.0 else 4
         sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=3e-5)
         best_kl_3b = kl_3b_0
-        best_sd_3b = None
+        best_sd_3b = (
+            {k: v.detach().cpu().clone() for k, v in tail_mods.state_dict().items()},
+            p_final_norm.detach().cpu().clone(),
+        )
         for st in range(STEPS_3B):
             opt_3b.zero_grad()
             sel = TRAIN_SEQ_IDX[np.random.choice(len(TRAIN_SEQ_IDX), size=mb_3b, replace=False)].tolist()
@@ -2861,7 +2925,8 @@ try:
     opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2e-4, weight_decay=1e-4)
     STEPS_A = 120
     sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=STEPS_A, eta_min=2e-5)
-    best_aagr, best_asd = aagr0, None
+    best_aagr = aagr0
+    best_asd = {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
     for st in range(STEPS_A):
         opt_a.zero_grad()
         batch_ais = np.random.choice(56, size=4, replace=False).tolist()
