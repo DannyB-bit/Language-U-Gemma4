@@ -8,8 +8,10 @@
 //!     `q4`/`q6`/`q8` sub-byte packed via `run270_rust::packed::PackedMatrix`).
 
 use run270_rust::codec::bf16_to_f32;
+use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{attn_decode_range, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
+use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
@@ -460,6 +462,8 @@ enum KvQuantMode {
     Fp32,
     Q8,
     Fp8E4M3,
+    Glyph,
+    GlyphPure,
 }
 
 impl KvQuantMode {
@@ -468,9 +472,48 @@ impl KvQuantMode {
             "fp32" | "f32" => Ok(Self::Fp32),
             "q8" | "q8_0" => Ok(Self::Q8),
             "fp8" | "e4m3" | "fp8_e4m3" => Ok(Self::Fp8E4M3),
-            other => Err(format!("invalid --kv-quant '{other}' (expected fp32|q8|fp8)")),
+            "glyph" | "glyph_v2" | "opt5" => Ok(Self::Glyph),
+            "glyph-pure" | "glyph_pure" | "opt5-pure" => Ok(Self::GlyphPure),
+            other => Err(format!("invalid --kv-quant '{other}' (expected fp32|q8|fp8|glyph|glyph-pure)")),
         }
     }
+
+    fn is_glyph(self) -> bool {
+        matches!(self, Self::Glyph | Self::GlyphPure)
+    }
+}
+
+fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode) -> Result<Vec<Option<GlyphKvLayer>>, String> {
+    if !kv_quant.is_glyph() {
+        return Ok((0..cfg.n_layers).map(|_| None).collect());
+    }
+    let (sink_cap, tail_cap) = match kv_quant {
+        KvQuantMode::Glyph => (4usize, 32usize),
+        KvQuantMode::GlyphPure => (0usize, 0usize),
+        _ => (0usize, 0usize),
+    };
+    let mut out = Vec::with_capacity(cfg.n_layers);
+    for l in 0..cfg.n_layers {
+        let is_full = cfg.layer_full[l];
+        let hd = if is_full { cfg.global_hd } else { cfg.hd };
+        let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
+        let sw = if is_full { None } else { Some(cfg.window) };
+        // Gemma 4 `attention_k_eq_v` shares the pre-norm projection W_k == W_v, NOT the post-norm/post-RoPE
+        // KV cache tensors (`K_post = RoPE(k_norm(W_k x))` != `V_post = RMSNorm(W_k x)`). Keep distinct K/V
+        // glyph streams so live attention matches exact FP32 Gemma 4 mathematics.
+        let k_eq_v = false;
+        out.push(Some(GlyphKvLayer::new(
+            cfg.n_heads,
+            n_kv,
+            hd,
+            k_eq_v,
+            sw,
+            sink_cap,
+            tail_cap,
+            256,
+        )?));
+    }
+    Ok(out)
 }
 
 fn fp8_e4m3_encode_scalar(v: f32) -> u8 {
@@ -614,6 +657,7 @@ struct Runtime31B {
     kv_raw_bytes: usize,
     kv_compressed_bytes: usize,
     kv: Vec<LayerKv>,
+    glyph_kv: Vec<Option<GlyphKvLayer>>,
     vision: Option<run270_rust::vision::VisionWeights>,
     threads: usize,
     ssd_bytes_read: u64,
@@ -621,6 +665,13 @@ struct Runtime31B {
 
 impl Runtime31B {
     fn kv_len(&self) -> usize {
+        if self.kv_quant.is_glyph() {
+            return self
+                .glyph_kv
+                .first()
+                .and_then(|o| o.as_ref())
+                .map_or(0, |g| g.total_seen());
+        }
         if self.kv.is_empty() || self.cfg.layer_full.is_empty() {
             return 0;
         }
@@ -635,7 +686,27 @@ impl Runtime31B {
         }
     }
 
+    fn glyph_kv_total_stats(&self) -> GlyphKvMemStats {
+        let mut tot = GlyphKvMemStats::default();
+        for g in self.glyph_kv.iter().flatten() {
+            let s = g.memory_stats();
+            tot.active_tokens += s.active_tokens;
+            tot.glyph_tokens += s.glyph_tokens;
+            tot.exact_tokens += s.exact_tokens;
+            tot.resident_bytes += s.resident_bytes;
+            tot.naive_bf16_bytes += s.naive_bf16_bytes;
+            tot.fp32_bytes += s.fp32_bytes;
+        }
+        tot
+    }
+
     fn truncate_kv(&mut self, keep_tokens: usize) -> Result<(), String> {
+        if self.kv_quant.is_glyph() {
+            for g in self.glyph_kv.iter_mut().flatten() {
+                g.truncate(keep_tokens)?;
+            }
+            return Ok(());
+        }
         for (l, layer_kv) in self.kv.iter_mut().enumerate() {
             let is_full = self.cfg.layer_full[l];
             let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
@@ -836,6 +907,7 @@ impl Runtime31B {
         let kv_quant = self.kv_quant;
         let fp8_lut = &self.fp8_lut;
         let kv = &mut self.kv;
+        let glyph_kv = &mut self.glyph_kv;
         let threads = self.threads;
         let mut read_bytes = 0u64;
         let mut cs_skipped_step = 0u64;
@@ -1015,37 +1087,73 @@ impl Runtime31B {
                     }
                 }
 
-                match kv_quant {
-                    KvQuantMode::Fp32 => {
-                        let kb = k_batch.len() * 4 + v_batch.len() * 4;
-                        kv_raw_step += kb;
-                        kv_cmp_step += kb;
-                    }
-                    KvQuantMode::Q8 => {
-                        kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
-                        kv_cmp_step += quantize_dequant_kv_q8_inplace(&mut k_batch, hd)
-                            + quantize_dequant_kv_q8_inplace(&mut v_batch, hd);
-                    }
-                    KvQuantMode::Fp8E4M3 => {
-                        kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
-                        kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
-                            + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
-                    }
-                }
-
-                let base_t = kv[l].k.len() / (n_kv * hd);
-                kv[l].k.extend_from_slice(&k_batch);
-                kv[l].v.extend_from_slice(&v_batch);
                 let mut ctx_batch = Vec::with_capacity(seq_len * n_heads * hd);
-                for t in 0..seq_len {
-                    let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                    let kv_end = if !is_full {
-                        vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                    } else {
-                        base_t + t
-                    };
-                    let c_t = attn_decode_range(q_t, &kv[l].k, &kv[l].v, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
-                    ctx_batch.extend_from_slice(&c_t);
+                if kv_quant.is_glyph() {
+                    let gkv = glyph_kv[l]
+                        .as_mut()
+                        .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                    let base_t = gkv.total_seen();
+                    let stride = n_kv * hd;
+                    for t in 0..seq_len {
+                        let kt = &k_batch[t * stride..(t + 1) * stride];
+                        let vt = if gkv.k_eq_v {
+                            &[][..]
+                        } else {
+                            &v_batch[t * stride..(t + 1) * stride]
+                        };
+                        gkv.append_token(kt, vt, native_t16c.as_deref())?;
+                    }
+                    for t in 0..seq_len {
+                        let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
+                        let kv_end = if !is_full {
+                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                        } else {
+                            base_t + t
+                        };
+                        let c_t = gkv.attend_range(
+                            q_t,
+                            base_t + t,
+                            kv_end,
+                            start_pos + t,
+                            1.0,
+                            native_t16c.as_deref(),
+                            threads,
+                        )?;
+                        ctx_batch.extend_from_slice(&c_t);
+                    }
+                } else {
+                    match kv_quant {
+                        KvQuantMode::Fp32 => {
+                            let kb = k_batch.len() * 4 + v_batch.len() * 4;
+                            kv_raw_step += kb;
+                            kv_cmp_step += kb;
+                        }
+                        KvQuantMode::Q8 => {
+                            kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                            kv_cmp_step += quantize_dequant_kv_q8_inplace(&mut k_batch, hd)
+                                + quantize_dequant_kv_q8_inplace(&mut v_batch, hd);
+                        }
+                        KvQuantMode::Fp8E4M3 => {
+                            kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                            kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
+                                + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
+                        }
+                        KvQuantMode::Glyph | KvQuantMode::GlyphPure => unreachable!(),
+                    }
+
+                    let base_t = kv[l].k.len() / (n_kv * hd);
+                    kv[l].k.extend_from_slice(&k_batch);
+                    kv[l].v.extend_from_slice(&v_batch);
+                    for t in 0..seq_len {
+                        let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
+                        let kv_end = if !is_full {
+                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                        } else {
+                            base_t + t
+                        };
+                        let c_t = attn_decode_range(q_t, &kv[l].k, &kv[l].v, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
+                        ctx_batch.extend_from_slice(&c_t);
+                    }
                 }
                 drop(q_batch);
                 drop(k_batch);
@@ -1296,6 +1404,7 @@ fn load_runtime_31b(
     };
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
+    let glyph_kv = init_glyph_kv(&cfg, kv_quant)?;
     Ok((
         Runtime31B {
             cfg,
@@ -1320,6 +1429,7 @@ fn load_runtime_31b(
             kv_raw_bytes: 0,
             kv_compressed_bytes: 0,
             kv,
+            glyph_kv,
             vision: None,
             threads,
             ssd_bytes_read: 0,
@@ -1470,6 +1580,7 @@ fn load_runtime_31b_t16c(
     );
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
+    let glyph_kv = init_glyph_kv(&cfg, kv_quant)?;
     Ok((
         Runtime31B {
             cfg,
@@ -1494,6 +1605,7 @@ fn load_runtime_31b_t16c(
             kv_raw_bytes: 0,
             kv_compressed_bytes: 0,
             kv,
+            glyph_kv,
             vision,
             threads,
             ssd_bytes_read: 0,
@@ -1688,20 +1800,266 @@ fn evaluate_tri_modal_step(
     Ok((decision.draft_k, decision))
 }
 
+fn run_bench_128k_kv(
+    cfg: &Gemma4Cfg,
+    so_arg: Option<&str>,
+    disable_native: bool,
+    kv_quant: KvQuantMode,
+    seq_len: usize,
+    bench_k_eq_v: bool,
+    threads: usize,
+) -> Result<(), String> {
+    let eff_mode = if kv_quant.is_glyph() { kv_quant } else { KvQuantMode::Glyph };
+    let (sink_cap, tail_cap) = match eff_mode {
+        KvQuantMode::Glyph => (4usize, 32usize),
+        KvQuantMode::GlyphPure => (0usize, 0usize),
+        _ => (4usize, 32usize),
+    };
+    let native = if disable_native {
+        None
+    } else if let Some(p) = so_arg {
+        Some(run270_rust::t16c::NativeTile16Kernel::try_load(Path::new(p))?)
+    } else {
+        run270_rust::t16c::NativeTile16Kernel::discover(None)
+    };
+    let native_ref = native.as_ref();
+    let has_native_glyph = native_ref.is_some_and(|n| n.encode_kv_glyph_fn.is_some() && n.flash_glyph_attn_fn.is_some());
+    eprintln!(
+        "[run31b] --bench-128k-kv mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} threads={threads} native_glyph_c={has_native_glyph}",
+        cfg.n_layers
+    );
+
+    // 1. Live accuracy verification against exact FP32 GQA (`attn_decode_range`) on a 512-token global layer
+    //    using realistic post-qk_norm activation magnitudes (unit-variance QK dot products with sparse channel outliers).
+    let ref_seq = 512usize.min(seq_len.max(64));
+    let mut ref_layer = GlyphKvLayer::new(
+        cfg.n_heads,
+        cfg.n_global_kv,
+        cfg.global_hd,
+        bench_k_eq_v,
+        None,
+        sink_cap,
+        tail_cap,
+        ref_seq,
+    )?;
+    let g_stride = cfg.n_global_kv * cfg.global_hd;
+    let inv_hd_scale = 1.0f32 / (cfg.global_hd as f32).sqrt();
+    let mut k_ref_all = vec![0.0f32; ref_seq * g_stride];
+    let mut v_ref_all = vec![0.0f32; ref_seq * g_stride];
+    for t in 0..ref_seq {
+        let mut k_tok = vec![0.0f32; g_stride];
+        let mut v_tok = vec![0.0f32; g_stride];
+        for h in 0..cfg.n_global_kv {
+            for d in 0..cfg.global_hd {
+                let phase = ((t * 17 + h * 41 + d * 7) as f32) * 0.013;
+                let mut kv = (phase.sin() * 0.8 + (phase * 0.37).cos() * 0.5) * inv_hd_scale.sqrt();
+                if d % 64 == (t + h) % 64 {
+                    kv += 0.25;
+                }
+                let vv = if bench_k_eq_v {
+                    kv
+                } else {
+                    ((phase * 1.17 + 0.5).cos() * 0.75 + (phase * 0.23).sin() * 0.45) * inv_hd_scale.sqrt()
+                };
+                k_tok[h * cfg.global_hd + d] = kv;
+                v_tok[h * cfg.global_hd + d] = vv;
+            }
+        }
+        k_ref_all[t * g_stride..(t + 1) * g_stride].copy_from_slice(&k_tok);
+        v_ref_all[t * g_stride..(t + 1) * g_stride].copy_from_slice(&v_tok);
+        let vt = if bench_k_eq_v { &[][..] } else { &v_tok[..] };
+        ref_layer.append_token(&k_tok, vt, native_ref)?;
+    }
+    let q_ref: Vec<f32> = (0..cfg.n_heads * cfg.global_hd)
+        .map(|i| (((i * 19 + 5) as f32) * 0.017).sin() * inv_hd_scale.sqrt())
+        .collect();
+    let out_glyph = ref_layer.attend_range(&q_ref, ref_seq - 1, ref_seq - 1, ref_seq - 1, 1.0, native_ref, threads)?;
+    let out_exact = attn_decode_range(
+        &q_ref,
+        &k_ref_all,
+        &v_ref_all,
+        ref_seq - 1,
+        ref_seq - 1,
+        ref_seq - 1,
+        cfg.n_heads,
+        cfg.n_global_kv,
+        cfg.global_hd,
+        None,
+    );
+    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+    for (&a, &b) in out_glyph.iter().zip(out_exact.iter()) {
+        dot += a as f64 * b as f64;
+        na += a as f64 * a as f64;
+        nb += b as f64 * b as f64;
+    }
+    let ref_cos = dot / (na.sqrt() * nb.sqrt() + 1e-12);
+    drop(ref_layer);
+    drop(k_ref_all);
+    drop(v_ref_all);
+
+    // 2. Allocate and physically populate all 60 Gemma 4 31B layers simultaneously at `seq_len` (default 131,072).
+    let t_alloc = std::time::Instant::now();
+    let mut layers: Vec<GlyphKvLayer> = Vec::with_capacity(cfg.n_layers);
+    let mut n_global = 0usize;
+    let mut n_sliding = 0usize;
+    let chunk_toks = 4096usize;
+    let mut scratch_k_glob = vec![0.0f32; cfg.n_global_kv * chunk_toks * cfg.global_hd];
+    for (i, slot) in scratch_k_glob.iter_mut().enumerate() {
+        *slot = (((i % 8191) as f32) * 0.0131).sin() * 0.42;
+    }
+    let mut scratch_k_slid = vec![0.0f32; cfg.n_kv * cfg.window.min(chunk_toks) * cfg.hd];
+    for (i, slot) in scratch_k_slid.iter_mut().enumerate() {
+        *slot = (((i % 4093) as f32) * 0.0173).cos() * 0.38;
+    }
+    let tok_k_glob = vec![0.25f32; cfg.n_global_kv * cfg.global_hd];
+    let tok_k_slid = vec![0.22f32; cfg.n_kv * cfg.hd];
+
+    for l in 0..cfg.n_layers {
+        let is_full = cfg.layer_full[l];
+        let hd = if is_full { cfg.global_hd } else { cfg.hd };
+        let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
+        let k_eq_v = is_full && bench_k_eq_v;
+        let sw = if is_full { None } else { Some(cfg.window) };
+        let target_toks = if is_full { seq_len } else { seq_len.min(cfg.window) };
+        let eff_sink = if is_full { sink_cap.min(target_toks) } else { 0 };
+        let eff_tail = tail_cap.min(target_toks.saturating_sub(eff_sink));
+        let n_glyphs = target_toks.saturating_sub(eff_sink + eff_tail);
+
+        let mut layer = GlyphKvLayer::new(
+            cfg.n_heads,
+            n_kv,
+            hd,
+            k_eq_v,
+            sw,
+            eff_sink,
+            eff_tail,
+            n_glyphs.max(64),
+        )?;
+        let tok_buf = if is_full { &tok_k_glob } else { &tok_k_slid };
+        for _ in 0..eff_sink {
+            layer.append_token(tok_buf, if k_eq_v { &[][..] } else { tok_buf }, native_ref)?;
+        }
+        let mut rem = n_glyphs;
+        while rem > 0 {
+            let take = rem.min(if is_full { chunk_toks } else { cfg.window.min(chunk_toks) });
+            let need = n_kv * take * hd;
+            if is_full {
+                let v_opt = if k_eq_v { None } else { Some(&scratch_k_glob[..need]) };
+                layer.bulk_fill_glyphs(&scratch_k_glob[..need], v_opt, take, native_ref, threads)?;
+            } else {
+                layer.bulk_fill_glyphs(
+                    &scratch_k_slid[..need],
+                    Some(&scratch_k_slid[..need]),
+                    take,
+                    native_ref,
+                    threads,
+                )?;
+            }
+            rem -= take;
+        }
+        for _ in 0..eff_tail {
+            layer.append_token(tok_buf, if k_eq_v { &[][..] } else { tok_buf }, native_ref)?;
+        }
+        if is_full {
+            n_global += 1;
+        } else {
+            n_sliding += 1;
+        }
+        layers.push(layer);
+    }
+    drop(scratch_k_glob);
+    drop(scratch_k_slid);
+    let fill_s = t_alloc.elapsed().as_secs_f64();
+
+    // 3. Aggregate exact memory footprint across all 60 layers (global + sliding).
+    let mut tot_all = GlyphKvMemStats::default();
+    let mut tot_global = GlyphKvMemStats::default();
+    let mut tot_sliding = GlyphKvMemStats::default();
+    for (l, g) in layers.iter().enumerate() {
+        let s = g.memory_stats();
+        let acc = |dst: &mut GlyphKvMemStats| {
+            dst.active_tokens += s.active_tokens;
+            dst.glyph_tokens += s.glyph_tokens;
+            dst.exact_tokens += s.exact_tokens;
+            dst.resident_bytes += s.resident_bytes;
+            dst.naive_bf16_bytes += s.naive_bf16_bytes;
+            dst.fp32_bytes += s.fp32_bytes;
+        };
+        acc(&mut tot_all);
+        if cfg.layer_full[l] {
+            acc(&mut tot_global);
+        } else {
+            acc(&mut tot_sliding);
+        }
+    }
+
+    // 4. Execute live single-token attention across ALL 60 layers (10 global @ 128K + 50 sliding @ 1024).
+    let q_slid: Vec<f32> = (0..cfg.n_heads * cfg.hd)
+        .map(|i| (((i * 13 + 3) as f32) * 0.019).cos() * 0.45)
+        .collect();
+    let mut global_ms = 0.0f64;
+    let mut sliding_ms = 0.0f64;
+    let mut checksum = 0.0f64;
+    for (l, g) in layers.iter().enumerate() {
+        let pos = g.total_seen().saturating_sub(1);
+        let qv = if cfg.layer_full[l] { &q_ref } else { &q_slid };
+        let t0 = std::time::Instant::now();
+        let out = g.attend_range(qv, pos, pos, pos, 1.0, native_ref, threads)?;
+        let dt_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        if cfg.layer_full[l] {
+            global_ms += dt_ms;
+        } else {
+            sliding_ms += dt_ms;
+        }
+        checksum += out.iter().take(8).map(|&v| v as f64).sum::<f64>();
+    }
+    let total_attn_ms = global_ms + sliding_ms;
+    let (vm_hwm, vm_rss) = proc_status_kb();
+    println!(
+        "KV128K_BENCH mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} global_layers={n_global} sliding_layers={n_sliding} native_glyph_c={has_native_glyph} fill_s={fill_s:.2} ref512_cos={ref_cos:.5} global_resident_mb={:.2} global_naive_bf16_mb={:.2} global_shrink_bf16={:.2}x total_resident_mb={:.2} total_naive_bf16_mb={:.2} total_shrink_bf16={:.2}x total_shrink_fp32={:.2}x global_10l_ms={global_ms:.2} sliding_50l_ms={sliding_ms:.2} total_60l_ms={total_attn_ms:.2} checksum={checksum:.5} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
+        cfg.n_layers,
+        tot_global.resident_bytes as f64 / (1024.0 * 1024.0),
+        tot_global.naive_bf16_bytes as f64 / (1024.0 * 1024.0),
+        tot_global.shrink_vs_naive_bf16(),
+        tot_all.resident_bytes as f64 / (1024.0 * 1024.0),
+        tot_all.naive_bf16_bytes as f64 / (1024.0 * 1024.0),
+        tot_all.shrink_vs_naive_bf16(),
+        tot_all.shrink_vs_fp32(),
+    );
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let get = |name: &str| -> Option<String> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
     };
+    let bench_128k_kv = args.iter().any(|a| a == "--bench-128k-kv");
+    let bench_128k_k_eq_v = args.iter().any(|a| a == "--bench-128k-k-eq-v");
+    let bench_128k_seq: usize = match get("--bench-128k-seq") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --bench-128k-seq '{s}'"))?,
+        None => 131_072,
+    };
+    let so_arg = get("--so");
+    let disable_native = args.iter().any(|a| a == "--no-native-ffi");
+    let threads: usize = match get("--threads") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --threads '{s}'"))?,
+        None => std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4),
+    };
+    let kv_quant = KvQuantMode::parse(&get("--kv-quant").unwrap_or_else(|| "fp32".into()))?;
+    if bench_128k_kv {
+        let cfgp = get("--config").ok_or("missing --config")?;
+        let cfg = load_gemma4_cfg(Path::new(&cfgp))?;
+        return run_bench_128k_kv(&cfg, so_arg.as_deref(), disable_native, kv_quant, bench_128k_seq, bench_128k_k_eq_v, threads);
+    }
+
     let t16c_arg = get("--t16c");
     let model = get("--model");
     if t16c_arg.is_none() && model.is_none() {
         return Err("missing --model (or pass --t16c <path>)".into());
     }
-    let so_arg = get("--so");
     let c8d_arg = get("--cuneiform-bank");
     let c8d_cold_va = args.iter().any(|a| a == "--cuneiform-cold-va");
-    let disable_native = args.iter().any(|a| a == "--no-native-ffi");
     let speculative = args.iter().any(|a| a == "--speculative");
     let batch_k_arg = get("--batch-k");
     let batch_k: usize = match batch_k_arg {
@@ -1748,13 +2106,8 @@ fn run() -> Result<(), String> {
     }
     let cfgp = get("--config").ok_or("missing --config")?;
     let tkp = get("--tokenizer").ok_or("missing --tokenizer")?;
-    let threads: usize = match get("--threads") {
-        Some(s) => s.parse().map_err(|_| format!("invalid --threads '{s}'"))?,
-        None => std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4),
-    };
     let embed_h8 = args.iter().any(|a| a == "--embed-h8");
     let embed_mode = EmbedMode31B::parse(&get("--embed-mode").unwrap_or_else(|| "stream".into()), embed_h8)?;
-    let kv_quant = KvQuantMode::parse(&get("--kv-quant").unwrap_or_else(|| "fp32".into()))?;
     let hybrid_qat_arg = get("--hybrid-qat-layers");
     let pin_layers: usize = match get("--pin-layers") {
         Some(s) => s.parse().map_err(|_| format!("invalid --pin-layers '{s}'"))?,
@@ -1768,6 +2121,9 @@ fn run() -> Result<(), String> {
     let raw_prompt = args.iter().any(|a| a == "--raw-prompt");
     let image_arg = get("--image");
     let optical_self_analyze = args.iter().any(|a| a == "--optical-self-analyze");
+    let optical_ctx_roundtrip = args.iter().any(|a| a == "--optical-context-roundtrip");
+    let optical_ctx_out = get("--optical-context-out");
+    let optical_ctx_in = get("--optical-context-in");
     let tri_modal_gate = args.iter().any(|a| a == "--tri-modal-gate");
     let tri_modal_log = tri_modal_gate || args.iter().any(|a| a == "--tri-modal-log");
     let dump_logits = get("--dump-logits");
@@ -1940,30 +2296,63 @@ fn run() -> Result<(), String> {
         vision_soft = Some((n_soft, soft));
     }
 
-    let ids: Vec<u32> = match ids_arg {
-        Some(s) => s
-            .split(',')
-            .map(|x| x.trim().parse::<u32>().map_err(|_| format!("invalid id in --ids '{s}'")))
-            .collect::<Result<Vec<_>, _>>()?,
-        None => {
-            if let Some((n_soft, _)) = &vision_soft {
-                let mut v_ids = Vec::new();
-                v_ids.extend(tk.encode("<|turn>user\n", true));
-                v_ids.push(run270_rust::vision::GEMMA4_BOI_TOKEN_ID);
-                v_ids.resize(v_ids.len() + *n_soft, run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID);
-                v_ids.push(run270_rust::vision::GEMMA4_EOI_TOKEN_ID);
-                let tail = format!("{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
-                v_ids.extend(tk.encode(&tail, false));
-                v_ids
-            } else {
-                let prompt = if raw_prompt {
-                    prompt_text.clone()
+    let ids: Vec<u32> = if let Some(ref in_ppm) = optical_ctx_in {
+        let img = run270_rust::vision::load_rgb_image(Path::new(in_ppm))?;
+        let (decoded_ids, hdr, dec_ms) = decode_tokens_from_optical_frame(&img, 4)?;
+        println!(
+            "OPTICAL_DMA mode=ingest file={in_ppm} frame={}x{} tokens={} payload_bytes={} crc32=0x{:08x} decode_ms={dec_ms:.3}",
+            img.width, img.height, decoded_ids.len(), hdr.stored_len, hdr.crc32
+        );
+        decoded_ids
+    } else {
+        match ids_arg {
+            Some(s) => s
+                .split(',')
+                .map(|x| x.trim().parse::<u32>().map_err(|_| format!("invalid id in --ids '{s}'")))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => {
+                if let Some((n_soft, _)) = &vision_soft {
+                    let mut v_ids = Vec::new();
+                    v_ids.extend(tk.encode("<|turn>user\n", true));
+                    v_ids.push(run270_rust::vision::GEMMA4_BOI_TOKEN_ID);
+                    v_ids.resize(v_ids.len() + *n_soft, run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID);
+                    v_ids.push(run270_rust::vision::GEMMA4_EOI_TOKEN_ID);
+                    let tail = format!("{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+                    v_ids.extend(tk.encode(&tail, false));
+                    v_ids
                 } else {
-                    format!("<|turn>user\n{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
-                };
-                tk.encode(&prompt, true)
+                    let prompt = if raw_prompt {
+                        prompt_text.clone()
+                    } else {
+                        format!("<|turn>user\n{prompt_text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>")
+                    };
+                    tk.encode(&prompt, true)
+                }
             }
         }
+    };
+    let ids = if optical_ctx_roundtrip || optical_ctx_out.is_some() {
+        let (frame, recovered_ids, stats) = optical_context_dma_roundtrip(&ids, 4)?;
+        if let Some(ref out_ppm) = optical_ctx_out {
+            save_ppm(&frame, Path::new(out_ppm))?;
+        }
+        println!(
+            "OPTICAL_DMA mode=roundtrip frame={}x{} scale={} tokens={} payload_bytes={} crc32=0x{:08x} encode_ms={:.3} dma_ms={:.3} fps={:.1} tok_per_s={:.0} exact_parity={}",
+            stats.width,
+            stats.height,
+            stats.scale,
+            stats.n_tokens,
+            stats.payload_bytes,
+            stats.crc32,
+            stats.encode_ms,
+            stats.dma_ms,
+            stats.fps,
+            stats.tok_per_s,
+            recovered_ids == ids,
+        );
+        recovered_ids
+    } else {
+        ids
     };
     eprintln!("[run31b] prompt {} tokens ids={:?}", ids.len(), &ids[..ids.len().min(32)]);
 
@@ -2101,7 +2490,33 @@ fn run() -> Result<(), String> {
                 if !seed_first.is_empty() {
                     seed_first
                 } else if let Some((ref ast, sl_l, fl_l)) = assistant_state {
-                    let (ast_drafts, m_stop, ast_sk) = {
+                    let (ast_drafts, m_stop, ast_sk) = if rt.kv_quant.is_glyph() {
+                        let (k_sl, v_sl) = rt.glyph_kv[sl_l]
+                            .as_ref()
+                            .ok_or("missing sliding glyph KV for assistant")?
+                            .materialize_chronological_kv();
+                        let (k_fl, v_fl) = rt.glyph_kv[fl_l]
+                            .as_ref()
+                            .ok_or("missing global glyph KV for assistant")?
+                            .materialize_chronological_kv();
+                        ast.draft_sequence_gated(
+                            y0,
+                            |tok| rt.embed_batch(&[tok]),
+                            &last_backbone_h,
+                            &k_sl,
+                            &v_sl,
+                            &k_fl,
+                            &v_fl,
+                            cur_kv_len,
+                            cur_kv_len,
+                            draft_budget,
+                            assistant_step_pos,
+                            &eos,
+                            closed_thought_bans,
+                            assistant_min_margin,
+                            lmhead_cs_sieve,
+                        )?
+                    } else {
                         let kv_tmp = std::mem::take(&mut rt.kv);
                         let ast_res = ast.draft_sequence_gated(
                             y0,
@@ -2311,7 +2726,20 @@ fn run() -> Result<(), String> {
     let (vm_hwm, vm_rss) = proc_status_kb();
     println!("GEN31B ids={generated:?}");
     println!("GEN31B text={:?}", tk.decode(&generated));
-    if rt.kv_raw_bytes > 0 {
+    if rt.kv_quant.is_glyph() {
+        let st = rt.glyph_kv_total_stats();
+        println!(
+            "KV31B mode={:?} raw_bytes={} naive_bf16_bytes={} compressed_bytes={} glyph_tokens={} exact_tokens={} shrink={:.2}x shrink_vs_bf16={:.2}x",
+            rt.kv_quant,
+            st.fp32_bytes,
+            st.naive_bf16_bytes,
+            st.resident_bytes,
+            st.glyph_tokens,
+            st.exact_tokens,
+            st.shrink_vs_fp32(),
+            st.shrink_vs_naive_bf16(),
+        );
+    } else if rt.kv_raw_bytes > 0 {
         let ratio = rt.kv_raw_bytes as f64 / rt.kv_compressed_bytes.max(1) as f64;
         println!(
             "KV31B mode={:?} raw_bytes={} compressed_bytes={} shrink={ratio:.2}x",
@@ -2614,5 +3042,49 @@ mod tests {
         let ids = vec![2, 255_999, 258_880, 258_880, 258_880, 258_882, 500];
         let ends = compute_vision_kv_ends(&ids);
         assert_eq!(ends, vec![0, 1, 4, 4, 4, 5, 6]);
+    }
+
+    #[test]
+    fn glyph_kv_mode_and_optical_dma_integrate_in_run31b() {
+        assert_eq!(KvQuantMode::parse("glyph").unwrap(), KvQuantMode::Glyph);
+        assert_eq!(KvQuantMode::parse("glyph-pure").unwrap(), KvQuantMode::GlyphPure);
+        assert!(KvQuantMode::Glyph.is_glyph());
+        assert!(KvQuantMode::GlyphPure.is_glyph());
+        assert!(!KvQuantMode::Fp8E4M3.is_glyph());
+
+        let cfg = Gemma4Cfg {
+            d: 512,
+            n_layers: 2,
+            ff: 1024,
+            n_heads: 4,
+            n_kv: 2,
+            n_global_kv: 2,
+            hd: 256,
+            global_hd: 512,
+            window: 1024,
+            eps: 1e-6,
+            theta_global: 1_000_000.0,
+            partial_global: 0.25,
+            theta_local: 10_000.0,
+            partial_local: 1.0,
+            attention_k_eq_v: true,
+            final_softcap: Some(30.0),
+            layer_full: vec![false, true],
+            vocab: 262_144,
+        };
+        let layers = init_glyph_kv(&cfg, KvQuantMode::Glyph).unwrap();
+        assert_eq!(layers.len(), 2);
+        let l0 = layers[0].as_ref().unwrap();
+        let l1 = layers[1].as_ref().unwrap();
+        assert!(!l0.k_eq_v);
+        assert_eq!(l0.sliding_window, Some(1024));
+        assert!(!l1.k_eq_v);
+        assert_eq!(l1.sliding_window, None);
+
+        let prompt_ids = vec![2u32, 105, 2364, 107, 1841, 603, 506, 6037, 576, 7001, 236881];
+        let (_frame, rec, stats) = optical_context_dma_roundtrip(&prompt_ids, 4).unwrap();
+        assert_eq!(rec, prompt_ids);
+        assert_eq!(stats.n_tokens, prompt_ids.len());
+        assert!(stats.fps > 0.0);
     }
 }

@@ -481,6 +481,84 @@ def _verify_run31b_receipts(root: Path, readme: str, frontier_md: str, errors: L
             claims += 5
         claims += 10
 
+    # Frontiers A, B & C: 11-Prompt 262K Battery, Live GlyphKV 128K + Optical DMA + NEON-V2, and V4.3 VLM Multimodal QA
+    v43_json = r31 / "colab_v4_3_vlm_stage2_report.json"
+    if v43_json.is_file():
+        v43 = _load_json_strict(v43_json)
+        if int(v43.get("tokens_calibrated", 0)) != 270336 or int(v43.get("vlm_sequences_calibrated", 0)) != 160:
+            errors.append(f"colab_v4_3_vlm_stage2_report.json unexpected token/vlm count: {v43}")
+        if int(v43.get("unified_t16c_bytes", 0)) != 6353854848 or int(v43.get("c8db_bytes", 0)) != 9317184:
+            errors.append(f"colab_v4_3_vlm_stage2_report.json artifact byte mismatch: {v43}")
+        if float(v43.get("vision_val_cos_after", 0.0)) <= float(v43.get("vision_val_cos_before", 1.0)):
+            errors.append("colab_v4_3_vlm_stage2_report.json vision cosine did not improve")
+        if float(v43.get("heldout_vis_soft_cos", 0.0)) < 0.90:
+            errors.append(f"colab_v4_3_vlm_stage2_report.json heldout_vis_soft_cos too low: {v43.get('heldout_vis_soft_cos')}")
+        if float(v43.get("post_cell60_val_kl_after", 99.0)) >= float(v43.get("post_cell60_val_kl_before", 0.0)):
+            errors.append("colab_v4_3_vlm_stage2_report.json post_cell60 KL did not improve")
+        if float(v43.get("post_cell60_val_top1_after", 0.0)) <= float(v43.get("post_cell60_val_top1_before", 1.0)):
+            errors.append("colab_v4_3_vlm_stage2_report.json post_cell60 top1 did not improve")
+        ho_list = v43.get("heldout_coco_val0_3", [])
+        if len(ho_list) != 4 or float(ho_list[0].get("ans_top1_agree", 0.0)) < 0.60:
+            errors.append(f"colab_v4_3_vlm_stage2_report.json heldout_coco_val0_3 invalid: {ho_list}")
+
+        _assert_contains("README.md", readme, "6,353,854,848 B", errors)
+        _assert_contains("README.md", readme, "5.9175 GiB", errors)
+        _assert_contains("README.md", readme, "0.91714", errors)
+        _assert_contains("README.md", readme, "0.90586", errors)
+        _assert_contains("README.md", readme, "A motorcycle is parked on a grassy field.<turn|>", errors)
+        _assert_contains("README.md", readme, "1,088.02 MiB", errors)
+        _assert_contains("README.md", readme, "605.34 MiB", errors)
+        _assert_contains("README.md", readme, "555.00 MiB", errors)
+        _assert_contains("README.md", readme, "85,041.2 FPS", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "5469f95285d7ed99e14c728504ac29f361f6a28781e829971d216b7486d99571", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "46afa072ecc4d4846c6b266d5d4aed0acae3c076c407433e3edfb95f2f590e09", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "A motorcycle is parked on a grassy field.<turn|>", errors)
+        _assert_contains("FRONTIER_RECEIPTS.md", frontier_md, "120 km / 2 = **60**", errors)
+        claims += 20
+
+        # Strict SHA-256 receipt file & Pi 4 live Frontier A/B/C logs
+        v43_sha = _read_text(r31 / "colab_v4_3_vlm_SHA256SUMS.txt")
+        _assert_contains("colab_v4_3_vlm_SHA256SUMS.txt", v43_sha, "5469f95285d7ed99e14c728504ac29f361f6a28781e829971d216b7486d99571", errors)
+        _assert_contains("colab_v4_3_vlm_SHA256SUMS.txt", v43_sha, "46afa072ecc4d4846c6b266d5d4aed0acae3c076c407433e3edfb95f2f590e09", errors)
+
+        v43_vis = _read_text(r31 / "pi4_v4_3_vlm_vision_qa.log")
+        _assert_contains("pi4_v4_3_vlm_vision_qa.log", v43_vis, 'GEN31B text="A motorcycle is parked on a grassy field.<turn|>"', errors)
+        _assert_contains("pi4_v4_3_vlm_vision_qa.log", v43_vis, "vision_bytes=237253152", errors)
+        _assert_contains("pi4_v4_3_vlm_vision_qa.log", v43_vis, "ssd_read_bytes=0", errors)
+        _assert_contains("pi4_v4_3_vlm_vision_qa.log", v43_vis, "vm_hwm_kb=Some(7197296)", errors)
+
+        v43_txt = _read_text(r31 / "pi4_v4_3_vlm_text_optical_glyph.log")
+        _assert_contains("pi4_v4_3_vlm_text_optical_glyph.log", v43_txt, "fps=85041.2", errors)
+        _assert_contains("pi4_v4_3_vlm_text_optical_glyph.log", v43_txt, "exact_parity=true", errors)
+        _assert_contains("pi4_v4_3_vlm_text_optical_glyph.log", v43_txt, 'GEN31B text="The capital of France is **the city **Paris**.<turn|>"', errors)
+        _assert_contains("pi4_v4_3_vlm_text_optical_glyph.log", v43_txt, "ssd_read_bytes=0", errors)
+
+        b128 = _read_text(r31 / "pi4_run31b_128k_glyph_kv.log")
+        _assert_contains("pi4_run31b_128k_glyph_kv.log", b128, "BENCH_128K_KV_COMPLETE_OK", errors)
+        _assert_contains("pi4_run31b_128k_glyph_kv.log", b128, "total_resident_mb=1088.02", errors)
+        _assert_contains("pi4_run31b_128k_glyph_kv.log", b128, "total_resident_mb=605.34", errors)
+        _assert_contains("pi4_run31b_128k_glyph_kv.log", b128, "total_resident_mb=555.00", errors)
+
+        gopt = _read_text(r31 / "pi4_colab_v4_2_glyph_kv_optical.log")
+        _assert_contains("pi4_colab_v4_2_glyph_kv_optical.log", gopt, "GLYPH_OPTICAL_LIVE_COMPLETE_OK", errors)
+        _assert_contains("pi4_colab_v4_2_glyph_kv_optical.log", gopt, "fps=81083.3", errors)
+        _assert_contains("pi4_colab_v4_2_glyph_kv_optical.log", gopt, 'GEN31B text="The capital of France is **Paris**.<turn|>"', errors)
+        _assert_contains("pi4_colab_v4_2_glyph_kv_optical.log", gopt, 'GEN31B text="The answer is 4.<turn|>"', errors)
+
+        nspd = _read_text(r31 / "pi4_colab_v4_2_neon_speedup.log")
+        _assert_contains("pi4_colab_v4_2_neon_speedup.log", nspd, "NEON_SPEEDUP_SUITE_COMPLETE_OK", errors)
+        _assert_contains("pi4_colab_v4_2_neon_speedup.log", nspd, "s_per_tok=1.543", errors)
+
+        bat = _read_text(r31 / "pi4_colab_v4_2_battery_p1_p8.log")
+        _assert_contains("pi4_colab_v4_2_battery_p1_p8.log", bat, "BATTERY_262K_COMPLETE_OK", errors)
+        _assert_contains("pi4_colab_v4_2_battery_p1_p8.log", bat, 'GEN31B text="The smaller number is **193**.<turn|>"', errors)
+
+        exab = _read_text(r31 / "pi4_colab_v4_2_exact_lmhead_ablation.log")
+        _assert_contains("pi4_colab_v4_2_exact_lmhead_ablation.log", exab, "EXACT_LMHEAD_ABLATION_COMPLETE_OK", errors)
+        _assert_contains("pi4_colab_v4_2_exact_lmhead_ablation.log", exab, "120 km / 2 = **60**", errors)
+        _assert_contains("pi4_colab_v4_2_exact_lmhead_ablation.log", exab, "glyph_tokens=2060", errors)
+        claims += 25
+
     return claims
 
 

@@ -1,0 +1,181 @@
+=== LIVE GLYPH-KV + OPTICAL-DMA ROUNDTRIP (The capital of France is) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.90s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292944), Some(6292944))
+OPTICAL_DMA mode=roundtrip frame=112x112 scale=4 tokens=18 payload_bytes=76 crc32=0x8e43b485 encode_ms=71.288 dma_ms=0.012 fps=81083.3 tok_per_s=1459499 exact_parity=true
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.51s (pinned=true)
+[run31b] layer 05/60 done in 0.56s (pinned=true)
+[run31b] layer 14/60 done in 0.53s (pinned=true)
+[run31b] layer 29/60 done in 0.56s (pinned=true)
+[run31b] layer 44/60 done in 0.36s (pinned=true)
+[run31b] layer 59/60 done in 0.64s (pinned=true)
+[TRIMODAL] step=0 mode=CAUTION score=0.8289 read=0.620 hear=1.000 see=1.000 hf=1.05 cr=22.93 marg=0.981 prob=0.556 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] prefill done in 26.33s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536264))
+PREFILL_TOP5 [818:"The"(19.290), 236777:"I"(18.309), 79629:"Depending"(16.914), 4906:"One"(16.155), 3810:"There"(16.142)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=CLEAN score=0.9984 read=0.996 hear=1.000 see=1.000 hf=0.98 cr=7.98 marg=4.916 prob=0.990 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.66s vm=(Some(6597664), Some(6536264))
+[STEP 1] id=5279 text=" capital"
+[TRIMODAL] step=2 mode=CLEAN score=0.9991 read=0.998 hear=1.000 see=1.000 hf=0.98 cr=10.76 marg=6.055 prob=0.994 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.63s vm=(Some(6597664), Some(6536264))
+[STEP 2] id=529 text=" of"
+[TRIMODAL] step=3 mode=CLEAN score=0.9999 read=1.000 hear=1.000 see=1.000 hf=0.98 cr=10.10 marg=7.619 prob=0.999 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.64s vm=(Some(6597664), Some(6536264))
+[STEP 3] id=7001 text=" France"
+[TRIMODAL] step=4 mode=CLEAN score=0.9978 read=0.995 hear=1.000 see=1.000 hf=0.96 cr=12.24 marg=4.425 prob=0.986 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.64s vm=(Some(6597664), Some(6536264))
+[STEP 4] id=563 text=" is"
+[TRIMODAL] step=5 mode=CLEAN score=0.9888 read=0.975 hear=1.000 see=1.000 hf=0.99 cr=9.71 marg=2.594 prob=0.929 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.79s vm=(Some(6597664), Some(6536264))
+[STEP 5] id=5213 text=" **"
+[TRIMODAL] step=6 mode=CAUTION score=0.8024 read=0.561 hear=1.000 see=1.000 hf=1.08 cr=17.91 marg=0.912 prob=0.473 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 5 in 2.78s vm=(Some(6597664), Some(6536264))
+[STEP 6] id=50429 text="Paris"
+[TRIMODAL] step=7 mode=CLEAN score=0.9998 read=1.000 hear=1.000 see=1.000 hf=1.04 cr=16.29 marg=6.922 prob=0.999 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 6 in 2.68s vm=(Some(6597664), Some(6536264))
+[STEP 7] id=84750 text="**."
+[TRIMODAL] step=8 mode=CLEAN score=0.9739 read=0.974 hear=1.000 see=0.948 hf=1.02 cr=21.53 marg=2.575 prob=0.926 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 7 in 2.67s vm=(Some(6597664), Some(6536264))
+[STEP 8] id=106 text="<turn|>"
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=46858240 naive_bf16_bytes=23429120 compressed_bytes=46858240 glyph_tokens=0 exact_tokens=1560 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=23180 prefill_s=26.33 decode_s=21.50 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536264)
+=== LIVE GLYPH-KV + OPTICAL-DMA FILE INGEST (prompt_optical_dma.ppm) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.88s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292940), Some(6292940))
+OPTICAL_DMA mode=ingest file=/mnt/SHE-VAULT/work31b/prompt_optical_dma.ppm frame=112x112 tokens=18 payload_bytes=76 crc32=0x8e43b485 decode_ms=0.013
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.50s (pinned=true)
+[run31b] layer 05/60 done in 0.55s (pinned=true)
+[run31b] layer 14/60 done in 0.52s (pinned=true)
+[run31b] layer 29/60 done in 0.54s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.63s (pinned=true)
+[TRIMODAL] step=0 mode=CAUTION score=0.8289 read=0.620 hear=1.000 see=1.000 hf=1.05 cr=22.93 marg=0.981 prob=0.556 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] prefill done in 26.00s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536260))
+PREFILL_TOP5 [818:"The"(19.290), 236777:"I"(18.309), 79629:"Depending"(16.914), 4906:"One"(16.155), 3810:"There"(16.142)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=CLEAN score=0.9984 read=0.996 hear=1.000 see=1.000 hf=0.98 cr=7.98 marg=4.916 prob=0.990 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 1] id=5279 text=" capital"
+[TRIMODAL] step=2 mode=CLEAN score=0.9991 read=0.998 hear=1.000 see=1.000 hf=0.98 cr=10.76 marg=6.055 prob=0.994 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.65s vm=(Some(6597664), Some(6536260))
+[STEP 2] id=529 text=" of"
+[TRIMODAL] step=3 mode=CLEAN score=0.9999 read=1.000 hear=1.000 see=1.000 hf=0.98 cr=10.10 marg=7.619 prob=0.999 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 3] id=7001 text=" France"
+[TRIMODAL] step=4 mode=CLEAN score=0.9978 read=0.995 hear=1.000 see=1.000 hf=0.96 cr=12.24 marg=4.425 prob=0.986 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 4] id=563 text=" is"
+[TRIMODAL] step=5 mode=CLEAN score=0.9888 read=0.975 hear=1.000 see=1.000 hf=0.99 cr=9.71 marg=2.594 prob=0.929 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.76s vm=(Some(6597664), Some(6536260))
+[STEP 5] id=5213 text=" **"
+[TRIMODAL] step=6 mode=CAUTION score=0.8024 read=0.561 hear=1.000 see=1.000 hf=1.08 cr=17.91 marg=0.912 prob=0.473 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 5 in 2.78s vm=(Some(6597664), Some(6536260))
+[STEP 6] id=50429 text="Paris"
+[TRIMODAL] step=7 mode=CLEAN score=0.9998 read=1.000 hear=1.000 see=1.000 hf=1.04 cr=16.29 marg=6.922 prob=0.999 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 6 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 7] id=84750 text="**."
+[TRIMODAL] step=8 mode=CLEAN score=0.9739 read=0.974 hear=1.000 see=0.948 hf=1.02 cr=21.53 marg=2.575 prob=0.926 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 7 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 8] id=106 text="<turn|>"
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=46858240 naive_bf16_bytes=23429120 compressed_bytes=46858240 glyph_tokens=0 exact_tokens=1560 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=23180 prefill_s=26.00 decode_s=21.36 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536260)
+=== LIVE GLYPH-KV + OPTICAL-DMA ROUNDTRIP (What is 2 + 2?) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.88s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292940), Some(6292940))
+OPTICAL_DMA mode=roundtrip frame=120x120 scale=4 tokens=21 payload_bytes=88 crc32=0x67d44a1e encode_ms=78.109 dma_ms=0.013 fps=74377.1 tok_per_s=1561919 exact_parity=true
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.61s (pinned=true)
+[run31b] layer 05/60 done in 0.66s (pinned=true)
+[run31b] layer 14/60 done in 0.62s (pinned=true)
+[run31b] layer 29/60 done in 0.64s (pinned=true)
+[run31b] layer 44/60 done in 0.42s (pinned=true)
+[run31b] layer 59/60 done in 0.76s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9257 read=0.835 hear=1.000 see=1.000 hf=1.02 cr=22.34 marg=1.304 prob=0.770 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 30.75s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536260))
+PREFILL_TOP5 [818:"The"(23.227), 1018:"**"(19.742), 2021:"To"(18.954), 3810:"There"(17.790), 11634:"Two"(17.634)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=RESCUE score=0.6632 read=0.252 hear=1.000 see=1.000 hf=0.96 cr=9.58 marg=0.168 prob=0.511 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 0 in 2.67s vm=(Some(6597664), Some(6536260))
+[STEP 1] id=3890 text=" answer"
+[TRIMODAL] step=2 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=0.98 cr=10.74 marg=12.800 prob=1.000 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 2] id=563 text=" is"
+[TRIMODAL] step=3 mode=CAUTION score=0.8921 read=0.760 hear=1.000 see=1.000 hf=0.98 cr=18.18 marg=1.142 prob=0.758 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 2 in 2.74s vm=(Some(6597664), Some(6536260))
+[STEP 3] id=236743 text=" "
+[TRIMODAL] step=4 mode=CLEAN score=0.9988 read=0.997 hear=1.000 see=1.000 hf=0.99 cr=21.50 marg=5.634 prob=0.992 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.79s vm=(Some(6597664), Some(6536260))
+[STEP 4] id=236812 text="4"
+[TRIMODAL] step=5 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=0.95 cr=14.36 marg=11.296 prob=1.000 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.66s vm=(Some(6597664), Some(6536260))
+[STEP 5] id=236761 text="."
+[TRIMODAL] step=6 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.05 cr=23.40 marg=9.561 prob=1.000 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 6] id=106 text="<turn|>"
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=16279 prefill_s=30.75 decode_s=16.14 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536260)
+=== LIVE PURE-OPT5-48B GLYPH-KV (100% C NEON flash_glyph_attention_gqa_c, What is 2 + 2?) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphPure
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphPure
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.87s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292948), Some(6292948))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.59s (pinned=true)
+[run31b] layer 05/60 done in 0.65s (pinned=true)
+[run31b] layer 14/60 done in 0.64s (pinned=true)
+[run31b] layer 29/60 done in 0.63s (pinned=true)
+[run31b] layer 44/60 done in 0.43s (pinned=true)
+[run31b] layer 59/60 done in 0.74s (pinned=true)
+[TRIMODAL] step=0 mode=CAUTION score=0.8053 read=0.567 hear=1.000 see=1.000 hf=1.00 cr=16.54 marg=0.923 prob=0.479 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] prefill done in 31.11s ssd_read_mb=0.0 vm=(Some(6597632), Some(6542604))
+PREFILL_TOP5 [818:"The"(21.541), 140:"    "(21.483), 236780:"C"(20.652), 8291:"Here"(19.969), 236775:"\""(19.938)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=CLEAN score=0.9542 read=0.903 hear=1.000 see=0.992 hf=1.02 cr=20.93 marg=1.650 prob=0.724 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.66s vm=(Some(6597632), Some(6542604))
+[STEP 1] id=1638 text=" same"
+[TRIMODAL] step=2 mode=RESCUE score=0.5584 read=0.051 hear=1.000 see=0.946 hf=1.00 cr=23.24 marg=0.032 prob=0.108 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 1 in 2.63s vm=(Some(6597632), Some(6542604))
+[STEP 2] id=5213 text=" **"
+[TRIMODAL] step=3 mode=CAUTION score=0.8819 read=0.738 hear=1.000 see=1.000 hf=1.00 cr=19.97 marg=1.137 prob=0.700 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 2 in 2.72s vm=(Some(6597632), Some(6542604))
+[STEP 3] id=236778 text="2"
+[TRIMODAL] step=4 mode=CLEAN score=0.9742 read=0.943 hear=1.000 see=1.000 hf=0.96 cr=16.73 marg=3.237 prob=0.836 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.66s vm=(Some(6597632), Some(6542604))
+[STEP 4] id=900 text=" +"
+[TRIMODAL] step=5 mode=CLEAN score=0.9953 read=0.990 hear=1.000 see=1.000 hf=0.98 cr=21.10 marg=4.420 prob=0.970 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.79s vm=(Some(6597632), Some(6542604))
+[STEP 5] id=236743 text=" "
+[TRIMODAL] step=6 mode=CLEAN score=0.9660 read=0.953 hear=1.000 see=0.953 hf=1.00 cr=23.72 marg=2.528 prob=0.866 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.64s vm=(Some(6597632), Some(6542604))
+[STEP 6] id=236770 text="1"
+[TRIMODAL] step=7 mode=CAUTION score=0.8606 read=0.690 hear=1.000 see=1.000 hf=0.97 cr=15.83 marg=1.096 prob=0.615 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 6 in 2.63s vm=(Some(6597632), Some(6542604))
+[STEP 7] id=578 text=" ="
+[TRIMODAL] step=8 mode=CLEAN score=0.9952 read=0.989 hear=1.000 see=1.000 hf=0.99 cr=22.08 marg=3.619 prob=0.970 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 7 in 2.60s vm=(Some(6597632), Some(6542604))
+[STEP 8] id=236743 text=" "
+[TRIMODAL] step=9 mode=CAUTION score=0.8645 read=0.699 hear=1.000 see=1.000 hf=0.96 cr=22.64 marg=1.052 prob=0.694 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 8 in 2.71s vm=(Some(6597632), Some(6542604))
+[STEP 9] id=236812 text="4"
+GEN31B ids=[818, 1638, 5213, 236778, 900, 236743, 236770, 578, 236743, 236812]
+GEN31B text="The same **2 + 1 = 4"
+KV31B mode=GlyphPure raw_bytes=54067200 naive_bf16_bytes=27033600 compressed_bytes=2534400 glyph_tokens=1800 exact_tokens=0 shrink=21.33x shrink_vs_bf16=10.67x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=46263 prefill_s=31.11 decode_s=24.06 vm_hwm_kb=Some(6597632) vm_rss_kb=Some(6542604)
+GLYPH_OPTICAL_LIVE_COMPLETE_OK

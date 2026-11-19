@@ -1,0 +1,48 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 vision_bytes=237253152 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/work31b/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 1072.52s pinned_layers=60/60 pinned_bytes=5814249520 embed_bytes=539492352 vm=(Some(6221248), Some(6221248))
+[run31b] vision encoded 640x480 -> n_soft=266 in 941.59s
+[run31b] prompt 289 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 11.05s (pinned=true)
+[run31b] layer 05/60 done in 11.60s (pinned=true)
+[run31b] layer 14/60 done in 11.36s (pinned=true)
+[run31b] layer 29/60 done in 11.09s (pinned=true)
+[run31b] layer 44/60 done in 9.00s (pinned=true)
+[run31b] layer 59/60 done in 13.22s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9986 read=0.997 hear=1.000 see=1.000 hf=1.08 cr=17.70 marg=4.939 prob=0.991 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 595.68s ssd_read_mb=0.0 vm=(Some(6825888), Some(6754992))
+PREFILL_TOP5 [236776:"A"(29.058), 2267:"An"(24.119), 818:"The"(21.641), 2094:"This"(21.418), 11634:"Two"(19.925)]
+[STEP 0] id=236776 text="A"
+[TRIMODAL] step=1 mode=CLEAN score=0.9553 read=0.901 hear=1.000 see=1.000 hf=0.95 cr=9.15 marg=1.733 prob=0.716 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 13.04s vm=(Some(7197296), Some(6655040))
+[STEP 1] id=32979 text=" motorcycle"
+[TRIMODAL] step=2 mode=CLEAN score=0.9651 read=0.922 hear=1.000 see=1.000 hf=0.94 cr=11.12 marg=1.607 prob=0.779 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 6.03s vm=(Some(7197296), Some(7121344))
+[STEP 2] id=563 text=" is"
+[TRIMODAL] step=3 mode=CLEAN score=0.9993 read=0.998 hear=1.000 see=1.000 hf=0.98 cr=15.65 marg=5.778 prob=0.995 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 3.62s vm=(Some(7197296), Some(7125732))
+[STEP 3] id=46105 text=" parked"
+[TRIMODAL] step=4 mode=CLEAN score=0.9766 read=0.948 hear=1.000 see=1.000 hf=0.99 cr=9.09 marg=1.897 prob=0.851 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 3.52s vm=(Some(7197296), Some(7118152))
+[STEP 4] id=580 text=" on"
+[TRIMODAL] step=5 mode=CLEAN score=0.9983 read=0.996 hear=1.000 see=1.000 hf=1.08 cr=14.51 marg=4.863 prob=0.989 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 3.49s vm=(Some(7197296), Some(7118884))
+[STEP 5] id=496 text=" a"
+[TRIMODAL] step=6 mode=CLEAN score=0.9660 read=0.925 hear=1.000 see=1.000 hf=0.97 cr=10.45 marg=1.930 prob=0.784 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 3.65s vm=(Some(7197296), Some(7106708))
+[STEP 6] id=94767 text=" grassy"
+[TRIMODAL] step=7 mode=CLEAN score=0.9663 read=0.925 hear=1.000 see=1.000 hf=0.97 cr=9.08 marg=2.434 prob=0.786 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 6 in 3.86s vm=(Some(7197296), Some(7086860))
+[STEP 7] id=2135 text=" field"
+[TRIMODAL] step=8 mode=CLEAN score=0.9914 read=0.981 hear=1.000 see=1.000 hf=0.94 cr=9.35 marg=3.713 prob=0.945 sieve=0.000 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 7 in 3.41s vm=(Some(7197296), Some(7087828))
+[STEP 8] id=236761 text="."
+[TRIMODAL] step=9 mode=CAUTION score=0.9611 read=1.000 hear=1.000 see=0.859 hf=1.09 cr=19.23 marg=12.305 prob=1.000 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 8 in 3.35s vm=(Some(7197296), Some(7089012))
+[STEP 9] id=106 text="<turn|>"
+GEN31B ids=[236776, 32979, 563, 46105, 580, 496, 94767, 2135, 236761, 106]
+GEN31B text="A motorcycle is parked on a grassy field.<turn|>"
+KV31B mode=Fp8E4M3 raw_bytes=537067520 compressed_bytes=136269440 shrink=3.94x
+MEM31B pinned_bytes=5814249520 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=11778 prefill_s=595.68 decode_s=43.98 vm_hwm_kb=Some(7197296) vm_rss_kb=Some(7089020)

@@ -1,8 +1,10 @@
 pub mod assistant;
 pub mod codec;
 pub mod cuneiform_tbi;
+pub mod glyph_kv;
 pub mod json;
 pub mod math;
+pub mod optical_carrier;
 pub mod packed;
 pub mod safetensors;
 pub mod sha256;

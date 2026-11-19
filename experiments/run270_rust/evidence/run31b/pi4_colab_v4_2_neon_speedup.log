@@ -1,0 +1,147 @@
+=== CASE 1: NEON-V2 OPT LOSSLESS (kv=glyph, lmhead-cs=exact, The capital of France is) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.88s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292940), Some(6292940))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.50s (pinned=true)
+[run31b] layer 05/60 done in 0.55s (pinned=true)
+[run31b] layer 14/60 done in 0.53s (pinned=true)
+[run31b] layer 29/60 done in 0.53s (pinned=true)
+[run31b] layer 44/60 done in 0.36s (pinned=true)
+[run31b] layer 59/60 done in 0.61s (pinned=true)
+[run31b] prefill done in 25.96s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536260))
+PREFILL_TOP5 [818:"The"(19.290), 236777:"I"(18.309), 79629:"Depending"(16.914), 4906:"One"(16.155), 3810:"There"(16.142)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 2.69s vm=(Some(6597664), Some(6536260))
+[STEP 1] id=5279 text=" capital"
+[run31b] decode step 1 in 2.67s vm=(Some(6597664), Some(6536260))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 2.68s vm=(Some(6597664), Some(6536260))
+[STEP 3] id=7001 text=" France"
+[run31b] decode step 3 in 2.75s vm=(Some(6597664), Some(6536260))
+[STEP 4] id=563 text=" is"
+[run31b] decode step 4 in 2.67s vm=(Some(6597664), Some(6536260))
+[STEP 5] id=5213 text=" **"
+[run31b] decode step 5 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 6] id=50429 text="Paris"
+[run31b] decode step 6 in 2.62s vm=(Some(6597664), Some(6536260))
+[STEP 7] id=84750 text="**."
+[run31b] decode step 7 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 8] id=106 text="<turn|>"
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=46858240 naive_bf16_bytes=23429120 compressed_bytes=46858240 glyph_tokens=0 exact_tokens=1560 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=23180 prefill_s=25.96 decode_s=21.37 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536260)
+=== CASE 2: NEON-V2 OPT SIEVE ABLATION (kv=glyph, lmhead-cs=sieve:0.25, The capital of France is) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 9.88s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292940), Some(6292940))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.51s (pinned=true)
+[run31b] layer 05/60 done in 0.55s (pinned=true)
+[run31b] layer 14/60 done in 0.52s (pinned=true)
+[run31b] layer 29/60 done in 0.54s (pinned=true)
+[run31b] layer 44/60 done in 0.36s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 26.32s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536260))
+PREFILL_TOP5 [818:"The"(19.290), 236777:"I"(18.309), 4906:"One"(16.155), 1018:"**"(16.098), 1509:"It"(15.747)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 2.53s vm=(Some(6597664), Some(6536260))
+[STEP 1] id=506 text=" the"
+[run31b] decode step 1 in 2.55s vm=(Some(6597664), Some(6536260))
+[STEP 2] id=5279 text=" capital"
+[run31b] decode step 2 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 3] id=529 text=" of"
+[run31b] decode step 3 in 2.67s vm=(Some(6597664), Some(6536260))
+[STEP 4] id=7001 text=" France"
+[run31b] decode step 4 in 2.56s vm=(Some(6597664), Some(6536260))
+[STEP 5] id=563 text=" is"
+[run31b] decode step 5 in 2.55s vm=(Some(6597664), Some(6536260))
+[STEP 6] id=5213 text=" **"
+[run31b] decode step 6 in 2.54s vm=(Some(6597664), Some(6536260))
+[STEP 7] id=50429 text="Paris"
+[run31b] decode step 7 in 2.55s vm=(Some(6597664), Some(6536260))
+[STEP 8] id=84750 text="**."
+[run31b] decode step 8 in 2.61s vm=(Some(6597664), Some(6536260))
+[STEP 9] id=106 text="<turn|>"
+GEN31B ids=[818, 506, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The the capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=2376735 prefill_s=26.32 decode_s=23.20 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536260)
+=== CASE 3: NEON-V2 OPT + CS-SKIP 0.05 (kv=glyph, lmhead-cs=exact, The capital of France is) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled Cauchy-Schwarz down_proj tile skip: thresh=5.00e-2 mats=60 norms_bytes=3386880
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 36.31s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6296252), Some(6296252))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.51s (pinned=true)
+[run31b] layer 05/60 done in 0.55s (pinned=true)
+[run31b] layer 14/60 done in 0.51s (pinned=true)
+[run31b] layer 29/60 done in 0.54s (pinned=true)
+[run31b] layer 44/60 done in 0.36s (pinned=true)
+[run31b] layer 59/60 done in 0.64s (pinned=true)
+[run31b] prefill done in 26.33s ssd_read_mb=0.0 vm=(Some(6600992), Some(6539572))
+PREFILL_TOP5 [818:"The"(19.116), 236777:"I"(18.103), 79629:"Depending"(16.922), 1018:"**"(16.162), 3810:"There"(16.127)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 2.64s vm=(Some(6600992), Some(6539572))
+[STEP 1] id=5279 text=" capital"
+[run31b] decode step 1 in 2.61s vm=(Some(6600992), Some(6539572))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 2.67s vm=(Some(6600992), Some(6539572))
+[STEP 3] id=7001 text=" France"
+[run31b] decode step 3 in 2.66s vm=(Some(6600992), Some(6539572))
+[STEP 4] id=563 text=" is"
+[run31b] decode step 4 in 2.63s vm=(Some(6600992), Some(6539572))
+[STEP 5] id=5213 text=" **"
+[run31b] decode step 5 in 2.61s vm=(Some(6600992), Some(6539572))
+[STEP 6] id=506 text=" the"
+[run31b] decode step 6 in 2.66s vm=(Some(6600992), Some(6539572))
+[STEP 7] id=3207 text=" city"
+[run31b] decode step 7 in 2.63s vm=(Some(6600992), Some(6539572))
+[STEP 8] id=529 text=" of"
+[run31b] decode step 8 in 2.65s vm=(Some(6600992), Some(6539572))
+[STEP 9] id=9079 text=" Paris"
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 506, 3207, 529, 9079]
+GEN31B text="The capital of France is ** the city of Paris"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=1026819 lmhead_cs_skipped_blocks=23444 prefill_s=26.33 decode_s=23.77 vm_hwm_kb=Some(6600992) vm_rss_kb=Some(6539572)
+=== CASE 4: NEON-V2 OPT BATCH_K k=4 LOSSLESS (kv=glyph, lmhead-cs=exact, What is 2 + 2?) ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.88s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6292940), Some(6292940))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.60s (pinned=true)
+[run31b] layer 05/60 done in 0.66s (pinned=true)
+[run31b] layer 14/60 done in 0.61s (pinned=true)
+[run31b] layer 29/60 done in 0.64s (pinned=true)
+[run31b] layer 44/60 done in 0.48s (pinned=true)
+[run31b] layer 59/60 done in 0.86s (pinned=true)
+[run31b] prefill done in 32.16s ssd_read_mb=0.0 vm=(Some(6597664), Some(6536260))
+PREFILL_TOP5 [818:"The"(23.227), 1018:"**"(19.742), 2021:"To"(18.954), 3810:"There"(17.790), 11634:"Two"(17.634)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 2.67s vm=(Some(6597664), Some(6536260))
+[STEP 1] id=3890 text=" answer"
+[run31b] decode step 1 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 2] id=563 text=" is"
+[run31b] decode step 2 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 3] id=236743 text=" "
+[run31b] decode step 3 in 2.63s vm=(Some(6597664), Some(6536260))
+[STEP 4] id=236812 text="4"
+[run31b] decode step 4 in 2.64s vm=(Some(6597664), Some(6536260))
+[STEP 5] id=236761 text="."
+[run31b] decode step 5 in 2.66s vm=(Some(6597664), Some(6536260))
+[STEP 6] id=106 text="<turn|>"
+BATCH_K k=4 body_s=5.803 head_s=0.369 total_s=6.171 s_per_tok=1.543 head_ms_per_tok=92.2 top1s=[2558, 563, 236743, 236812]
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=55869440 naive_bf16_bytes=27934720 compressed_bytes=55869440 glyph_tokens=0 exact_tokens=1860 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=16536 prefill_s=32.16 decode_s=15.87 vm_hwm_kb=Some(6597664) vm_rss_kb=Some(6536260)
+NEON_SPEEDUP_SUITE_COMPLETE_OK

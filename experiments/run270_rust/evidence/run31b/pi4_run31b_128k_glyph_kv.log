@@ -1,0 +1,10 @@
+=== RUN31B 60-LAYER 128K GLYPH-KV (EXACT POST-ROPE K/V DUAL-ROAD 4+32) ===
+[run31b] --bench-128k-kv mode=Glyph seq_len=131072 k_eq_v=false layers=60 threads=4 native_glyph_c=true
+KV128K_BENCH mode=Glyph seq_len=131072 k_eq_v=false layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=13.94 ref512_cos=0.62159 global_resident_mb=965.36 global_naive_bf16_mb=10240.00 global_shrink_bf16=10.61x total_resident_mb=1088.02 total_naive_bf16_mb=11040.00 total_shrink_bf16=10.15x total_shrink_fp32=20.29x global_10l_ms=6050.87 sliding_50l_ms=147.11 total_60l_ms=6197.98 checksum=7.73790 vm_hwm_kb=Some(1178000) vm_rss_kb=Some(1131084)
+=== RUN31B 60-LAYER 128K GLYPH-KV (SHARED-STREAM k_eq_v DUAL-ROAD 4+32) ===
+[run31b] --bench-128k-kv mode=Glyph seq_len=131072 k_eq_v=true layers=60 threads=4 native_glyph_c=true
+KV128K_BENCH mode=Glyph seq_len=131072 k_eq_v=true layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=7.30 ref512_cos=0.63104 global_resident_mb=482.68 global_naive_bf16_mb=10240.00 global_shrink_bf16=21.21x total_resident_mb=605.34 total_naive_bf16_mb=11040.00 total_shrink_bf16=18.24x total_shrink_fp32=36.48x global_10l_ms=5958.56 sliding_50l_ms=141.10 total_60l_ms=6099.66 checksum=7.73790 vm_hwm_kb=Some(683372) vm_rss_kb=Some(636476)
+=== RUN31B 60-LAYER 128K GLYPH-KV (SHARED-STREAM k_eq_v PURE OPT5 48B) ===
+[run31b] --bench-128k-kv mode=GlyphPure seq_len=131072 k_eq_v=true layers=60 threads=4 native_glyph_c=true
+KV128K_BENCH mode=GlyphPure seq_len=131072 k_eq_v=true layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=7.20 ref512_cos=0.57209 global_resident_mb=480.00 global_naive_bf16_mb=10240.00 global_shrink_bf16=21.33x total_resident_mb=555.00 total_naive_bf16_mb=11040.00 total_shrink_bf16=19.89x total_shrink_fp32=39.78x global_10l_ms=6499.60 sliding_50l_ms=87.05 total_60l_ms=6586.66 checksum=5.58097 vm_hwm_kb=Some(631976) vm_rss_kb=Some(585244)
+BENCH_128K_KV_COMPLETE_OK

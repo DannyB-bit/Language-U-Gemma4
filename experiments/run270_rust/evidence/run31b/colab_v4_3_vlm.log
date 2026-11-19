@@ -1,0 +1,268 @@
+{"pid":7,"type":"jupyter","level":40,"msg":"  warn(","time":"2026-11-19T00:05:47.032Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[W 2026-11-19 00:05:47.032 ServerApp] ServerApp.token config is deprecated in 2.0. Use IdentityProvider.token.","time":"2026-11-19T00:05:47.034Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"ServerApp.iopub_data_rate_limit config is deprecated in 2.0. Use ZMQChannelsWebsocketConnection.iopub_data_rate_limit.","time":"2026-11-19T00:05:47.034Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/etc/jupyter/jupyter_server_config.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/google.colab._serverextension.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/google.colab.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/ipyparallel.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/jupyter_server_terminals.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/jupytext.json","time":"2026-11-19T00:05:47.419Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/nbclassic.json","time":"2026-11-19T00:05:47.420Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/notebook_shim.json","time":"2026-11-19T00:05:47.420Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.d/panel-client-jupyter.json","time":"2026-11-19T00:05:47.420Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_server_config.json","time":"2026-11-19T00:05:47.420Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/etc/jupyter/jupyter_server_config.json","time":"2026-11-19T00:05:47.423Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/root/.local/etc/jupyter/jupyter_server_config.json","time":"2026-11-19T00:05:47.424Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/root/.jupyter/jupyter_server_config.json","time":"2026-11-19T00:05:47.424Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Extension package ipyparallel took 0.1271s to import","time":"2026-11-19T00:05:47.557Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"A `_jupyter_server_extension_points` function was not found in ipyparallel. Instead, a `_jupyter_server_extension_paths` function was found and will be used for now. This function name will be deprecated in future releases of Jupyter Server.","time":"2026-11-19T00:05:47.557Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Extension package jupyterlab_jupytext took 0.3379s to import","time":"2026-11-19T00:05:47.914Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"A `_jupyter_server_extension_points` function was not found in nbclassic. Instead, a `_jupyter_server_extension_paths` function was found and will be used for now. This function name will be deprecated in future releases of Jupyter Server.","time":"2026-11-19T00:05:47.927Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Extension package panel.io.jupyter_server_extension took 1.8600s to import","time":"2026-11-19T00:05:49.790Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"google.colab ","time":"2026-11-19T00:05:49.790Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"google.colab._serverextension ","time":"2026-11-19T00:05:49.790Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"ipyparallel ","time":"2026-11-19T00:05:49.790Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"jupyter_server_terminals ","time":"2026-11-19T00:05:49.797Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"jupyterlab_jupytext ","time":"2026-11-19T00:05:49.797Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"nbclassic ","time":"2026-11-19T00:05:49.802Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Writing Jupyter server cookie secret to /root/.local/share/jupyter/runtime/jupyter_cookie_secret","time":"2026-11-19T00:05:49.803Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/root/.jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/etc/jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_notebook_config.d/ipyparallel.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_notebook_config.d/jupytext.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_notebook_config.d/panel-client-jupyter.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/local/etc/jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.805Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/usr/etc/jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.807Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/root/.local/etc/jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.808Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \t/root/.jupyter/jupyter_notebook_config.json","time":"2026-11-19T00:05:49.808Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"notebook_shim ","time":"2026-11-19T00:05:49.808Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"panel.io.jupyter_server_extension ","time":"2026-11-19T00:05:49.808Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"Customizing authentication via ServerApp.login_handler_class=<class 'google.colab._login_handler.ColabLoginHandler'> is deprecated in Jupyter Server 2.0. Use ServerApp.identity_provider_class. Falling back on legacy authentication.","time":"2026-11-19T00:05:49.912Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"notebook_shim ","time":"2026-11-19T00:05:49.948Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"google.colab ","time":"2026-11-19T00:05:49.949Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"google.colab server extension initialized on gpu-l4-s-ass1a1-1xmo5vxmatsnb.","time":"2026-11-19T00:05:49.954Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"google.colab._serverextension ","time":"2026-11-19T00:05:49.954Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Loading IPython parallel extension","time":"2026-11-19T00:05:49.958Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"ipyparallel ","time":"2026-11-19T00:05:49.959Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"jupyter_server_terminals ","time":"2026-11-19T00:05:49.960Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"[Jupytext Server Extension] Deriving an AsyncTextFileContentsManager from AsyncLargeFileManager","time":"2026-11-19T00:05:49.960Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"jupyterlab_jupytext ","time":"2026-11-19T00:05:49.961Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"nbclassic ","time":"2026-11-19T00:05:49.974Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"panel.io.jupyter_server_extension ","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Serving notebooks from local directory: /","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Jupyter Server 2.20.0 is running at:","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"http://172.28.0.12:9000/","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"    http://127.0.0.1:9000/","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Use Control-C to stop this server and shut down all kernels (twice to skip confirmation).","time":"2026-11-19T00:05:49.975Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - Debugger warning: It seems that frozen modules are being used, which may","time":"2026-11-19T01:22:23.680Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off","time":"2026-11-19T01:22:23.680Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - to python to disable frozen modules.","time":"2026-11-19T01:22:23.681Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.","time":"2026-11-19T01:22:23.681Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Kernel started: ad0ad4b7-9553-4b8b-9534-1442764ae2dd","time":"2026-11-19T01:22:24.961Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - Debugger warning: It seems that frozen modules are being used, which may","time":"2026-11-19T01:22:25.325Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off","time":"2026-11-19T01:22:25.325Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - to python to disable frozen modules.","time":"2026-11-19T01:22:25.325Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.","time":"2026-11-19T01:22:25.325Z","v":0}
+{"pid":7,"type":"jupyter","level":30,"msg":"Connecting to kernel ad0ad4b7-9553-4b8b-9534-1442764ae2dd.","time":"2026-11-19T01:22:26.487Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"The websocket_ping_timeout (90000) cannot be longer than the websocket_ping_interval (30000).","time":"2026-11-19T01:22:26.489Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Setting websocket_ping_timeout=30000","time":"2026-11-19T01:22:26.489Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Colab Host] HIGH_RAM_HOST=True (53.0 GiB total, used=3.6 GiB)","time":"2026-11-19T01:23:49.755Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Gate 0] libfast_quant.so compiled and verified exact t16c_tblk_bytes parity.","time":"2026-11-19T01:23:50.964Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Gate 0b] pack_matrix_gpu_gptq + Woodbury Dual + fwht_2sided_gpu + gptq_quant_gpu == C parity verified.","time":"2026-11-19T01:23:52.914Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Gate 0c] Full-scale down_proj (5376x21504, r=16, n_ev=2048) peak VRAM PASS (gpu0=7.92GiB, dt=9.5s).","time":"2026-11-19T01:24:02.388Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Gate 0d] Exact HF bidirectional vision sliding-window SDPA mask parity verified.","time":"2026-11-19T01:24:02.934Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 1] Downloading google/gemma-4-31B-it-qat-w4a16-ct...","time":"2026-11-19T01:24:02.934Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.","time":"2026-11-19T01:24:03.928Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[High-RAM] Pre-warmed 21.67 GiB model.safetensors into Linux page cache in 15.2s","time":"2026-11-19T01:25:23.790Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 1] Loading & auditing FULL clean text datasets (zero sample truncation, zero contamination)...","time":"2026-11-19T01:25:25.120Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 1] Total clean corpus items audited: 82,629 examples across GSM8K/Code/Alpaca/WikiText-2.","time":"2026-11-19T01:25:52.812Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 1] Packed 608 dense text sequences x 352 = 214,016 text tokens (1,621 clean turns); awaiting Stage 2 for 160 VLM sequences.","time":"2026-11-19T01:25:53.512Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2] 100% 3-Bit Vision Tower Calibration (128 disjoint COCO val[64:] + 32 Optical VA -> 193 T16C mats; val[0..3] held out)...","time":"2026-11-19T01:25:53.512Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2] Prepared 160 multimodal VLM pairs (128 disjoint COCO val[64:] + 32 Optical VA) + 4 strictly held-out COCO val[0..3] eval pairs.","time":"2026-11-19T01:26:04.082Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2] Vision Hessians collected over 41,858 soft tokens (160 calibration frames, 0 held-out frames).","time":"2026-11-19T01:27:12.140Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2] Packed ALL 193 3-bit Vision mats + 164 norms = 237.27 MB!","time":"2026-11-19T01:28:35.791Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2 DONE] 3-Bit Vision Student Val Soft-Token Cosine: 0.90789 -> 0.91714 (keep=True) | Held-Out COCO val[0..3] Soft-Token Cosine=0.90586","time":"2026-11-19T01:29:19.241Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 2b] Final Multimodal Calibration Tensor: (768, 352) = 270,336 live tokens (608 text + 160 VLM), ans_tokens=132,237 (vlm_caption_ans=3,181)","time":"2026-11-19T01:29:26.223Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Budget Guard] Predicted unified .t16c: LM=6.111GB + VIS=237.3MB = 6,354,441,696 B (5.918 GiB)","time":"2026-11-19T01:29:26.225Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 3] Streaming 60 LM layers across 270,336 tokens on T4 GPU...","time":"2026-11-19T01:29:26.225Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 3] Packing embed_tokens.weight (3b_u0 @ b256)...","time":"2026-11-19T01:29:29.884Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L00/59 S] txt_cos=0.99758 heldout_vlm_cos=0.98738 dt=63.7s elap=427.9s ram=14.45GiB","time":"2026-11-19T01:30:57.670Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L02/59 S] txt_cos=0.99569 heldout_vlm_cos=0.94493 dt=76.3s elap=579.2s ram=14.56GiB","time":"2026-11-19T01:33:28.965Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L04/59 S] txt_cos=0.99628 heldout_vlm_cos=0.95683 dt=69.2s elap=713.9s ram=14.52GiB","time":"2026-11-19T01:35:43.692Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L05/59 F] txt_cos=0.99798 heldout_vlm_cos=0.97841 dt=79.0s elap=792.9s ram=14.53GiB","time":"2026-11-19T01:37:02.675Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L10/59 S] txt_cos=0.99748 heldout_vlm_cos=0.99397 dt=67.6s elap=1149.2s ram=14.50GiB","time":"2026-11-19T01:42:58.950Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L14/59 S] txt_cos=0.99726 heldout_vlm_cos=0.99459 dt=77.1s elap=1452.1s ram=14.58GiB","time":"2026-11-19T01:48:01.810Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L15/59 S] txt_cos=0.99683 heldout_vlm_cos=0.99580 dt=73.5s elap=1525.6s ram=14.46GiB","time":"2026-11-19T01:49:15.337Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L19/59 S] txt_cos=0.99529 heldout_vlm_cos=0.99512 dt=84.9s elap=1825.1s ram=14.48GiB","time":"2026-11-19T01:54:14.895Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L20/59 S] txt_cos=0.99488 heldout_vlm_cos=0.99471 dt=68.6s elap=1893.7s ram=14.43GiB","time":"2026-11-19T01:55:23.457Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L25/59 S] txt_cos=0.97908 heldout_vlm_cos=0.98359 dt=74.4s elap=2277.7s ram=14.58GiB","time":"2026-11-19T02:01:47.426Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L30/59 S] txt_cos=0.96978 heldout_vlm_cos=0.97663 dt=69.1s elap=2666.6s ram=14.43GiB","time":"2026-11-19T02:08:16.347Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L35/59 F] txt_cos=0.96753 heldout_vlm_cos=0.97126 dt=78.3s elap=3024.4s ram=14.52GiB","time":"2026-11-19T02:14:14.175Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L40/59 S] txt_cos=0.86897 heldout_vlm_cos=0.86798 dt=67.8s elap=3389.9s ram=14.44GiB","time":"2026-11-19T02:20:19.704Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L45/59 S] txt_cos=0.86881 heldout_vlm_cos=0.86140 dt=66.8s elap=3741.7s ram=14.45GiB","time":"2026-11-19T02:26:11.410Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L50/59 S] txt_cos=0.85416 heldout_vlm_cos=0.82116 dt=68.0s elap=4182.2s ram=14.48GiB","time":"2026-11-19T02:33:31.939Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L55/59 S] txt_cos=0.75494 heldout_vlm_cos=0.62608 dt=69.5s elap=4533.2s ram=14.43GiB","time":"2026-11-19T02:39:23.000Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L56/59 S] txt_cos=0.72544 heldout_vlm_cos=0.60204 dt=69.7s elap=4602.9s ram=14.44GiB","time":"2026-11-19T02:40:32.658Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L57/59 S] txt_cos=0.67796 heldout_vlm_cos=0.66452 dt=104.9s elap=4707.9s ram=14.45GiB","time":"2026-11-19T02:42:17.606Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L58/59 S] txt_cos=0.76631 heldout_vlm_cos=0.76033 dt=207.6s elap=4915.4s ram=16.28GiB","time":"2026-11-19T02:45:45.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [LM L59/59 F] txt_cos=0.82126 heldout_vlm_cos=0.89390 dt=209.0s elap=5124.4s ram=16.43GiB","time":"2026-11-19T02:49:14.203Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 3 DONE] Unified .t16c flushed to /content/out_v4_3_vlm/gemma4_31b_v4_3_vlm.t16c (6,353,854,848 B, 5.917 GiB) | ram=16.44GiB","time":"2026-11-19T02:49:18.844Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 4] Training 300-step Multi-Layer Multimodal C8DB Encyclopedia (L58->L59 Causal + Wiener + post_cell60 + Vision)...","time":"2026-11-19T02:49:18.982Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [C8DB-KV] model.language_model.layers.58.self_attn.k_proj.weight: val_cos 0.83190 -> 0.84229 (300 steps, keep=True)","time":"2026-11-19T02:49:29.037Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [C8DB-KV] model.language_model.layers.58.self_attn.v_proj.weight: val_cos 0.81189 -> 0.81212 (300 steps, keep=False)","time":"2026-11-19T02:49:39.492Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [C8DB-KV] model.language_model.layers.59.self_attn.k_proj.weight: val_cos 0.83940 -> 0.85421 (300 steps, keep=True)","time":"2026-11-19T02:50:01.133Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Causal L58->L59 C8DB Parity] L59 VLM state_cos: 0.88811 -> 0.88896 | ram=14.39GiB","time":"2026-11-19T02:50:13.766Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Wiener RMSNorm] val_mse 10.66201 -> 9.09266 using=Wiener","time":"2026-11-19T02:50:17.691Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [post_cell60 Samples] Total=32,768 (text_ans=29,587 + vlm_caption_ans=3,181)","time":"2026-11-19T02:50:17.701Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [post_cell60 Before] Val (n=6554): KL=3.1144 Top1=55.8% Agree=61.5% Margin=+0.657","time":"2026-11-19T02:50:45.858Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 001/300 loss=26.9417 | Va: KL=3.1549 Top1=55.6% Agree=61.4% Marg=+0.556","time":"2026-11-19T02:50:46.133Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 050/300 loss=20.6810 | Va: KL=2.7666 Top1=57.6% Agree=63.0% Marg=+0.933","time":"2026-11-19T02:50:50.723Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 100/300 loss=19.4528 | Va: KL=2.8057 Top1=58.0% Agree=63.1% Marg=+1.083","time":"2026-11-19T02:50:55.397Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 150/300 loss=18.8284 | Va: KL=2.8285 Top1=58.3% Agree=63.4% Marg=+1.197","time":"2026-11-19T02:51:00.072Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 200/300 loss=18.0748 | Va: KL=2.8699 Top1=58.4% Agree=63.4% Marg=+1.244","time":"2026-11-19T02:51:04.749Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 250/300 loss=18.3234 | Va: KL=2.8760 Top1=58.3% Agree=63.4% Marg=+1.224","time":"2026-11-19T02:51:09.425Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    step 300/300 loss=17.7258 | Va: KL=2.9093 Top1=58.3% Agree=63.6% Marg=+1.272","time":"2026-11-19T02:51:14.104Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [post_cell60 Quantized INT8] Val KL: 3.1144->2.8699, Top1: 55.8%->58.4%, Agree: 61.5%->63.4%, Margin: +0.657->+1.244","time":"2026-11-19T02:51:14.291Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[Stage 5] Evaluating strictly held-out COCO val[0..3] (NEVER in Hessians/C8DB) Teacher vs V4.3 Student...","time":"2026-11-19T02:51:14.292Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Held-Out val[0]] cos=0.85090 top1_agr=61.5% top5_agr=69.2% | GT='A black Honda motorcycle parked in front of a garage.'","time":"2026-11-19T02:51:15.743Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Teacher top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"562:' A'\", \"92736:'Detailed'\"] | Student top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"818:'The'\", \"11634:'Two'\"]","time":"2026-11-19T02:51:15.744Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Student TF-pred='A motorcycle motorcycle motorcycle is on a of a green.\\n'","time":"2026-11-19T02:51:15.744Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Held-Out val[1]] cos=0.80755 top1_agr=30.8% top5_agr=76.9% | GT='An office cubicle with four different types of computers.'","time":"2026-11-19T02:51:15.841Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Teacher top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"818:'The'\", \"92736:'Detailed'\"] | Student top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"818:'The'\", \"11634:'Two'\"]","time":"2026-11-19T02:51:15.841Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Student TF-pred='A indoor withbed with a computers computers of computers and\\n'","time":"2026-11-19T02:51:15.841Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Held-Out val[2]] cos=0.85318 top1_agr=45.5% top5_agr=72.7% | GT='A small closed toilet in a cramped space.'","time":"2026-11-19T02:51:15.972Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Teacher top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"818:'The'\", \"13238:'High'\"] | Student top5[0]=[\"236776:'A'\", \"2267:'An'\", \"2094:'This'\", \"818:'The'\", \"236746:'a'\"]","time":"2026-11-19T02:51:15.972Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Student TF-pred='A beige, toilet in a bathroom room.\\n'","time":"2026-11-19T02:51:15.972Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  [Held-Out val[3]] cos=0.85187 top1_agr=53.8% top5_agr=84.6% | GT='Two women waiting at a bench next to a street.'","time":"2026-11-19T02:51:16.072Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Teacher top5[0]=[\"11634:'Two'\", \"236776:'A'\", \"8512:' Two'\", \"2267:'An'\", \"18370:'People'\"] | Student top5[0]=[\"236776:'A'\", \"11634:'Two'\", \"2267:'An'\", \"2094:'This'\", \"18370:'People'\"]","time":"2026-11-19T02:51:16.072Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    Student TF-pred='A people are on a bus in to a building.\\n'","time":"2026-11-19T02:51:16.072Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"[STAGE 2 COMPLETE] {","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"version\": \"V4.3-VLM\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"total_time_s\": 5246.43,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"unified_t16c\": \"/content/out_v4_3_vlm/gemma4_31b_v4_3_vlm.t16c\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"unified_t16c_bytes\": 6353854848,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"unified_t16c_gib\": 5.9175,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"lm_mats\": 411,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vision_mats\": 193,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"total_mats\": 604,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"total_norms\": 585,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"c8db_path\": \"/content/out_v4_3_vlm/gemma4_31b_v4_3_vlm_c8d.c8d\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"c8db_bytes\": 9317184,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"c8db_entries\": [","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \"model.embed_vision.embedding_projection.weight\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \"model.language_model.layers.58.self_attn.k_proj.weight\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \"model.language_model.layers.59.self_attn.k_proj.weight\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    \"model.language_model.norm.post_cell60\"","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  ],","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vision_val_cos_before\": 0.9078918099403381,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vision_val_cos_after\": 0.9171391725540161,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"heldout_vis_soft_cos\": 0.9058576226234436,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"l59_state_cos_before_c8d\": 0.8881110548973083,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"l59_state_cos_after_c8d\": 0.8889632821083069,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_kl_before\": 3.114440750340918,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_kl_after\": 2.8699246110587286,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_top1_before\": 0.5584375953616112,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_top1_after\": 0.5843759536161123,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_agree_before\": 0.6145865120537076,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"post_cell60_val_agree_after\": 0.6335062557216967,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"tokens_calibrated\": 270336,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vlm_sequences_calibrated\": 160,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vlm_caption_ans_tokens\": 3181,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"dense_turns_packed\": 1781,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"vision_frames_calibrated\": 160,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"clean_dataset_examples\": 82629,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  \"heldout_coco_val0_3\": [","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    {","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"val_idx\": 0,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"gt_caption\": \"A black Honda motorcycle parked in front of a garage.\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_cos\": 0.8509,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top1_agree\": 0.6154,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top5_agree\": 0.6923,","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_first_top5\": [","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"562:' A'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"92736:'Detailed'\"","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_first_top5\": [","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"818:'The'\",","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"11634:'Two'\"","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.183Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_forced_pred\": \"A vintage Honda motorcycle with on a of a garage on\\n\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_forced_pred\": \"A motorcycle motorcycle motorcycle is on a of a green.\\n\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    },","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    {","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"val_idx\": 1,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"gt_caption\": \"An office cubicle with four different types of computers.\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_cos\": 0.80755,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top1_agree\": 0.3077,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top5_agree\": 0.7692,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"818:'The'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"92736:'Detailed'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"818:'The'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"11634:'Two'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_forced_pred\": \"A image cubicle is multiple computer computer of computer is\\n\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_forced_pred\": \"A indoor withbed with a computers computers of computers and\\n\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    },","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    {","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"val_idx\": 2,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"gt_caption\": \"A small closed toilet in a cramped space.\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_cos\": 0.85318,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top1_agree\": 0.4545,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top5_agree\": 0.7273,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"818:'The'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"13238:'High'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"818:'The'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236746:'a'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_forced_pred\": \"A high bathroom- room a bathroom bathroom with\\n\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_forced_pred\": \"A beige, toilet in a bathroom room.\\n\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    },","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    {","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"val_idx\": 3,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"gt_caption\": \"Two women waiting at a bench next to a street.\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_cos\": 0.85187,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top1_agree\": 0.5385,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"ans_top5_agree\": 0.8462,","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"11634:'Two'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"8512:' Two'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"18370:'People'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_first_top5\": [","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"236776:'A'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"11634:'Two'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2267:'An'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"2094:'This'\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"        \"18370:'People'\"","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      ],","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"teacher_forced_pred\": \"Two women are at a bus by to a bus bus\\n\",","time":"2026-11-19T02:51:16.184Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"      \"student_forced_pred\": \"A people are on a bus in to a building.\\n\"","time":"2026-11-19T02:51:16.185Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"    }","time":"2026-11-19T02:51:16.185Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"  ]","time":"2026-11-19T02:51:16.185Z","v":0}
+{"pid":7,"type":"jupyter","level":40,"msg":"}","time":"2026-11-19T02:51:16.185Z","v":0}

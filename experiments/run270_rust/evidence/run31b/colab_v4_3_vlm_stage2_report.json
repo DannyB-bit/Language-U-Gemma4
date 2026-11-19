@@ -1,0 +1,130 @@
+{
+  "version": "V4.3-VLM",
+  "total_time_s": 5246.43,
+  "unified_t16c": "/content/out_v4_3_vlm/gemma4_31b_v4_3_vlm.t16c",
+  "unified_t16c_bytes": 6353854848,
+  "unified_t16c_gib": 5.9175,
+  "lm_mats": 411,
+  "vision_mats": 193,
+  "total_mats": 604,
+  "total_norms": 585,
+  "c8db_path": "/content/out_v4_3_vlm/gemma4_31b_v4_3_vlm_c8d.c8d",
+  "c8db_bytes": 9317184,
+  "c8db_entries": [
+    "model.embed_vision.embedding_projection.weight",
+    "model.language_model.layers.58.self_attn.k_proj.weight",
+    "model.language_model.layers.59.self_attn.k_proj.weight",
+    "model.language_model.norm.post_cell60"
+  ],
+  "vision_val_cos_before": 0.9078918099403381,
+  "vision_val_cos_after": 0.9171391725540161,
+  "heldout_vis_soft_cos": 0.9058576226234436,
+  "l59_state_cos_before_c8d": 0.8881110548973083,
+  "l59_state_cos_after_c8d": 0.8889632821083069,
+  "post_cell60_val_kl_before": 3.114440750340918,
+  "post_cell60_val_kl_after": 2.8699246110587286,
+  "post_cell60_val_top1_before": 0.5584375953616112,
+  "post_cell60_val_top1_after": 0.5843759536161123,
+  "post_cell60_val_agree_before": 0.6145865120537076,
+  "post_cell60_val_agree_after": 0.6335062557216967,
+  "tokens_calibrated": 270336,
+  "vlm_sequences_calibrated": 160,
+  "vlm_caption_ans_tokens": 3181,
+  "dense_turns_packed": 1781,
+  "vision_frames_calibrated": 160,
+  "clean_dataset_examples": 82629,
+  "heldout_coco_val0_3": [
+    {
+      "val_idx": 0,
+      "gt_caption": "A black Honda motorcycle parked in front of a garage.",
+      "ans_cos": 0.8509,
+      "ans_top1_agree": 0.6154,
+      "ans_top5_agree": 0.6923,
+      "teacher_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "562:' A'",
+        "92736:'Detailed'"
+      ],
+      "student_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "818:'The'",
+        "11634:'Two'"
+      ],
+      "teacher_forced_pred": "A vintage Honda motorcycle with on a of a garage on\n",
+      "student_forced_pred": "A motorcycle motorcycle motorcycle is on a of a green.\n"
+    },
+    {
+      "val_idx": 1,
+      "gt_caption": "An office cubicle with four different types of computers.",
+      "ans_cos": 0.80755,
+      "ans_top1_agree": 0.3077,
+      "ans_top5_agree": 0.7692,
+      "teacher_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "818:'The'",
+        "92736:'Detailed'"
+      ],
+      "student_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "818:'The'",
+        "11634:'Two'"
+      ],
+      "teacher_forced_pred": "A image cubicle is multiple computer computer of computer is\n",
+      "student_forced_pred": "A indoor withbed with a computers computers of computers and\n"
+    },
+    {
+      "val_idx": 2,
+      "gt_caption": "A small closed toilet in a cramped space.",
+      "ans_cos": 0.85318,
+      "ans_top1_agree": 0.4545,
+      "ans_top5_agree": 0.7273,
+      "teacher_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "818:'The'",
+        "13238:'High'"
+      ],
+      "student_first_top5": [
+        "236776:'A'",
+        "2267:'An'",
+        "2094:'This'",
+        "818:'The'",
+        "236746:'a'"
+      ],
+      "teacher_forced_pred": "A high bathroom- room a bathroom bathroom with\n",
+      "student_forced_pred": "A beige, toilet in a bathroom room.\n"
+    },
+    {
+      "val_idx": 3,
+      "gt_caption": "Two women waiting at a bench next to a street.",
+      "ans_cos": 0.85187,
+      "ans_top1_agree": 0.5385,
+      "ans_top5_agree": 0.8462,
+      "teacher_first_top5": [
+        "11634:'Two'",
+        "236776:'A'",
+        "8512:' Two'",
+        "2267:'An'",
+        "18370:'People'"
+      ],
+      "student_first_top5": [
+        "236776:'A'",
+        "11634:'Two'",
+        "2267:'An'",
+        "2094:'This'",
+        "18370:'People'"
+      ],
+      "teacher_forced_pred": "Two women are at a bus by to a bus bus\n",
+      "student_forced_pred": "A people are on a bus in to a building.\n"
+    }
+  ]
+}

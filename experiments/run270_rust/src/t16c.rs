@@ -10,10 +10,7 @@
 use crate::codec::{fp16_to_f32, fp32_to_fp16};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
-#[cfg(not(unix))]
-use std::io::BufReader;
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::ptr;
 #[cfg(unix)]
@@ -1022,6 +1019,40 @@ pub type LmHeadCsTile16BatchFn = unsafe extern "C" fn(
     out_skipped_blks: *mut i64,
 ) -> i32;
 
+pub type EncodeKvGlyphFastFn = unsafe extern "C" fn(
+    kv_in: *const f32,
+    cb: *const f32,
+    lut_6561: *const u16,
+    glyphs_out: *mut u8,
+    n_glyphs: i32,
+    codec_id: i32,
+    bytes_per_glyph: i32,
+    apply_fwht8: i32,
+    num_threads: i32,
+);
+
+pub type FlashGlyphAttentionGqaFn = unsafe extern "C" fn(
+    q: *const f32,
+    k_glyphs: *const u8,
+    v_glyphs: *const u8,
+    codebook_s7: *const f32,
+    out_context: *mut f32,
+    out_max_score: *mut f32,
+    out_sum_exp: *mut f32,
+    n_q_heads: i32,
+    n_kv_heads: i32,
+    head_dim: i32,
+    seq_len: i32,
+    kv_seq_stride_bytes: usize,
+    kv_head_stride_bytes: usize,
+    attn_scale: f32,
+    codec_id: i32,
+    bytes_per_glyph: i32,
+    apply_fwht8: i32,
+    k_eq_v: i32,
+    num_threads: i32,
+) -> i32;
+
 pub struct NativeTile16Kernel {
     handle: usize,
     pub path: String,
@@ -1029,6 +1060,8 @@ pub struct NativeTile16Kernel {
     pub inv_s_fwht_fn: Option<InvSFwhtF32Fn>,
     pub lowrank_add_fn: Option<Int8LowRankAddBatchFn>,
     pub lmhead_cs_fn: Option<LmHeadCsTile16BatchFn>,
+    pub encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn>,
+    pub flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn>,
 }
 
 unsafe impl Send for NativeTile16Kernel {}
@@ -1107,6 +1140,18 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
             };
+            let ekv_sym = sys::dlsym(h, b"encode_kv_glyph_fast_c\0".as_ptr() as *const std::ffi::c_char);
+            let encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn> = if ekv_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, EncodeKvGlyphFastFn>(ekv_sym))
+            };
+            let fg_sym = sys::dlsym(h, b"flash_glyph_attention_gqa_c\0".as_ptr() as *const std::ffi::c_char);
+            let flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn> = if fg_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, FlashGlyphAttentionGqaFn>(fg_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: s.to_string(),
@@ -1114,6 +1159,8 @@ impl NativeTile16Kernel {
                 inv_s_fwht_fn,
                 lowrank_add_fn,
                 lmhead_cs_fn,
+                encode_kv_glyph_fn,
+                flash_glyph_attn_fn,
             })
         }
         #[cfg(windows)]
@@ -1149,6 +1196,18 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
             };
+            let ekv_sym = sys::GetProcAddress(h, b"encode_kv_glyph_fast_c\0".as_ptr() as *const i8);
+            let encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn> = if ekv_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, EncodeKvGlyphFastFn>(ekv_sym))
+            };
+            let fg_sym = sys::GetProcAddress(h, b"flash_glyph_attention_gqa_c\0".as_ptr() as *const i8);
+            let flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn> = if fg_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, FlashGlyphAttentionGqaFn>(fg_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: path.display().to_string(),
@@ -1156,6 +1215,8 @@ impl NativeTile16Kernel {
                 inv_s_fwht_fn,
                 lowrank_add_fn,
                 lmhead_cs_fn,
+                encode_kv_glyph_fn,
+                flash_glyph_attn_fn,
             })
         }
         #[cfg(not(any(unix, windows)))]
@@ -1217,7 +1278,6 @@ trait T16CSource: Read {
     fn read_packed(&mut self, len: usize, pos: &mut usize, name: &str) -> Result<PackedStorage, String>;
 }
 
-#[cfg(not(unix))]
 impl T16CSource for BufReader<File> {
     fn read_packed(&mut self, len: usize, pos: &mut usize, name: &str) -> Result<PackedStorage, String> {
         let mut packed = make_aligned_buf(len);
@@ -1444,6 +1504,10 @@ impl T16CModel {
         {
             use std::os::unix::io::AsRawFd;
             let meta = f.metadata().map_err(|e| format!("stat T16C {}: {e}", path.display()))?;
+            if !meta.is_file() {
+                let mut r = BufReader::with_capacity(4 * 1024 * 1024, f);
+                return Self::load_from_source(&mut r, native_lib, disable_native);
+            }
             let file_len = usize::try_from(meta.len())
                 .map_err(|_| format!("T16C too large for address space: {}", meta.len()))?;
             if file_len < 24 {
