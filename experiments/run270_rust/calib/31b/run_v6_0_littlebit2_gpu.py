@@ -240,18 +240,18 @@ def littlebit_joint_itq_rotate(
         return U_rot.to(U_f.dtype), V_rot.to(V_f.dtype)
 
 
-def quant_1b_asym_ste(w: torch.Tensor, bsize: int = 256) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+def init_1b_asym_norm(w: torch.Tensor, bsize: int = 256) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Differentiable exact per-bsize asymmetric 1-bit quantization with clipped STE:
-      w_q = bi_f16 + sc_f16 * sign(w - bi_f16)
-    Returns (w_ste, sc_f16 [d_out, n_blks], bi_f16 [d_out, n_blks], bits_01 [d_out, n_blks, bsize]).
+    Initialize unit-normalized latent coordinates z_lat around binary threshold 0 plus
+    FP16-aligned per-block scales and biases via 2-step Lloyd-Max binary refinement:
+      w ≈ bi_q + sc_q * sign(z_lat)
     """
     d_out, d_in = w.shape
     n_blks = d_in // bsize
-    blk = w.reshape(d_out, n_blks, bsize)
+    blk = w.reshape(d_out, n_blks, bsize).float()
     with torch.no_grad():
         bi = blk.mean(dim=-1)
-        # 2-step Lloyd-Max exact binary refinement
+        sc = blk.std(dim=-1).clamp(min=1e-5)
         for _ in range(2):
             m1 = blk >= bi.unsqueeze(-1)
             c1 = m1.sum(dim=-1)
@@ -261,16 +261,36 @@ def quant_1b_asym_ste(w: torch.Tensor, bsize: int = 256) -> Tuple[torch.Tensor, 
             mp = torch.where(c1 > 0, s1 / c1.clamp(min=1), bi)
             mn = torch.where(c0 > 0, s0 / c0.clamp(min=1), bi)
             bi = 0.5 * (mp + mn)
-            sc = 0.5 * (mp - mn)
+            sc = (0.5 * (mp - mn)).clamp(min=1e-6)
         bi_q = bi.to(torch.float16).float()
-        sc_q = sc.to(torch.float16).float()
-        bits01 = (blk >= bi_q.unsqueeze(-1))
+        sc_q = sc.to(torch.float16).float().clamp(min=1e-6)
+        z_lat = ((blk - bi_q.unsqueeze(-1)) / sc_q.unsqueeze(-1)).clamp(-2.5, 2.5).reshape(d_out, d_in)
+    return z_lat.contiguous(), sc_q.contiguous(), bi_q.contiguous()
+
+
+def apply_1b_asym_ste(
+    z_lat: torch.Tensor, sc_p: torch.Tensor, bi_p: torch.Tensor, bsize: int = 256
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Differentiable exact per-bsize asymmetric 1-bit quantization with unit-scale clipped STE
+    and differentiable per-block scale/bias parameters:
+      w_ste = bi_ste + sc_ste * sign_ste(z_lat)
+    Returns (w_ste, sc_q [d_out, n_blks], bi_q [d_out, n_blks], bits01 [d_out, n_blks, bsize]).
+    """
+    d_out, d_in = z_lat.shape
+    n_blks = d_in // bsize
+    blk = z_lat.reshape(d_out, n_blks, bsize)
+    sc_abs = sc_p.abs()
+    sc_q = sc_abs.to(torch.float16).float()
+    bi_q = bi_p.to(torch.float16).float()
+    sc_ste = sc_q + (sc_abs - sc_abs.detach())
+    bi_ste = bi_q + (bi_p - bi_p.detach())
+    with torch.no_grad():
+        bits01 = blk >= 0.0
         sgn = torch.where(bits01, 1.0, -1.0)
-        w_q = (bi_q.unsqueeze(-1) + sc_q.unsqueeze(-1) * sgn).reshape(d_out, d_in)
-        # Clipped STE mask: prevent runaway updates on extreme outliers beyond 2.5*sc
-        clip_m = ((blk - bi_q.unsqueeze(-1)).abs() <= (2.5 * sc_q.clamp(min=1e-4)).unsqueeze(-1)).reshape(d_out, d_in)
-    # Clipped Straight-Through Estimator: forward=w_q, backward=1 inside clip range
-    w_ste = w_q + (w - w.detach()) * clip_m.to(w.dtype)
+        clip_m = (blk.abs() <= 1.25).to(blk.dtype)
+    sgn_ste = sgn + (blk - blk.detach()) * clip_m
+    w_ste = (bi_ste.unsqueeze(-1) + sc_ste.unsqueeze(-1) * sgn_ste).reshape(d_out, d_in)
     return w_ste, sc_q, bi_q, bits01
 
 
@@ -278,25 +298,43 @@ _GAUSS2_LV = torch.tensor([-3.174, -1.000, 1.000, 3.174], device=DEVICE, dtype=t
 _GAUSS2_MID = torch.tensor([-2.087, 0.000, 2.087], device=DEVICE, dtype=torch.float32)
 
 
-def quant_2b_gaus_ste(w: torch.Tensor, bsize: int = 256) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Differentiable per-bsize 2-bit non-uniform Gaussian quantization with clipped STE."""
+def init_2b_gaus_norm(w: torch.Tensor, bsize: int = 256) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Initialize unit-normalized latent coordinates z_lat plus FP16-aligned per-block scales
+    via 3-step Lloyd-Max Gaussian refinement for 2b_gaus quantization.
+    """
     d_out, d_in = w.shape
     n_blks = d_in // bsize
-    blk = w.reshape(d_out, n_blks, bsize)
+    blk = w.reshape(d_out, n_blks, bsize).float()
     with torch.no_grad():
-        sc = 0.470 * torch.sqrt((blk * blk).mean(dim=-1))
+        sc = (0.470 * torch.sqrt((blk * blk).mean(dim=-1))).clamp(min=1e-6)
         for _ in range(3):
             inv_s = torch.where(sc > 1e-12, 1.0 / sc.clamp(min=1e-12), 0.0).unsqueeze(-1)
             idx = torch.bucketize(blk * inv_s, _GAUSS2_MID)
             lv = _GAUSS2_LV[idx]
             den = (lv * lv).sum(dim=-1)
-            sc = torch.where(den > 0.0, (lv * blk).sum(dim=-1) / den.clamp(min=1e-12), 0.0)
-        sc_q = sc.to(torch.float16).float()
-        inv_s = torch.where(sc_q > 1e-12, 1.0 / sc_q.clamp(min=1e-12), 0.0).unsqueeze(-1)
-        idx = torch.bucketize(blk * inv_s, _GAUSS2_MID)
-        w_q = (sc_q.unsqueeze(-1) * _GAUSS2_LV[idx]).reshape(d_out, d_in)
-        clip_m = (blk.abs() <= (3.6 * sc_q.clamp(min=1e-4)).unsqueeze(-1)).reshape(d_out, d_in)
-    w_ste = w_q + (w - w.detach()) * clip_m.to(w.dtype)
+            sc = torch.where(den > 0.0, (lv * blk).sum(dim=-1) / den.clamp(min=1e-12), sc)
+        sc_q = sc.to(torch.float16).float().clamp(min=1e-6)
+        z_lat = (blk / sc_q.unsqueeze(-1)).clamp(-4.0, 4.0).reshape(d_out, d_in)
+    return z_lat.contiguous(), sc_q.contiguous()
+
+
+def apply_2b_gaus_ste(
+    z_lat: torch.Tensor, sc_p: torch.Tensor, bsize: int = 256
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Differentiable per-bsize 2-bit non-uniform Gaussian quantization with unit-scale clipped STE."""
+    d_out, d_in = z_lat.shape
+    n_blks = d_in // bsize
+    blk = z_lat.reshape(d_out, n_blks, bsize)
+    sc_abs = sc_p.abs()
+    sc_q = sc_abs.to(torch.float16).float()
+    sc_ste = sc_q + (sc_abs - sc_abs.detach())
+    with torch.no_grad():
+        idx = torch.bucketize(blk, _GAUSS2_MID)
+        lv = _GAUSS2_LV[idx]
+        clip_m = (blk.abs() <= 3.6).to(blk.dtype)
+    lv_ste = lv + (blk - blk.detach()) * clip_m
+    w_ste = (sc_ste.unsqueeze(-1) * lv_ste).reshape(d_out, d_in)
     return w_ste, sc_q, idx
 
 
@@ -384,7 +422,7 @@ class LittleBit2LinearV6(nn.Module):
       y = U_q( V_q( FWHT(x * inv_s) ) ) [+ optional U_rq( V_rq( FWHT(x * inv_s) ) )]
     where BOTH V_q [s, d_in] and U_q [d_out, s] are pure 1-bit Row-Major T16C matrices
     with per-256-block FP16 scales+biases, initialized via Activation-Weighted SVD +
-    Joint-ITQ and trained with full-weight clipped-STE QAT (`loss.backward()`).
+    Joint-ITQ and trained with unit-normalized clipped-STE QAT (`loss.backward()`).
     """
 
     def __init__(
@@ -435,12 +473,19 @@ class LittleBit2LinearV6(nn.Module):
                 self.register_buffer("inv_s", inv_s.contiguous(), persistent=False)
             else:
                 self.inv_s = None
-            self.U_lat = nn.Parameter(U_itq.contiguous())
-            self.V_lat = nn.Parameter(V_rot.contiguous())
+
+            u_z, u_sc, u_bi = init_1b_asym_norm(U_itq, bsize)
+            v_z, v_sc, v_bi = init_1b_asym_norm(V_rot, bsize)
+            self.U_lat = nn.Parameter(u_z)
+            self.U_sc = nn.Parameter(u_sc)
+            self.U_bi = nn.Parameter(u_bi)
+            self.V_lat = nn.Parameter(v_z)
+            self.V_sc = nn.Parameter(v_sc)
+            self.V_bi = nn.Parameter(v_bi)
 
             if residual_dim > 0:
-                u_q, _, _, _ = quant_1b_asym_ste(U_itq, bsize)
-                v_q, _, _, _ = quant_1b_asym_ste(V_rot, bsize)
+                u_q, _, _, _ = apply_1b_asym_ste(self.U_lat, self.U_sc, self.U_bi, bsize)
+                v_q, _, _, _ = apply_1b_asym_ste(self.V_lat, self.V_sc, self.V_bi, bsize)
                 w_rec = u_q @ fwht_gpu(v_q, bsize)
                 w_res = w_sc - w_rec
                 Ur_t, Sr_t, Vtr_t = torch.linalg.svd(w_res, full_matrices=False)
@@ -453,36 +498,50 @@ class LittleBit2LinearV6(nn.Module):
                     Vr0 = F.pad(Vr0, (0, 0, 0, residual_dim - sr_use))
                 Ur_itq, Vr_itq = littlebit_joint_itq_rotate(Ur0, Vr0, n_iter=max(15, itq_iter // 2))
                 Vr_rot = fwht_gpu(Vr_itq, bsize)
-                self.Ur_lat = nn.Parameter(Ur_itq.contiguous())
-                self.Vr_lat = nn.Parameter(Vr_rot.contiguous())
+                ur_z, ur_sc, ur_bi = init_1b_asym_norm(Ur_itq, bsize)
+                vr_z, vr_sc, vr_bi = init_1b_asym_norm(Vr_rot, bsize)
+                self.Ur_lat = nn.Parameter(ur_z)
+                self.Ur_sc = nn.Parameter(ur_sc)
+                self.Ur_bi = nn.Parameter(ur_bi)
+                self.Vr_lat = nn.Parameter(vr_z)
+                self.Vr_sc = nn.Parameter(vr_sc)
+                self.Vr_bi = nn.Parameter(vr_bi)
             else:
-                self.Ur_lat = None
-                self.Vr_lat = None
+                self.Ur_lat = self.Ur_sc = self.Ur_bi = None
+                self.Vr_lat = self.Vr_sc = self.Vr_bi = None
+
+    def param_groups(self, lr_lat: float, lr_sc: float) -> List[dict]:
+        lat_p = [self.U_lat, self.V_lat]
+        sc_p = [self.U_sc, self.U_bi, self.V_sc, self.V_bi]
+        if self.Ur_lat is not None and self.Vr_lat is not None:
+            lat_p.extend([self.Ur_lat, self.Vr_lat])
+            sc_p.extend([self.Ur_sc, self.Ur_bi, self.Vr_sc, self.Vr_bi])
+        return [{"params": lat_p, "lr": lr_lat}, {"params": sc_p, "lr": lr_sc}]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_sh = x.shape
         x2d = x.reshape(-1, self.d_in).float()
         x_sc = (x2d * self.inv_s) if self.inv_s is not None else x2d
         x_rot = fwht_gpu(x_sc, self.bsize).to(COMPUTE_DTYPE)
-        v_ste, _, _, _ = quant_1b_asym_ste(self.V_lat, self.bsize)
-        u_ste, _, _, _ = quant_1b_asym_ste(self.U_lat, self.bsize)
+        v_ste, _, _, _ = apply_1b_asym_ste(self.V_lat, self.V_sc, self.V_bi, self.bsize)
+        u_ste, _, _, _ = apply_1b_asym_ste(self.U_lat, self.U_sc, self.U_bi, self.bsize)
         z = F.linear(x_rot, v_ste.to(COMPUTE_DTYPE))
         y = F.linear(z, u_ste.to(COMPUTE_DTYPE)).float()
         if self.Ur_lat is not None and self.Vr_lat is not None:
-            vr_ste, _, _, _ = quant_1b_asym_ste(self.Vr_lat, self.bsize)
-            ur_ste, _, _, _ = quant_1b_asym_ste(self.Ur_lat, self.bsize)
+            vr_ste, _, _, _ = apply_1b_asym_ste(self.Vr_lat, self.Vr_sc, self.Vr_bi, self.bsize)
+            ur_ste, _, _, _ = apply_1b_asym_ste(self.Ur_lat, self.Ur_sc, self.Ur_bi, self.bsize)
             zr = F.linear(x_rot, vr_ste.to(COMPUTE_DTYPE))
             y = y + F.linear(zr, ur_ste.to(COMPUTE_DTYPE)).float()
         return y.reshape(*orig_sh[:-1], self.d_out)
 
     @torch.no_grad()
     def dequant_w_eff_f16(self) -> torch.Tensor:
-        v_q, _, _, _ = quant_1b_asym_ste(self.V_lat, self.bsize)
-        u_q, _, _, _ = quant_1b_asym_ste(self.U_lat, self.bsize)
+        v_q, _, _, _ = apply_1b_asym_ste(self.V_lat, self.V_sc, self.V_bi, self.bsize)
+        u_q, _, _, _ = apply_1b_asym_ste(self.U_lat, self.U_sc, self.U_bi, self.bsize)
         w_eff = u_q @ fwht_gpu(v_q, self.bsize)
         if self.Ur_lat is not None and self.Vr_lat is not None:
-            vr_q, _, _, _ = quant_1b_asym_ste(self.Vr_lat, self.bsize)
-            ur_q, _, _, _ = quant_1b_asym_ste(self.Ur_lat, self.bsize)
+            vr_q, _, _, _ = apply_1b_asym_ste(self.Vr_lat, self.Vr_sc, self.Vr_bi, self.bsize)
+            ur_q, _, _, _ = apply_1b_asym_ste(self.Ur_lat, self.Ur_sc, self.Ur_bi, self.bsize)
             w_eff = w_eff + ur_q @ fwht_gpu(vr_q, self.bsize)
         if self.inv_s is not None:
             w_eff = w_eff * self.inv_s.unsqueeze(0)
@@ -492,8 +551,8 @@ class LittleBit2LinearV6(nn.Module):
     def export_records(self) -> List[tuple]:
         """Return T16C mat record tuples [(name, d_out, d_in, bs, nb, is_asym, has_fwht, pb, inv_s, lr), ...]."""
         inv_np = self.inv_s.detach().cpu().numpy().astype("<f4") if self.inv_s is not None else None
-        _, sc_v, bi_v, bits_v = quant_1b_asym_ste(self.V_lat, self.bsize)
-        _, sc_u, bi_u, bits_u = quant_1b_asym_ste(self.U_lat, self.bsize)
+        _, sc_v, bi_v, bits_v = apply_1b_asym_ste(self.V_lat, self.V_sc, self.V_bi, self.bsize)
+        _, sc_u, bi_u, bits_u = apply_1b_asym_ste(self.U_lat, self.U_sc, self.U_bi, self.bsize)
         pb_v = pack_rowmajor_t16c_1b_asym(bits_v, sc_v, bi_v, self.bsize)
         pb_u = pack_rowmajor_t16c_1b_asym(bits_u, sc_u, bi_u, self.bsize)
         nb_rm = 1 | T16C_ROWMAJOR_BIT
@@ -502,8 +561,8 @@ class LittleBit2LinearV6(nn.Module):
             (f"{self.name}.lb_u", self.d_out, self.split_dim, self.bsize, nb_rm, True, False, pb_u, None, None),
         ]
         if self.Ur_lat is not None and self.Vr_lat is not None:
-            _, sc_vr, bi_vr, bits_vr = quant_1b_asym_ste(self.Vr_lat, self.bsize)
-            _, sc_ur, bi_ur, bits_ur = quant_1b_asym_ste(self.Ur_lat, self.bsize)
+            _, sc_vr, bi_vr, bits_vr = apply_1b_asym_ste(self.Vr_lat, self.Vr_sc, self.Vr_bi, self.bsize)
+            _, sc_ur, bi_ur, bits_ur = apply_1b_asym_ste(self.Ur_lat, self.Ur_sc, self.Ur_bi, self.bsize)
             pb_vr = pack_rowmajor_t16c_1b_asym(bits_vr, sc_vr, bi_vr, self.bsize)
             pb_ur = pack_rowmajor_t16c_1b_asym(bits_ur, sc_ur, bi_ur, self.bsize)
             recs.append((f"{self.name}.lb_rv", self.residual_dim, self.d_in, self.bsize, nb_rm, True, True, pb_vr, inv_np, None))
@@ -514,7 +573,7 @@ class LittleBit2LinearV6(nn.Module):
 class DirectRowMajorLinearV6(nn.Module):
     """
     Direct Row-Major 1b_asym (1|0x40) or 2b_gaus (2|0x80|0x40) with optional INT8 low-rank,
-    trained with full-weight clipped-STE QAT (`loss.backward()`).
+    trained with unit-normalized clipped-STE QAT (`loss.backward()`).
     """
 
     def __init__(
@@ -551,13 +610,21 @@ class DirectRowMajorLinearV6(nn.Module):
                 self.register_buffer("inv_s", inv_s.contiguous(), persistent=False)
             else:
                 self.inv_s = None
-            self.W_lat = nn.Parameter(w_rot.contiguous())
+
+            if bits == 1:
+                w_z, w_sc_p, w_bi_p = init_1b_asym_norm(w_rot, bsize)
+                self.W_lat = nn.Parameter(w_z)
+                self.W_sc = nn.Parameter(w_sc_p)
+                self.W_bi = nn.Parameter(w_bi_p)
+                wq_rot, _, _, _ = apply_1b_asym_ste(self.W_lat, self.W_sc, self.W_bi, bsize)
+            else:
+                w_z, w_sc_p = init_2b_gaus_norm(w_rot, bsize)
+                self.W_lat = nn.Parameter(w_z)
+                self.W_sc = nn.Parameter(w_sc_p)
+                self.W_bi = None
+                wq_rot, _, _ = apply_2b_gaus_ste(self.W_lat, self.W_sc, bsize)
 
             if lr_rank > 0:
-                if bits == 1:
-                    wq_rot, _, _, _ = quant_1b_asym_ste(w_rot, bsize)
-                else:
-                    wq_rot, _, _ = quant_2b_gaus_ste(w_rot, bsize)
                 w_eff0 = fwht_gpu(wq_rot, bsize)
                 if inv_s is not None:
                     w_eff0 = w_eff0 * inv_s.unsqueeze(0)
@@ -573,15 +640,23 @@ class DirectRowMajorLinearV6(nn.Module):
                 self.U_lr = None
                 self.V_lr = None
 
+    def param_groups(self, lr_lat: float, lr_sc: float) -> List[dict]:
+        sc_p = [self.W_sc]
+        if self.W_bi is not None:
+            sc_p.append(self.W_bi)
+        if self.U_lr is not None and self.V_lr is not None:
+            sc_p.extend([self.U_lr, self.V_lr])
+        return [{"params": [self.W_lat], "lr": lr_lat}, {"params": sc_p, "lr": lr_sc}]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_sh = x.shape
         x2d = x.reshape(-1, self.d_in).float()
         x_sc = (x2d * self.inv_s) if self.inv_s is not None else x2d
         x_rot = fwht_gpu(x_sc, self.bsize).to(COMPUTE_DTYPE)
         if self.bits == 1:
-            w_ste, _, _, _ = quant_1b_asym_ste(self.W_lat, self.bsize)
+            w_ste, _, _, _ = apply_1b_asym_ste(self.W_lat, self.W_sc, self.W_bi, self.bsize)
         else:
-            w_ste, _, _ = quant_2b_gaus_ste(self.W_lat, self.bsize)
+            w_ste, _, _ = apply_2b_gaus_ste(self.W_lat, self.W_sc, self.bsize)
         y = F.linear(x_rot, w_ste.to(COMPUTE_DTYPE)).float()
         if self.U_lr is not None and self.V_lr is not None:
             su = (self.U_lr.abs().amax(dim=1, keepdim=True) / 127.0).clamp(min=1e-8)
@@ -596,9 +671,9 @@ class DirectRowMajorLinearV6(nn.Module):
     @torch.no_grad()
     def dequant_w_eff_f16(self) -> torch.Tensor:
         if self.bits == 1:
-            wq_rot, _, _, _ = quant_1b_asym_ste(self.W_lat, self.bsize)
+            wq_rot, _, _, _ = apply_1b_asym_ste(self.W_lat, self.W_sc, self.W_bi, self.bsize)
         else:
-            wq_rot, _, _ = quant_2b_gaus_ste(self.W_lat, self.bsize)
+            wq_rot, _, _ = apply_2b_gaus_ste(self.W_lat, self.W_sc, self.bsize)
         w_eff = fwht_gpu(wq_rot, self.bsize)
         if self.inv_s is not None:
             w_eff = w_eff * self.inv_s.unsqueeze(0)
@@ -614,11 +689,11 @@ class DirectRowMajorLinearV6(nn.Module):
         inv_np = self.inv_s.detach().cpu().numpy().astype("<f4") if self.inv_s is not None else None
         lr_tup = quantize_lr_arrays(self.U_lr, self.V_lr) if (self.U_lr is not None and self.V_lr is not None) else None
         if self.bits == 1:
-            _, sc_q, bi_q, bits01 = quant_1b_asym_ste(self.W_lat, self.bsize)
+            _, sc_q, bi_q, bits01 = apply_1b_asym_ste(self.W_lat, self.W_sc, self.W_bi, self.bsize)
             pb = pack_rowmajor_t16c_1b_asym(bits01, sc_q, bi_q, self.bsize)
             nb, asy = (1 | T16C_ROWMAJOR_BIT), True
         else:
-            _, sc_q, idx = quant_2b_gaus_ste(self.W_lat, self.bsize)
+            _, sc_q, idx = apply_2b_gaus_ste(self.W_lat, self.W_sc, self.bsize)
             pb = pack_rowmajor_t16c_2b_gaus(idx, sc_q, self.bsize)
             nb, asy = (2 | T16C_GAUSS_BIT | T16C_ROWMAJOR_BIT), False
         return [(self.name, self.d_out, self.d_in, self.bsize, nb, asy, True, pb, inv_np, lr_tup)]
@@ -658,16 +733,19 @@ with torch.enable_grad():
         _we0 = _lb.dequant_w_eff_f16()
         _rel0 = float((_y0 - (_xt @ _we0.float().T)).norm() / _y0.norm().clamp(min=1e-6))
         assert _rel0 < 5e-3, f"LittleBit2LinearV6 init parity fail rel={_rel0}"
-        _bits_before = (_lb.U_lat >= _lb.U_lat.reshape(_do, -1, _bs).mean(dim=-1, keepdim=True).expand(-1, -1, _bs).reshape(_do, -1)).clone()
-    _opt = torch.optim.AdamW(_lb.parameters(), lr=2e-2)
+        _bits_before = (_lb.U_lat >= 0.0).clone()
+    _opt = torch.optim.AdamW(_lb.param_groups(lr_lat=1.2e-2, lr_sc=1.5e-3))
     _l0 = float(F.mse_loss(_lb(_xt).detach(), _yt).item())
     for _ in range(30):
         _opt.zero_grad()
         _loss = F.mse_loss(_lb(_xt), _yt)
         _loss.backward()
+        torch.nn.utils.clip_grad_norm_(_lb.parameters(), 1.0)
         _opt.step()
     _l1 = float(F.mse_loss(_lb(_xt).detach(), _yt).item())
-    assert _l1 < _l0, f"LittleBit2LinearV6 real STE QAT failed to reduce loss: {_l0} -> {_l1}"
+    _flips = int(((_lb.U_lat >= 0.0) != _bits_before).sum().item())
+    assert _l1 < _l0 * 0.75, f"LittleBit2LinearV6 real STE QAT failed to reduce loss: {_l0} -> {_l1}"
+    assert _flips > 0, "LittleBit2LinearV6 STE QAT produced zero binary sign flips!"
     _recs = _lb.export_records()
     assert len(_recs) == 4 and _recs[0][4] == (1 | T16C_ROWMAJOR_BIT) and _recs[1][4] == (1 | T16C_ROWMAJOR_BIT)
     # Verify exact byte count matches p3.expected_tile16_bytes
@@ -675,12 +753,21 @@ with torch.enable_grad():
         assert _r[7].size == p3.expected_tile16_bytes(_r[1], _r[2], _r[3], _r[4], _r[5])
 
     _dr = DirectRowMajorLinearV6("test.dr2", _wt, _xr, bits=2, lr_rank=8, bsize=256)
+    _opt_dr = torch.optim.AdamW(_dr.param_groups(lr_lat=1.2e-2, lr_sc=1.5e-3))
+    _dl0 = float(F.mse_loss(_dr(_xt).detach(), _yt).item())
+    for _ in range(10):
+        _opt_dr.zero_grad()
+        F.mse_loss(_dr(_xt), _yt).backward()
+        torch.nn.utils.clip_grad_norm_(_dr.parameters(), 1.0)
+        _opt_dr.step()
+    _dl1 = float(F.mse_loss(_dr(_xt).detach(), _yt).item())
+    assert _dl1 < _dl0, f"DirectRowMajorLinearV6 2b_gaus STE QAT failed to reduce loss: {_dl0} -> {_dl1}"
     _recs2 = _dr.export_records()
     assert len(_recs2) == 1 and _recs2[0][4] == (2 | T16C_GAUSS_BIT | T16C_ROWMAJOR_BIT)
     assert _recs2[0][7].size == p3.expected_tile16_bytes(_recs2[0][1], _recs2[0][2], _recs2[0][3], _recs2[0][4], _recs2[0][5])
-    del _xt, _wt, _xr, _yt, _lb, _opt, _recs, _dr, _recs2
+    del _xt, _wt, _xr, _yt, _lb, _opt, _recs, _dr, _opt_dr, _recs2
 torch.cuda.empty_cache()
-print(f"[Gate 0a PASS] LittleBit-2 Joint-ITQ + STE QAT ({_l0:.5f} -> {_l1:.5f}) + Row-Major T16C packing verified!", flush=True)
+print(f"[Gate 0a PASS] LittleBit-2 Joint-ITQ + STE QAT ({_l0:.5f} -> {_l1:.5f}, flips={_flips}) + Direct2b ({_dl0:.5f} -> {_dl1:.5f}) + Row-Major T16C packing verified!", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1343,8 +1430,10 @@ def qat_block_attn_v6(
     cos0 = eval_val()
     w_params = [p for m in mods.values() for p in m.parameters()]
     n_params = [p_in, p_qn, p_kn, p_pa]
-    opt = torch.optim.AdamW([{"params": w_params, "lr": 1.2e-3}, {"params": n_params, "lr": 1.5e-3}], weight_decay=1e-4)
-    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=8e-5)
+    opt_groups = [pg for m in mods.values() for pg in m.param_groups(lr_lat=5e-3, lr_sc=1e-3)]
+    opt_groups.append({"params": n_params, "lr": 1.5e-3})
+    opt = torch.optim.AdamW(opt_groups, weight_decay=1e-4)
+    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=5e-5)
 
     best_cos = cos0
     best_state = {k: {pk: pv.detach().cpu().clone() for pk, pv in m.state_dict().items()} for k, m in mods.items()}
@@ -1413,8 +1502,10 @@ def qat_block_mlp_v6(
     cos0 = eval_val(1.0)
     w_params = [p for m in mods.values() for p in m.parameters()]
     n_params = [p_pf, p_pff, p_lsc]
-    opt = torch.optim.AdamW([{"params": w_params, "lr": 1.5e-3}, {"params": n_params, "lr": 2.0e-3}], weight_decay=1e-4)
-    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=1e-4)
+    opt_groups = [pg for m in mods.values() for pg in m.param_groups(lr_lat=5e-3, lr_sc=1e-3)]
+    opt_groups.append({"params": n_params, "lr": 1.5e-3})
+    opt = torch.optim.AdamW(opt_groups, weight_decay=1e-4)
+    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps, eta_min=5e-5)
 
     best_cos = cos0
     best_state = {k: {pk: pv.detach().cpu().clone() for pk, pv in m.state_dict().items()} for k, m in mods.items()}
@@ -1952,9 +2043,19 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
 
         kl_3b_0, agr_3b_0 = eval_tail_3b()
         print(f"  [Stage 3B Before] Val KL={kl_3b_0:.4f} | Teacher-Agree={agr_3b_0*100:.1f}%", flush=True)
-        opt_3b = torch.optim.AdamW(list(tail_mods.parameters()) + [p_final_norm], lr=6e-4, weight_decay=1e-4)
+        opt_groups_3b: List[dict] = []
+        norm_params_3b: List[nn.Parameter] = [p_final_norm]
+        for tmod in tail_mods:
+            for pname in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"):
+                sub_m = getattr(tmod, pname, None)
+                if sub_m is not None:
+                    opt_groups_3b.extend(sub_m.param_groups(lr_lat=2.5e-3, lr_sc=4e-4))
+            norm_params_3b.extend([tmod.n_in, tmod.n_qn, tmod.n_kn, tmod.n_pa, tmod.n_pf, tmod.n_pff, tmod.lsc])
+        opt_groups_3b.append({"params": norm_params_3b, "lr": 6e-4})
+        assert sum(len(g["params"]) for g in opt_groups_3b) == len(list(tail_mods.parameters()) + [p_final_norm])
+        opt_3b = torch.optim.AdamW(opt_groups_3b, weight_decay=1e-4)
         STEPS_3B = 150
-        sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=5e-5)
+        sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=4e-5)
         best_kl_3b, best_agr_3b = kl_3b_0, agr_3b_0
         best_3b_sd = {
             "tail": {k: v.detach().cpu().clone() for k, v in tail_mods.state_dict().items()},
