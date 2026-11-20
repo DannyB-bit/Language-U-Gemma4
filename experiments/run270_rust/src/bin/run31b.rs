@@ -974,7 +974,8 @@ impl Runtime31B {
                                        proj_suffix: &'static str,
                                        x_batch: &[f32],
                                        row_mask: Option<&[u8]>,
-                                       col_mask: Option<&[u8]>|
+                                       col_mask: Option<&[u8]>,
+                                       include_aux: bool|
              -> Result<Vec<f32>, String> {
                 if let Some(pl) = hybrid_pinned.get(&layer) {
                     let p = match proj_suffix {
@@ -998,13 +999,15 @@ impl Runtime31B {
                         .or_else(|| mats.get(&k2))
                         .ok_or_else(|| format!("T16C missing {k1}"))?;
                     let mut out = if row_mask.is_some() || col_mask.is_some() {
-                        let (y_sp, skipped) = mat.project_batch_sparse(
+                        let (y_sp, skipped) = mat.project_batch_sparse_ext(
                             x_batch,
                             seq_len,
                             native_t16c.as_deref(),
                             threads,
                             row_mask,
                             col_mask,
+                            include_aux,
+                            proj_suffix == "mlp.gate_proj",
                         )?;
                         let n_tiles_m = mat.d_out.div_ceil(16) as u64;
                         let n_blks_m = (mat.d_in / mat.block_size) as u64;
@@ -1031,7 +1034,7 @@ impl Runtime31B {
                     } else {
                         mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
                     };
-                    if self.apply_c8d_proj {
+                    if include_aux && self.apply_c8d_proj {
                         if let Some(ref bank) = self.c8d_bank {
                             if let Some(entry) = bank.entries.get(&k1).or_else(|| bank.entries.get(&k2)) {
                                 entry.apply_batch_into(x_batch, seq_len, &mut out, bank.native.as_ref(), threads, None)?;
@@ -1095,12 +1098,12 @@ impl Runtime31B {
                 }
 
                 let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, None, None)?;
-                let k_raw = run_proj_masked(l, "self_attn.k_proj", &inp, None, None)?;
+                let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, None, None, true)?;
+                let k_raw = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
                 let mut v_batch = if is_full && cfg.attention_k_eq_v {
                     k_raw.clone()
                 } else {
-                    run_proj_masked(l, "self_attn.v_proj", &inp, None, None)?
+                    run_proj_masked(l, "self_attn.v_proj", &inp, None, None, true)?
                 };
                 if let Some(t0) = t_ap0 {
                     prof_attn_step += t0.elapsed().as_secs_f64();
@@ -1210,7 +1213,7 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_ao0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let attn_o = run_proj_masked(l, "self_attn.o_proj", &ctx_batch, None, None)?;
+                let attn_o = run_proj_masked(l, "self_attn.o_proj", &ctx_batch, None, None, true)?;
                 if let Some(t0) = t_ao0 {
                     prof_attn_step += t0.elapsed().as_secs_f64();
                 }
@@ -1314,7 +1317,7 @@ impl Runtime31B {
                         let ff = cfg.ff;
                         let n_blks = ff / bsize;
                         let tiles_per_blk = bsize / 16;
-                        let mut gate_p1 = run_proj_masked(l, "mlp.gate_proj", &inp2, None, Some(c_mask_p1))?;
+                        let mut gate_p1 = run_proj_masked(l, "mlp.gate_proj", &inp2, None, Some(c_mask_p1), true)?;
                         let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n_blks);
                         for b in 0..n_blks {
                             let mut max_e = 0.0f32;
@@ -1345,7 +1348,7 @@ impl Runtime31B {
                             }
                         }
                         if p1_keep < c_mask_p1.len() {
-                            let gate_p2 = run_proj_masked(l, "mlp.gate_proj", &inp2, Some(&row_mask), Some(c_mask_p2))?;
+                            let gate_p2 = run_proj_masked(l, "mlp.gate_proj", &inp2, Some(&row_mask), Some(c_mask_p2), false)?;
                             for t in 0..seq_len {
                                 let base = t * ff;
                                 for (b, &active) in col_mask.iter().enumerate() {
@@ -1375,7 +1378,7 @@ impl Runtime31B {
                         }
                         (gate_p1, Some((row_mask, col_mask, bsize)))
                     } else {
-                        let gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None)?;
+                        let gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?;
                         if let Some(t0) = t_g0 {
                             prof_gate_step += t0.elapsed().as_secs_f64();
                         }
@@ -1385,9 +1388,9 @@ impl Runtime31B {
 
                 let t_u0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 let up = if let Some((ref rmask, _, _)) = sparse_masks {
-                    run_proj_masked(l, "mlp.up_proj", &inp2, Some(rmask), None)?
+                    run_proj_masked(l, "mlp.up_proj", &inp2, Some(rmask), None, true)?
                 } else {
-                    run_proj_masked(l, "mlp.up_proj", &inp2, None, None)?
+                    run_proj_masked(l, "mlp.up_proj", &inp2, None, None, true)?
                 };
                 if let Some(t0) = t_u0 {
                     prof_up_step += t0.elapsed().as_secs_f64();
@@ -1415,9 +1418,9 @@ impl Runtime31B {
                 drop(up);
                 let t_d0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 let down = if let Some((_, ref cmask, _)) = sparse_masks {
-                    run_proj_masked(l, "mlp.down_proj", &act, None, Some(cmask))?
+                    run_proj_masked(l, "mlp.down_proj", &act, None, Some(cmask), true)?
                 } else {
-                    run_proj_masked(l, "mlp.down_proj", &act, None, None)?
+                    run_proj_masked(l, "mlp.down_proj", &act, None, None, true)?
                 };
                 if let Some(t0) = t_d0 {
                     prof_down_step += t0.elapsed().as_secs_f64();

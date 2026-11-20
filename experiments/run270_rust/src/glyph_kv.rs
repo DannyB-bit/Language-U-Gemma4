@@ -630,7 +630,7 @@ impl GlyphKvLayer {
         if keep_tokens == 0 {
             self.glyph_len = 0;
             self.glyph_write_pos = 0;
-            self.glyph_pos.clear();
+            self.glyph_pos.fill(0);
             self.k_sink.clear();
             self.v_sink.clear();
             self.sink_pos.clear();
@@ -1132,6 +1132,21 @@ mod tests {
         let after_rb = layer.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
         let (rb_cos, rb_rel, _) = cosine_and_rel_l2(&glyph_ctx, &after_rb);
         assert!(rb_cos > 0.999999 && rb_rel < 1e-6, "rollback mismatch: cos={rb_cos} rel={rb_rel}");
+
+        // Full reset via truncate(0) followed by second prompt eviction must preserve glyph_pos capacity
+        layer.truncate(0).unwrap();
+        assert_eq!(layer.total_seen(), 0);
+        assert_eq!(layer.glyph_len(), 0);
+        for t in 0..seq_len {
+            let k = det_vec(n_kv * hd, 100 + t as u64);
+            let v = det_vec(n_kv * hd, 500 + t as u64);
+            layer.append_token(&k, &v, None).unwrap();
+        }
+        assert_eq!(layer.total_seen(), seq_len);
+        assert_eq!(layer.glyph_len(), seq_len - 20);
+        let after_reset = layer.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
+        let (rs_cos, rs_rel, _) = cosine_and_rel_l2(&glyph_ctx, &after_reset);
+        assert!(rs_cos > 0.999999 && rs_rel < 1e-6, "post-truncate(0) mismatch: cos={rs_cos} rel={rs_rel}");
     }
 
     #[test]

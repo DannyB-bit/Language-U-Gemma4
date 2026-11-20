@@ -783,7 +783,22 @@ impl T16CMat {
         row_tile_mask: Option<&[u8]>,
         col_blk_mask: Option<&[u8]>,
     ) -> Result<(Vec<f32>, i64), String> {
-        if row_tile_mask.is_none() && col_blk_mask.is_none() {
+        self.project_batch_sparse_ext(x_raw, k_tokens, native, threads, row_tile_mask, col_blk_mask, true, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn project_batch_sparse_ext(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+        row_tile_mask: Option<&[u8]>,
+        col_blk_mask: Option<&[u8]>,
+        include_low_rank: bool,
+        unmasked_low_rank: bool,
+    ) -> Result<(Vec<f32>, i64), String> {
+        if row_tile_mask.is_none() && col_blk_mask.is_none() && include_low_rank {
             return self.project_batch_cs(x_raw, k_tokens, native, threads, None, 0.0);
         }
         let d_out = self.d_out;
@@ -877,16 +892,19 @@ impl T16CMat {
             skipped = self.matmul_rust_sparse(x_mat, k_tokens, &mut y, threads, row_tile_mask, col_blk_mask);
         }
 
-        self.apply_low_rank(x_eff, k_tokens, &mut y, native, threads)?;
-        if let Some(rm) = row_tile_mask {
-            if self.low_rank.is_some() {
-                for tok in 0..k_tokens {
-                    let yk = &mut y[tok * d_out..(tok + 1) * d_out];
-                    for (t, &active) in rm.iter().enumerate() {
-                        if active == 0 {
-                            let r0 = t * 16;
-                            let r1 = (r0 + 16).min(d_out);
-                            yk[r0..r1].fill(0.0);
+        if include_low_rank {
+            let lr_x = if unmasked_low_rank { x_raw } else { x_eff };
+            self.apply_low_rank(lr_x, k_tokens, &mut y, native, threads)?;
+            if let Some(rm) = row_tile_mask {
+                if self.low_rank.is_some() {
+                    for tok in 0..k_tokens {
+                        let yk = &mut y[tok * d_out..(tok + 1) * d_out];
+                        for (t, &active) in rm.iter().enumerate() {
+                            if active == 0 {
+                                let r0 = t * 16;
+                                let r1 = (r0 + 16).min(d_out);
+                                yk[r0..r1].fill(0.0);
+                            }
                         }
                     }
                 }
