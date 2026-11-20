@@ -237,10 +237,12 @@ pub fn attn_decode_range(
     let gqa = n_heads / n_kv;
     let max_tt = kv_end.max(t);
     let mut ctx = vec![0f32; n_heads * hd];
+    let mut scores: Vec<(usize, f32)> = Vec::with_capacity(max_tt + 1);
     for hq in 0..n_heads {
         let kvh = hq / gqa;
         let qh = &q[hq * hd..(hq + 1) * hd];
-        let mut scores: Vec<(usize, f64)> = Vec::with_capacity(max_tt + 1);
+        scores.clear();
+        let mut max_s = f32::NEG_INFINITY;
         for tt in 0..=max_tt {
             if let Some(w) = sw {
                 if pos.abs_diff(tt) >= w {
@@ -248,25 +250,26 @@ pub fn attn_decode_range(
                 }
             }
             let base = tt * n_kv * hd + kvh * hd;
-            let mut s = 0f64;
-            for i in 0..hd {
-                s += qh[i] as f64 * k_seq[base + i] as f64;
+            let s = dot_f32_4way(qh, &k_seq[base..base + hd]);
+            if s > max_s {
+                max_s = s;
             }
             scores.push((tt, s));
         }
-        let max = scores.iter().map(|&(_, s)| s).fold(f64::NEG_INFINITY, f64::max);
-        let mut wsum = 0f64;
-        let mut w: Vec<(usize, f64)> = Vec::with_capacity(scores.len());
-        for &(tt, s) in &scores {
-            let e = (s - max).exp();
-            w.push((tt, e));
+        let mut wsum = 0.0f32;
+        for &mut (_, ref mut s) in &mut scores {
+            let e = (*s - max_s).exp();
+            *s = e;
             wsum += e;
         }
-        for &(tt, e) in &w {
-            let p = (e / wsum) as f32;
+        let inv_wsum = if wsum > 1e-30 { 1.0f32 / wsum } else { 0.0f32 };
+        let dst = &mut ctx[hq * hd..(hq + 1) * hd];
+        for &(tt, e) in &scores {
+            let p = e * inv_wsum;
             let base = tt * n_kv * hd + kvh * hd;
-            for i in 0..hd {
-                ctx[hq * hd + i] += p * v_seq[base + i];
+            let vs = &v_seq[base..base + hd];
+            for (d_val, &v_val) in dst.iter_mut().zip(vs.iter()) {
+                *d_val += p * v_val;
             }
         }
     }

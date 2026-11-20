@@ -5,7 +5,10 @@
 //! model.norm -> post_projection & lm_head`) packed in 4-bit `.t16c` format (~247 MB)
 //! via `libneon_stream_accelerator.so` or bit-accurate Rust fallback.
 
-use crate::math::{attn_decode, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
+use crate::math::{
+    attn_decode, gelu_tanh_fast_f32, qk_norm_raw_inplace, rmsn_raw, rope_cos_sin_for_pos,
+    rope_head_with_cos_sin, rope_inv_freqs,
+};
 use crate::speculative::argmax_f32;
 use crate::t16c::T16CModel;
 use std::path::Path;
@@ -349,9 +352,13 @@ impl AssistantRuntime {
 
             let mut q = self.model.mat(&format!("{p}self_attn.q_proj.weight"))?.project_batch(&inp, 1, native, self.threads)?;
             let qn = self.model.norm(&format!("{p}self_attn.q_norm.weight"))?;
-            q = qk_norm_raw(&q, self.cfg.n_heads, hd, Some(qn), eps);
+            qk_norm_raw_inplace(&mut q, self.cfg.n_heads, hd, Some(qn), eps);
+            let inv_f = rope_inv_freqs(theta, rot_dims, hd);
+            let mut rcos = vec![0.0f32; inv_f.len()];
+            let mut rsin = vec![0.0f32; inv_f.len()];
+            rope_cos_sin_for_pos(&inv_f, q_pos as u32, &mut rcos, &mut rsin);
             for h in 0..self.cfg.n_heads {
-                rope_head(&mut q[h * hd..(h + 1) * hd], q_pos as u32, theta, rot_dims, hd);
+                rope_head_with_cos_sin(&mut q[h * hd..(h + 1) * hd], &rcos, &rsin, hd);
             }
 
             let ctx = attn_decode(&q, sk, sv, kv_len - 1, q_pos, self.cfg.n_heads, n_kv, hd, sw);
@@ -366,7 +373,7 @@ impl AssistantRuntime {
             let inp2 = rmsn_raw(&state, Some(g_pf), eps);
             let gate = self.model.mat(&format!("{p}mlp.gate_proj.weight"))?.project_batch(&inp2, 1, native, self.threads)?;
             let up = self.model.mat(&format!("{p}mlp.up_proj.weight"))?.project_batch(&inp2, 1, native, self.threads)?;
-            let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_scalar(a) * b).collect();
+            let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_fast_f32(a) * b).collect();
             let down = self.model.mat(&format!("{p}mlp.down_proj.weight"))?.project_batch(&act, 1, native, self.threads)?;
             let g_pff = self.model.norm(&format!("{p}post_feedforward_layernorm.weight"))?;
             let norm_d = rmsn_raw(&down, Some(g_pff), eps);
@@ -557,6 +564,7 @@ impl AssistantRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::{gelu_tanh_scalar, qk_norm_raw, rope_head};
     use crate::t16c::T16CMat;
 
     fn pack_4bit_sym(name: &str, w: &[f32], d_out: usize, d_in: usize, bsize: usize) -> T16CMat {
