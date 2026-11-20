@@ -1771,6 +1771,30 @@ impl T16CModel {
     }
 
     pub fn load(path: &Path, native_lib: Option<&Path>, disable_native: bool) -> Result<Self, String> {
+        if let Some(s) = path.to_str() {
+            if s.contains('+') {
+                let parts: Vec<&str> = s.split('+').filter(|p| !p.is_empty()).collect();
+                if parts.is_empty() {
+                    return Err("empty multi-shard T16C path".into());
+                }
+                let mut base = Self::load_single(Path::new(parts[0]), native_lib, disable_native)?;
+                for &part in &parts[1..] {
+                    let sub = Self::load_single(Path::new(part), None, true)?;
+                    for (k, v) in sub.norms {
+                        base.norms.insert(k, v);
+                    }
+                    for (k, m) in sub.mats {
+                        base.mats.insert(k, m);
+                    }
+                }
+                base.total_mat_bytes = base.mats.values().map(|m| m.total_bytes()).sum();
+                return Ok(base);
+            }
+        }
+        Self::load_single(path, native_lib, disable_native)
+    }
+
+    fn load_single(path: &Path, native_lib: Option<&Path>, disable_native: bool) -> Result<Self, String> {
         let f = File::open(path).map_err(|e| format!("open T16C {}: {e}", path.display()))?;
         #[cfg(unix)]
         {

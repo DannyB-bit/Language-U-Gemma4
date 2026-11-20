@@ -63,11 +63,14 @@ from PIL import Image, ImageDraw
 T0_ALL = time.perf_counter()
 
 OUT_DIR = Path(os.environ.get("V5_OUT_DIR", "/kaggle/working"))
-CKPT_DIR = OUT_DIR / "ckpt_v5_0_qat"
+V5_1_LITTLEBIT2 = os.environ.get("V5_1_LITTLEBIT2", "0") == "1"
+BASE_V5_0_T16C = Path(os.environ.get("V5_0_BASE_T16C", str(OUT_DIR / "gemma4_31b_v5_0_qat.t16c")))
+CKPT_DIR = OUT_DIR / ("ckpt_v5_1_qat" if V5_1_LITTLEBIT2 else "ckpt_v5_0_qat")
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
-OUT_T16C = OUT_DIR / "gemma4_31b_v5_0_qat.t16c"
-OUT_C8D = OUT_DIR / "gemma4_31b_v5_0_qat_c8d.c8d"
-OUT_AST = OUT_DIR / "gemma4_31b_assistant_v5.t16c"
+OUT_T16C = OUT_DIR / ("gemma4_31b_v5_1_littlebit2.t16c" if V5_1_LITTLEBIT2 else "gemma4_31b_v5_0_qat.t16c")
+OUT_C8D = OUT_DIR / ("gemma4_31b_v5_1_littlebit2_c8d.c8d" if V5_1_LITTLEBIT2 else "gemma4_31b_v5_0_qat_c8d.c8d")
+OUT_AST = OUT_DIR / ("gemma4_31b_assistant_v5_1.t16c" if V5_1_LITTLEBIT2 else "gemma4_31b_assistant_v5.t16c")
+OUT_DELTA = OUT_DIR / "v5_1_delta_l36_59.bin"
 PROGRESS_JSON = CKPT_DIR / "progress.json"
 
 # Extra strict anti-contamination blacklist (in addition to vc.BLACKLIST_SUBSTRINGS)
@@ -357,13 +360,74 @@ def extract_headers_and_codes_from_packed(
     )
 
 
-def quantize_lr_arrays(U_f: torch.Tensor, V_f: torch.Tensor) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Exact INT8 row-wise quantization matching Int8LowRank in t16c.rs."""
+def littlebit_joint_itq_rotate(
+    U_f: torch.Tensor, V_f: torch.Tensor, n_iter: int = 20
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Samsung Research LittleBit-2 (ICML 2026) Joint-ITQ Internal Latent Rotation:
+      Finds orthogonal rotation R in O(r) on the balanced stacked latent factors
+      X_comb = [U_bal / rms(U_bal) ; V_bal^T / rms(V_bal^T)] to align (U R, R^T V)
+      with the quantization hypercube while preserving (U R)(R^T V) == U V identically.
+    """
     with torch.no_grad():
-        su = (U_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
-        sv = (V_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
-        ui = torch.clamp(torch.round(U_f / su.unsqueeze(1)), -127, 127).to(torch.int8)
-        vi = torch.clamp(torch.round(V_f / sv.unsqueeze(1)), -127, 127).to(torch.int8)
+        r = U_f.shape[1]
+        if r <= 1:
+            return U_f, V_f
+        Uf = U_f.float()
+        Vf = V_f.float()
+        u_col = Uf.norm(dim=0).clamp(min=1e-6)
+        v_row = Vf.norm(dim=1).clamp(min=1e-6)
+        sq = torch.sqrt(u_col / v_row).clamp(0.1, 10.0)
+        U_b = Uf / sq.unsqueeze(0)
+        V_b = Vf * sq.unsqueeze(1)
+
+        u_norm = U_b / U_b.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        v_norm = V_b.T / V_b.T.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        X_comb = torch.cat([u_norm, v_norm], dim=0)
+
+        R = torch.eye(r, device=Uf.device, dtype=torch.float32)
+        for _ in range(n_iter):
+            Z = X_comb @ R
+            B = torch.sign(Z)
+            B = torch.where(B == 0, torch.ones_like(B), B)
+            M = B.T @ X_comb
+            try:
+                U_p, _, Vt_p = torch.linalg.svd(M, full_matrices=False)
+                R = Vt_p.T @ U_p.T
+            except RuntimeError:
+                break
+
+        U_rot = (U_b @ R).contiguous()
+        V_rot = (R.T @ V_b).contiguous()
+        return U_rot.to(U_f.dtype), V_rot.to(V_f.dtype)
+
+
+def _quantize_lr_raw(U_f: torch.Tensor, V_f: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    su = (U_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
+    sv = (V_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
+    ui = torch.clamp(torch.round(U_f / su.unsqueeze(1)), -127, 127).to(torch.int8)
+    vi = torch.clamp(torch.round(V_f / sv.unsqueeze(1)), -127, 127).to(torch.int8)
+    return su, sv, ui, vi
+
+
+def quantize_lr_arrays(U_f: torch.Tensor, V_f: torch.Tensor) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Exact INT8 row-wise quantization with LittleBit-2 Joint-ITQ Internal Latent Rotation (monotonic-gated)."""
+    with torch.no_grad():
+        Uf = U_f.float()
+        Vf = V_f.float()
+        su0, sv0, ui0, vi0 = _quantize_lr_raw(Uf, Vf)
+        U_rot, V_rot = littlebit_joint_itq_rotate(Uf, Vf, n_iter=20)
+        su1, sv1, ui1, vi1 = _quantize_lr_raw(U_rot, V_rot)
+        # Monotonic Frobenius error gate on a 256-row subsample so Joint-ITQ strictly improves or matches INT8 fidelity
+        sub_r = min(256, Uf.shape[0])
+        sub_c = min(512, Vf.shape[1])
+        tgt = Uf[:sub_r] @ Vf[:, :sub_c]
+        rec0 = (ui0[:sub_r].float() * su0[:sub_r].unsqueeze(1)) @ (vi0[:, :sub_c].float() * sv0.unsqueeze(1))
+        rec1 = (ui1[:sub_r].float() * su1[:sub_r].unsqueeze(1)) @ (vi1[:, :sub_c].float() * sv1.unsqueeze(1))
+        if float(F.mse_loss(rec1, tgt).item()) <= float(F.mse_loss(rec0, tgt).item()):
+            su, sv, ui, vi = su1, sv1, ui1, vi1
+        else:
+            su, sv, ui, vi = su0, sv0, ui0, vi0
     return (
         su.detach().cpu().numpy().astype("<f4"),
         sv.detach().cpu().numpy().astype("<f4"),
@@ -517,6 +581,110 @@ class QuantLinearV5(nn.Module):
             v_q = torch.from_numpy(vi.astype(np.float32)).to(w_eff.device) * torch.from_numpy(sv).to(w_eff.device).unsqueeze(1)
             w_eff.add_(u_q @ v_q)
         return w_eff.to(torch.float16)
+
+
+@torch.no_grad()
+def dequant_t16c_record_gpu(
+    d_out: int, d_in: int, bsize: int, nb: int, is_asym: bool, has_fwht: bool,
+    pb: np.ndarray, inv_s: Optional[np.ndarray], lr: Optional[tuple]
+) -> torch.Tensor:
+    """Fast GPU dequantization of an existing T16C matrix record into FP16 [d_out, d_in] on CPU."""
+    if nb == 1 and is_asym:
+        mode = 0
+    elif nb == (2 | 0x80) and not is_asym:
+        mode = 5
+    elif nb == 3 and not is_asym:
+        mode = 4
+    elif nb == 2 and not is_asym:
+        mode = 2
+    else:
+        raise ValueError(f"Unsupported T16C record nb={nb} is_asym={is_asym}")
+
+    if d_out > 32768 and inv_s is None and lr is None:
+        w_eff_cpu = torch.empty((d_out, d_in), dtype=torch.float16)
+        n_blks = d_in // bsize
+        tblk_b = p3.tile16_blk_bytes(bsize, nb, is_asym)
+        row_tile_b = n_blks * tblk_b
+        step_rows = 16384
+        for r0 in range(0, d_out, step_rows):
+            r1 = min(r0 + step_rows, d_out)
+            nt_c = (r1 - r0 + 15) // 16
+            pb_c = pb[(r0 // 16) * row_tile_b : ((r0 // 16) + nt_c) * row_tile_b]
+            sc_c, bi_c, qi_c = extract_headers_and_codes_from_packed(pb_c, r1 - r0, d_in, bsize, mode)
+            qf = qi_c.to(DEVICE, dtype=torch.float32)
+            if mode == 5:
+                qf = qf * (1.0 + 0.00725 * (qf * qf - 1.0))
+            w_rot = qf * sc_c.to(DEVICE, dtype=torch.float32).unsqueeze(-1)
+            if bi_c is not None:
+                w_rot = w_rot + bi_c.to(DEVICE, dtype=torch.float32).unsqueeze(-1)
+            wq = fwht_gpu(w_rot.reshape(r1 - r0, d_in), bsize) if has_fwht else w_rot.reshape(r1 - r0, d_in)
+            w_eff_cpu[r0:r1] = wq.to(torch.float16).cpu()
+            del sc_c, bi_c, qi_c, qf, w_rot, wq
+        return w_eff_cpu
+
+    sc_f32, bi_f32, q_i8 = extract_headers_and_codes_from_packed(pb, d_out, d_in, bsize, mode)
+    rk = int(lr[1].size) if lr is not None else 0
+    bnd = {
+        "name": "deq", "d_out": d_out, "d_in": d_in, "bsize": bsize, "mode": mode,
+        "lr_rank": rk, "pb": pb, "inv_s": inv_s, "lr": lr,
+        "sc_f32": sc_f32, "bi_f32": bi_f32, "q_i8": q_i8,
+    }
+    ql = QuantLinearV5(bnd, DEVICE)
+    out = ql.dequant_w_eff_f16().cpu()
+    del ql, bnd, sc_f32, bi_f32, q_i8
+    return out
+
+
+def read_one_t16c_mat_record(fp) -> tuple:
+    """Read one T16C matrix record at current fp offset -> (name, d_o, d_i, bs, nb, is_asym, has_fwht, pb, inv_s, lr)."""
+    hdr = fp.read(34)
+    nlen, do, di, bs, nb, asym_u8, fwht_u8, inv_k, rk_u16, pb_len, lr_len = struct.unpack("<HIIHBBBBHQQ", hdr)
+    nm = fp.read(nlen).decode("utf-8")
+    pos = fp.tell()
+    pad = (64 - (pos % 64)) % 64
+    if pad:
+        fp.seek(pad, os.SEEK_CUR)
+    pb = np.frombuffer(fp.read(pb_len), dtype=np.uint8).copy()
+    inv_s = None
+    if inv_k == 1:
+        inv_s = np.frombuffer(fp.read(di * 4), dtype="<f4").copy()
+    lr = None
+    if rk_u16 > 0:
+        su = np.frombuffer(fp.read(do * 4), dtype="<f4").copy()
+        sv = np.frombuffer(fp.read(rk_u16 * 4), dtype="<f4").copy()
+        ui = np.frombuffer(fp.read(do * rk_u16), dtype=np.int8).reshape(do, rk_u16).copy()
+        vi = np.frombuffer(fp.read(rk_u16 * di), dtype=np.int8).reshape(rk_u16, di).copy()
+        lr = (su, sv, ui, vi)
+    return (nm, do, di, bs, nb, bool(asym_u8), bool(fwht_u8), pb, inv_s, lr)
+
+
+def index_t16c_file(path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, Tuple[int, int]], List[Tuple[str, int, int]]]:
+    """Fast seek-only index of a T16C file returning (norms_dict, norm_offsets, [(mat_name, start_pos, end_pos)])."""
+    norms_dict: Dict[str, np.ndarray] = {}
+    norm_offs: Dict[str, Tuple[int, int]] = {}
+    mat_spans: List[Tuple[str, int, int]] = []
+    with open(path, "rb") as fp:
+        magic, ver, flags, n_norms, n_mats, _ = struct.unpack("<4s5I", fp.read(24))
+        assert magic == p3.T16C_MAGIC and ver == p3.T16C_VERSION
+        pos = 24
+        for _ in range(n_norms):
+            nlen = struct.unpack("<H", fp.read(2))[0]
+            nm = fp.read(nlen).decode("utf-8")
+            cnt = struct.unpack("<I", fp.read(4))[0]
+            norm_offs[nm] = (pos + 2 + nlen + 4, cnt)
+            norms_dict[nm] = np.frombuffer(fp.read(cnt * 4), dtype="<f4").copy()
+            pos += 2 + nlen + 4 + cnt * 4
+        for _ in range(n_mats):
+            r_start = fp.tell()
+            nlen, do, di, bs, nb, asym_u8, fwht_u8, inv_k, rk_u16, pb_len, lr_len = struct.unpack("<HIIHBBBBHQQ", fp.read(34))
+            nm = fp.read(nlen).decode("utf-8")
+            cur = fp.tell()
+            pad = (64 - (cur % 64)) % 64
+            skip_b = pad + pb_len + (di * 4 if inv_k == 1 else 0) + lr_len
+            fp.seek(skip_b, os.SEEK_CUR)
+            r_end = fp.tell()
+            mat_spans.append((nm, r_start, r_end))
+    return norms_dict, norm_offs, mat_spans
 
 
 def pack_matrix_gpu_gptq_v5(
@@ -1031,6 +1199,7 @@ def _build_stage2_vision() -> dict:
     vis_xsq: Dict[str, torch.Tensor] = {}
     vis_cnt: Dict[str, int] = defaultdict(int)
     vis_x_eval: Dict[str, torch.Tensor] = {}
+    reuse_vis_from_base = V5_1_LITTLEBIT2 and BASE_V5_0_T16C.is_file()
 
     def reg_vis_hook(mod, key: str):
         def _hk(_m, inp, _out):
@@ -1044,17 +1213,19 @@ def _build_stage2_vision() -> dict:
             vis_cnt[key] += x.shape[0]
         return mod.register_forward_hook(_hk)
 
-    hooks = [reg_vis_hook(vis_teacher.patch_embedder.input_proj, "model.vision_tower.patch_embedder.input_proj.weight")]
-    for l_v, lv_mod in enumerate(vis_teacher.encoder.layers):
-        pfx_v = f"model.vision_tower.encoder.layers.{l_v}"
-        for s_nm, s_mod in [
-            ("self_attn.q_proj", lv_mod.self_attn.q_proj), ("self_attn.k_proj", lv_mod.self_attn.k_proj),
-            ("self_attn.v_proj", lv_mod.self_attn.v_proj), ("self_attn.o_proj", lv_mod.self_attn.o_proj),
-            ("mlp.gate_proj", lv_mod.mlp.gate_proj), ("mlp.up_proj", lv_mod.mlp.up_proj),
-            ("mlp.down_proj", lv_mod.mlp.down_proj),
-        ]:
-            hooks.append(reg_vis_hook(s_mod, f"{pfx_v}.{s_nm}.linear.weight"))
-    hooks.append(reg_vis_hook(mm_teacher.embedding_projection, "model.embed_vision.embedding_projection.weight"))
+    hooks = []
+    if not reuse_vis_from_base:
+        hooks.append(reg_vis_hook(vis_teacher.patch_embedder.input_proj, "model.vision_tower.patch_embedder.input_proj.weight"))
+        for l_v, lv_mod in enumerate(vis_teacher.encoder.layers):
+            pfx_v = f"model.vision_tower.encoder.layers.{l_v}"
+            for s_nm, s_mod in [
+                ("self_attn.q_proj", lv_mod.self_attn.q_proj), ("self_attn.k_proj", lv_mod.self_attn.k_proj),
+                ("self_attn.v_proj", lv_mod.self_attn.v_proj), ("self_attn.o_proj", lv_mod.self_attn.o_proj),
+                ("mlp.gate_proj", lv_mod.mlp.gate_proj), ("mlp.up_proj", lv_mod.mlp.up_proj),
+                ("mlp.down_proj", lv_mod.mlp.down_proj),
+            ]:
+                hooks.append(reg_vis_hook(s_mod, f"{pfx_v}.{s_nm}.linear.weight"))
+        hooks.append(reg_vis_hook(mm_teacher.embedding_projection, "model.embed_vision.embedding_projection.weight"))
 
     vis_teach_soft: List[torch.Tensor] = []
     vis_eval_pvs: List[torch.Tensor] = []
@@ -1094,64 +1265,85 @@ def _build_stage2_vision() -> dict:
     }
     vis_deq_weights: Dict[str, torch.Tensor] = {}
 
-    def pack_vision_tensor(name: str, w_t: torch.Tensor, mode: int, lr_r: int, pad_in: int = 0) -> None:
-        d_o, d_i = w_t.shape
-        h_use = vis_hess.pop(name, None)
-        x_rms = torch.sqrt((vis_xsq.pop(name) / max(vis_cnt[name], 1)).clamp(min=1e-8)) if name in vis_xsq else None
-        x_ev = vis_x_eval.pop(name).to(DEVICE) if name in vis_x_eval else None
-        if pad_in > d_i:
-            w_pad = torch.zeros((d_o, pad_in), dtype=torch.float32)
-            w_pad[:, :d_i] = w_t.float()
-            if h_use is not None:
-                hp = torch.zeros((pad_in, pad_in), device=DEVICE, dtype=torch.float32)
-                hp[:d_i, :d_i] = h_use
-                hp.diagonal()[d_i:].fill_(1.0)
-                h_use = hp
-            if x_rms is not None:
-                xp = torch.ones((pad_in,), device=DEVICE, dtype=torch.float32)
-                xp[:d_i] = x_rms
-                x_rms = xp
-            if x_ev is not None:
-                xe = torch.zeros((x_ev.shape[0], pad_in), device=DEVICE, dtype=torch.float32)
-                xe[:, :d_i] = x_ev
-                x_ev = xe
-            d_in_eff = pad_in
-        else:
-            w_pad = w_t.float()
-            d_in_eff = d_i
-        pb, inv_s, lr, w_eff, _ = pack_matrix_gpu_gptq_v5(
-            name, w_pad, [h_use] if h_use is not None else None, x_rms, mode=mode, bsize=64, lr_rank=lr_r, x_eval_gpu=x_ev
-        )
-        del h_use, x_rms, x_ev
-        n_bits, is_asym = p3.MODE_TO_T16C[mode]
-        vision_records.append((name, d_o, d_in_eff, 64, n_bits, is_asym, True, pb, inv_s, lr))
-        vis_deq_weights[name] = w_eff[:, :d_i].to(torch.float16)
+    if reuse_vis_from_base:
+        print(f"[Stage 2 Fast-Forward] Extracting 193 Vision records directly from {BASE_V5_0_T16C}...", flush=True)
+        for l_v in range(27):
+            full_pfx = f"model.vision_tower.encoder.layers.{l_v}"
+            for nk in ["input_layernorm.weight", "post_attention_layernorm.weight", "pre_feedforward_layernorm.weight",
+                       "post_feedforward_layernorm.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight"]:
+                vision_norms[f"{full_pfx}.{nk}"] = vis_sd[f"encoder.layers.{l_v}.{nk}"].float().numpy().astype("<f4")
+        _, _, base_spans = index_t16c_file(BASE_V5_0_T16C)
+        with open(BASE_V5_0_T16C, "rb") as bfp:
+            for nm_s, r_s, _r_e in base_spans:
+                if nm_s.startswith("model.vision_tower.") or nm_s.startswith("model.embed_vision."):
+                    bfp.seek(r_s)
+                    rec = read_one_t16c_mat_record(bfp)
+                    vision_records.append(rec)
+                    _, do_r, di_r, bs_r, nb_r, asy_r, fw_r, pb_r, inv_r, lr_r = rec
+                    w_eff_r = dequant_t16c_record_gpu(do_r, di_r, bs_r, nb_r, asy_r, fw_r, pb_r, inv_r, lr_r)
+                    if nm_s.endswith("mlp.down_proj.linear.weight"):
+                        w_eff_r = w_eff_r[:, :4304]
+                    vis_deq_weights[nm_s] = w_eff_r
+        assert len(vision_records) == 193, f"Expected 193 vision records from base T16C, got {len(vision_records)}"
+    else:
+        def pack_vision_tensor(name: str, w_t: torch.Tensor, mode: int, lr_r: int, pad_in: int = 0) -> None:
+            d_o, d_i = w_t.shape
+            h_use = vis_hess.pop(name, None)
+            x_rms = torch.sqrt((vis_xsq.pop(name) / max(vis_cnt[name], 1)).clamp(min=1e-8)) if name in vis_xsq else None
+            x_ev = vis_x_eval.pop(name).to(DEVICE) if name in vis_x_eval else None
+            if pad_in > d_i:
+                w_pad = torch.zeros((d_o, pad_in), dtype=torch.float32)
+                w_pad[:, :d_i] = w_t.float()
+                if h_use is not None:
+                    hp = torch.zeros((pad_in, pad_in), device=DEVICE, dtype=torch.float32)
+                    hp[:d_i, :d_i] = h_use
+                    hp.diagonal()[d_i:].fill_(1.0)
+                    h_use = hp
+                if x_rms is not None:
+                    xp = torch.ones((pad_in,), device=DEVICE, dtype=torch.float32)
+                    xp[:d_i] = x_rms
+                    x_rms = xp
+                if x_ev is not None:
+                    xe = torch.zeros((x_ev.shape[0], pad_in), device=DEVICE, dtype=torch.float32)
+                    xe[:, :d_i] = x_ev
+                    x_ev = xe
+                d_in_eff = pad_in
+            else:
+                w_pad = w_t.float()
+                d_in_eff = d_i
+            pb, inv_s, lr, w_eff, _ = pack_matrix_gpu_gptq_v5(
+                name, w_pad, [h_use] if h_use is not None else None, x_rms, mode=mode, bsize=64, lr_rank=lr_r, x_eval_gpu=x_ev
+            )
+            del h_use, x_rms, x_ev
+            n_bits, is_asym = p3.MODE_TO_T16C[mode]
+            vision_records.append((name, d_o, d_in_eff, 64, n_bits, is_asym, True, pb, inv_s, lr))
+            vis_deq_weights[name] = w_eff[:, :d_i].to(torch.float16)
 
-    for ax in (0, 1):
-        nm_pos = f"model.vision_tower.patch_embedder.position_embedding_table.{ax}"
-        pb, inv_s, lr, w_eff, _ = pack_matrix_gpu_gptq_v5(nm_pos, pos_tbl_f32[ax], None, None, mode=4, bsize=64, lr_rank=0)
-        vision_records.append((nm_pos, pos_tbl_f32.shape[1], pos_tbl_f32.shape[2], 64, 3, False, True, pb, inv_s, lr))
-        vis_deq_weights[nm_pos] = w_eff
+        for ax in (0, 1):
+            nm_pos = f"model.vision_tower.patch_embedder.position_embedding_table.{ax}"
+            pb, inv_s, lr, w_eff, _ = pack_matrix_gpu_gptq_v5(nm_pos, pos_tbl_f32[ax], None, None, mode=4, bsize=64, lr_rank=0)
+            vision_records.append((nm_pos, pos_tbl_f32.shape[1], pos_tbl_f32.shape[2], 64, 3, False, True, pb, inv_s, lr))
+            vis_deq_weights[nm_pos] = w_eff
 
-    pack_vision_tensor("model.vision_tower.patch_embedder.input_proj.weight", vis_sd["patch_embedder.input_proj.weight"], mode=4, lr_r=16)
-    for l_v in range(27):
-        full_pfx = f"model.vision_tower.encoder.layers.{l_v}"
-        for nk in ["input_layernorm.weight", "post_attention_layernorm.weight", "pre_feedforward_layernorm.weight",
-                   "post_feedforward_layernorm.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight"]:
-            vision_norms[f"{full_pfx}.{nk}"] = vis_sd[f"encoder.layers.{l_v}.{nk}"].float().numpy().astype("<f4")
-        # V5.0 Vision: V00..V23 at fast 2b_gaus (mode=5) + V24..V26 at 3b_u0 (mode=4) -> 1.4x faster ViT + saves 63 MB for LM cliff!
-        v_mode = 4 if l_v >= 24 else 5
-        v_rk = 8 if l_v in (0, 1, 24, 25, 26) else 0
-        for proj in ["self_attn.q_proj.linear.weight", "self_attn.k_proj.linear.weight", "self_attn.v_proj.linear.weight",
-                     "self_attn.o_proj.linear.weight", "mlp.gate_proj.linear.weight", "mlp.up_proj.linear.weight"]:
-            pack_vision_tensor(f"{full_pfx}.{proj}", vis_sd[f"encoder.layers.{l_v}.{proj}"], mode=v_mode, lr_r=v_rk)
-        pack_vision_tensor(
-            f"{full_pfx}.mlp.down_proj.linear.weight",
-            vis_sd[f"encoder.layers.{l_v}.mlp.down_proj.linear.weight"],
-            mode=v_mode, lr_r=v_rk, pad_in=4352,
-        )
+        pack_vision_tensor("model.vision_tower.patch_embedder.input_proj.weight", vis_sd["patch_embedder.input_proj.weight"], mode=4, lr_r=16)
+        for l_v in range(27):
+            full_pfx = f"model.vision_tower.encoder.layers.{l_v}"
+            for nk in ["input_layernorm.weight", "post_attention_layernorm.weight", "pre_feedforward_layernorm.weight",
+                       "post_feedforward_layernorm.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight"]:
+                vision_norms[f"{full_pfx}.{nk}"] = vis_sd[f"encoder.layers.{l_v}.{nk}"].float().numpy().astype("<f4")
+            # V5.0 Vision: V00..V23 at fast 2b_gaus (mode=5) + V24..V26 at 3b_u0 (mode=4) -> 1.4x faster ViT + saves 63 MB for LM cliff!
+            v_mode = 4 if l_v >= 24 else 5
+            v_rk = 8 if l_v in (0, 1, 24, 25, 26) else 0
+            for proj in ["self_attn.q_proj.linear.weight", "self_attn.k_proj.linear.weight", "self_attn.v_proj.linear.weight",
+                         "self_attn.o_proj.linear.weight", "mlp.gate_proj.linear.weight", "mlp.up_proj.linear.weight"]:
+                pack_vision_tensor(f"{full_pfx}.{proj}", vis_sd[f"encoder.layers.{l_v}.{proj}"], mode=v_mode, lr_r=v_rk)
+            pack_vision_tensor(
+                f"{full_pfx}.mlp.down_proj.linear.weight",
+                vis_sd[f"encoder.layers.{l_v}.mlp.down_proj.linear.weight"],
+                mode=v_mode, lr_r=v_rk, pad_in=4352,
+            )
 
-    pack_vision_tensor("model.embed_vision.embedding_projection.weight", embv_sd["embedding_projection.weight"], mode=4, lr_r=32)
+        pack_vision_tensor("model.embed_vision.embedding_projection.weight", embv_sd["embedding_projection.weight"], mode=4, lr_r=32)
     v_bytes = sum(
         len(r[7]) + (len(r[8]) * 4 if r[8] is not None else 0)
         + ((r[9][0].nbytes + r[9][1].nbytes + r[9][2].nbytes + r[9][3].nbytes) if r[9] is not None else 0) + 80
@@ -1385,6 +1577,9 @@ def get_lm_spec_v5(l_idx: int, pname: str) -> Tuple[int, int, int]:
         rk = 16 if ((l_idx < 4 or l_idx >= 36) and pname in ("q_proj", "o_proj")) else 0
         return (5, 256, rk)
     # MLP L36..L57 (THE ENTIRE 22-LAYER CLIFF!):
+    if V5_1_LITTLEBIT2 and l_idx >= 36:
+        # V5.1 LittleBit-2: promote ALL 32 L36..L55 MLP projections from 1b_asym to 2b_gaus (9.35 dB) + Joint-ITQ UV!
+        return (5, 256, 24 if pname == "down_proj" else 16)
     if l_idx >= 56:
         return (5, 256, 24 if pname == "down_proj" else 16)
     if l_idx >= 48:
@@ -1437,12 +1632,13 @@ for _l in range(N_LAYERS):
         _mode_cnt[_m] += 1
         _pred_lm_b += _pred_mat_bytes(_do, _di, _bs, _m, _rk, True)
 _pred_tot_b = _pred_lm_b + vis_total_bytes + 6_500_000
+_max_budget_b = 6_950_000_000 if V5_1_LITTLEBIT2 else 6_520_000_000
 print(
-    f"[Gate 0d Budget Guard] Predicted V5.0 .t16c: LM={_pred_lm_b/1e9:.3f}GB + VIS={vis_total_bytes/1e6:.1f}MB = "
+    f"[Gate 0d Budget Guard] Predicted {'V5.1' if V5_1_LITTLEBIT2 else 'V5.0'} .t16c: LM={_pred_lm_b/1e9:.3f}GB + VIS={vis_total_bytes/1e6:.1f}MB = "
     f"{_pred_tot_b:,} B ({_pred_tot_b/1024**3:.3f} GiB) | modes: 1b={_mode_cnt[0]}, 2g={_mode_cnt[5]}, 3u={_mode_cnt[4]}, tern5=0",
     flush=True,
 )
-assert _pred_tot_b <= 6_520_000_000, f"Budget overflow ({_pred_tot_b:,} B > 6.52 GB)!"
+assert _pred_tot_b <= _max_budget_b, f"Budget overflow ({_pred_tot_b:,} B > {_max_budget_b:,} B)!"
 
 
 # ---------------------------------------------------------------------------
@@ -1762,7 +1958,63 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
     expected_lm_mats = 1 + sum(6 if (LAYER_TYPES[_l] == "full_attention" and K_EQ_V) else 7 for _l in range(N_LAYERS))
     total_mats = expected_lm_mats + n_vis_mats
 
+    def unpack_qat(pfx: str) -> torch.Tensor:
+        wp = sf.get_tensor(f"{pfx}.weight_packed").to(DEVICE)
+        ws = sf.get_tensor(f"{pfx}.weight_scale").to(DEVICE, dtype=torch.float32)
+        sh = torch.arange(0, 32, 4, device=DEVICE, dtype=torch.int32)
+        nibs = ((wp.unsqueeze(-1) >> sh) & 0xF) - 8
+        return (nibs.to(torch.float32).reshape(wp.shape[0], -1, 32) * ws.unsqueeze(-1)).reshape(wp.shape[0], -1).cpu()
+
+    def teacher_layer_step(
+        X_cpu: torch.Tensor,
+        w_f16: Dict[str, torch.Tensor],
+        norms_g: Dict[str, torch.Tensor],
+        l_idx: int,
+        spans_dict: Optional[Dict[int, Tuple[int, int]]] = None,
+        return_mid_and_energy: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        is_full = LAYER_TYPES[l_idx] == "full_attention"
+        nkv = NKV_F if is_full else NKV_S
+        hd = HD_F if is_full else HD_S
+        theta = THETA_G if is_full else THETA_L
+        rot_d = int(round(hd * (PART_G if is_full else PART_L)))
+        cos_r, sin_r = make_rope(theta, rot_d, hd)
+        gqa_rep = NH // nkv
+        lsc = float(norms_g["lsc"])
+        out_cpu = torch.empty_like(X_cpu)
+        xm_cpu = torch.empty_like(X_cpu) if return_mid_and_energy else None
+        neuron_e = torch.zeros((21504,), device=DEVICE, dtype=torch.float64) if return_mid_and_energy else None
+        with torch.no_grad():
+            for b0 in range(0, X_cpu.shape[0], 32):
+                b1 = min(b0 + 32, X_cpu.shape[0])
+                xb = X_cpu[b0:b1].to(DEVICE)
+                inp = rmsn_f16(xb, norms_g["in"])
+                q = F.linear(inp, w_f16["q_proj"]).view(b1 - b0, SEQ_LEN, NH, hd)
+                k = F.linear(inp, w_f16["k_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
+                v = k.clone() if (is_full and K_EQ_V) else F.linear(inp, w_f16["v_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
+                qn = apply_rope_f32(rmsn_f16(q, norms_g["qn"]), cos_r, sin_r, rot_d, hd).transpose(1, 2)
+                kn = apply_rope_f32(rmsn_f16(k, norms_g["kn"]), cos_r, sin_r, rot_d, hd).transpose(1, 2)
+                vn = rmsn_f16(v, None).transpose(1, 2)
+                amask = None if (is_full or not spans_dict) else make_sliding_attn_mask(b0, b1, spans_dict, SEQ_LEN, DEVICE)
+                if amask is not None:
+                    ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(gqa_rep, 1), vn.repeat_interleave(gqa_rep, 1), attn_mask=amask, scale=1.0)
+                else:
+                    ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(gqa_rep, 1), vn.repeat_interleave(gqa_rep, 1), is_causal=True, scale=1.0)
+                ot = F.linear(ctx.transpose(1, 2).contiguous().view(b1 - b0, SEQ_LEN, NH * hd), w_f16["o_proj"])
+                xm = xb + rmsn_f16(ot, norms_g["pa"])
+                if xm_cpu is not None:
+                    xm_cpu[b0:b1] = xm.cpu()
+                hm = rmsn_f16(xm, norms_g["pf"])
+                act = (F.gelu(F.linear(hm, w_f16["gate_proj"]).float(), approximate="tanh") * F.linear(hm, w_f16["up_proj"]).float())
+                if neuron_e is not None:
+                    neuron_e.add_((act * act).reshape(-1, 21504).double().sum(dim=0))
+                dt_o = F.linear(act.to(torch.float16), w_f16["down_proj"])
+                out_cpu[b0:b1] = ((xm.float() + rmsn_f16(dt_o, norms_g["pff"]).float()) * lsc).to(torch.float16).cpu()
+        return out_cpu, xm_cpu, neuron_e
+
     norm_offsets: Dict[str, Tuple[int, int]] = {}
+    v5_1_pos_norms_end = 0
+    v5_1_pos_l36_start = 0
     if STAGE3_CKPT_PATH.is_file() and OUT_T16C.is_file() and CKPT_X_TEACH.is_file() and CKPT_X_STUD.is_file():
         _lc = torch.load(STAGE3_CKPT_PATH, map_location="cpu", weights_only=False)
         start_layer = int(_lc["next_layer"])
@@ -1772,6 +2024,8 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         H_teach_eval = _lc["H_teach_eval"]
         H_stud_eval = _lc["H_stud_eval"]
         layer_cos_log = _lc["layer_cos_log"]
+        v5_1_pos_norms_end = int(_lc.get("v5_1_pos_norms_end", 0))
+        v5_1_pos_l36_start = int(_lc.get("v5_1_pos_l36_start", 0))
         X_teach_cpu = torch.load(CKPT_X_TEACH, map_location="cpu", weights_only=True)
         X_stud_cpu = torch.load(CKPT_X_STUD, map_location="cpu", weights_only=True)
         del _lc
@@ -1779,6 +2033,115 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         t16c_fp.seek(t16c_pos)
         t16c_fp.truncate(t16c_pos)
         print(f"[Resume Stage 3A] Resuming from L{start_layer:02d} (t16c_pos={t16c_pos:,} B)", flush=True)
+    elif V5_1_LITTLEBIT2 and BASE_V5_0_T16C.is_file():
+        print(f"[Stage 3A V5.1 Surgical Fast-Forward] Reusing embed_tokens + L00..L35 from {BASE_V5_0_T16C}...", flush=True)
+        t_ff0 = time.perf_counter()
+        base_norms, base_norm_offs, base_spans = index_t16c_file(BASE_V5_0_T16C)
+        span_map = {nm: (rs, re) for nm, rs, re in base_spans}
+        v5_1_pos_norms_end = base_spans[0][1]
+        l36_idx = next(i for i, (nm, _, _) in enumerate(base_spans) if nm.startswith("model.language_model.layers.36."))
+        v5_1_pos_l36_start = base_spans[l36_idx][1]
+        assert l36_idx == 247, f"Expected 247 records before L36 (1 embed + 246 L00..L35), got {l36_idx}"
+
+        # Copy [0 : v5_1_pos_l36_start] verbatim from BASE_V5_0_T16C -> OUT_T16C in 64 MB chunks
+        with open(BASE_V5_0_T16C, "rb") as bfp, open(OUT_T16C, "wb") as ofp:
+            rem = v5_1_pos_l36_start
+            while rem > 0:
+                chk = bfp.read(min(64 * 1024 * 1024, rem))
+                assert chk, "Unexpected EOF copying L00..L35 prefix"
+                ofp.write(chk)
+                rem -= len(chk)
+            ofp.flush()
+
+        norm_offsets = base_norm_offs
+        t16c_pos = v5_1_pos_l36_start
+        lm_mats_count = l36_idx
+        layer_cos_log = []
+
+        emb_bf16_cpu = sf.get_tensor("model.language_model.embed_tokens.weight")
+        ids_t = torch.from_numpy(all_seq_ids).long()
+        X_teach_cpu = (emb_bf16_cpu[ids_t].float() * ESCALE).to(torch.float16)
+        eval_ids_t = torch.from_numpy(heldout_seq_ids).long()
+        H_teach_eval = (emb_bf16_cpu[eval_ids_t].float() * ESCALE).to(torch.float16)
+        for vi in range(N_VLM_SEQ):
+            s0, s1 = vlm_spans[N_TEXT_SEQ + vi]
+            X_teach_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_teach_soft[vi]
+        for hi in range(len(heldout_captions)):
+            s0, s1 = heldout_spans[hi]
+            H_teach_eval[hi, s0:s1] = heldout_teach_soft[hi]
+        del emb_bf16_cpu
+
+        with open(BASE_V5_0_T16C, "rb") as bfp:
+            bfp.seek(span_map["model.language_model.embed_tokens.weight"][0])
+            _, do_e, di_e, bs_e, nb_e, asy_e, fw_e, pb_e, inv_e, lr_e = read_one_t16c_mat_record(bfp)
+            emb_deq_cpu = dequant_t16c_record_gpu(do_e, di_e, bs_e, nb_e, asy_e, fw_e, pb_e, inv_e, lr_e)
+            del pb_e, inv_e, lr_e
+            X_stud_cpu = (emb_deq_cpu[ids_t] * ESCALE).to(torch.float16)
+            H_stud_eval = (emb_deq_cpu[eval_ids_t] * ESCALE).to(torch.float16)
+            for vi in range(N_VLM_SEQ):
+                s0, s1 = vlm_spans[N_TEXT_SEQ + vi]
+                X_stud_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_stud_soft[vi]
+            for hi in range(len(heldout_captions)):
+                s0, s1 = heldout_spans[hi]
+                H_stud_eval[hi, s0:s1] = heldout_stud_soft[hi]
+            del emb_deq_cpu, ids_t, eval_ids_t
+
+            for l_ff in range(36):
+                p_ff = f"model.language_model.layers.{l_ff}."
+                is_f_ff = LAYER_TYPES[l_ff] == "full_attention"
+                pnames_ff = ["q_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] if (is_f_ff and K_EQ_V) else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+                t_nrm_g = {
+                    "in": sf.get_tensor(p_ff + "input_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                    "qn": sf.get_tensor(p_ff + "self_attn.q_norm.weight").to(DEVICE, dtype=torch.float32),
+                    "kn": sf.get_tensor(p_ff + "self_attn.k_norm.weight").to(DEVICE, dtype=torch.float32),
+                    "pa": sf.get_tensor(p_ff + "post_attention_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                    "pf": sf.get_tensor(p_ff + "pre_feedforward_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                    "pff": sf.get_tensor(p_ff + "post_feedforward_layernorm.weight").to(DEVICE, dtype=torch.float32),
+                    "lsc": sf.get_tensor(p_ff + "layer_scalar").float().item(),
+                }
+                s_nrm_g = {
+                    "in": torch.from_numpy(base_norms[p_ff + "input_layernorm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "qn": torch.from_numpy(base_norms[p_ff + "self_attn.q_norm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "kn": torch.from_numpy(base_norms[p_ff + "self_attn.k_norm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "pa": torch.from_numpy(base_norms[p_ff + "post_attention_layernorm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "pf": torch.from_numpy(base_norms[p_ff + "pre_feedforward_layernorm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "pff": torch.from_numpy(base_norms[p_ff + "post_feedforward_layernorm.weight"]).to(DEVICE, dtype=torch.float32),
+                    "lsc": float(base_norms[p_ff + "layer_scalar"].reshape(-1)[0]),
+                }
+                w_t_f16: Dict[str, torch.Tensor] = {}
+                w_s_f16: Dict[str, torch.Tensor] = {}
+                for pn_ff in pnames_ff:
+                    sub_ff = "self_attn" if pn_ff in ("q_proj", "k_proj", "v_proj", "o_proj") else "mlp"
+                    full_k = f"{p_ff}{sub_ff}.{pn_ff}.weight"
+                    w_t_f16[pn_ff] = unpack_qat(f"{p_ff}{sub_ff}.{pn_ff}").to(DEVICE, dtype=torch.float16)
+                    bfp.seek(span_map[full_k][0])
+                    _, do_m, di_m, bs_m, nb_m, asy_m, fw_m, pb_m, inv_m, lr_m = read_one_t16c_mat_record(bfp)
+                    w_s_f16[pn_ff] = dequant_t16c_record_gpu(do_m, di_m, bs_m, nb_m, asy_m, fw_m, pb_m, inv_m, lr_m).to(DEVICE)
+                    del pb_m, inv_m, lr_m
+                X_teach_cpu, _, _ = teacher_layer_step(X_teach_cpu, w_t_f16, t_nrm_g, l_ff, vlm_spans, False)
+                H_teach_eval, _, _ = teacher_layer_step(H_teach_eval, w_t_f16, t_nrm_g, l_ff, heldout_spans, False)
+                X_stud_cpu, _, _ = teacher_layer_step(X_stud_cpu, w_s_f16, s_nrm_g, l_ff, vlm_spans, False)
+                H_stud_eval, _, _ = teacher_layer_step(H_stud_eval, w_s_f16, s_nrm_g, l_ff, heldout_spans, False)
+                del w_t_f16, w_s_f16, t_nrm_g, s_nrm_g
+                if (l_ff + 1) % 6 == 0 or l_ff == 35:
+                    with torch.no_grad():
+                        tc_v = float(F.cosine_similarity(X_stud_cpu[:32].float().reshape(-1, D_MOD), X_teach_cpu[:32].float().reshape(-1, D_MOD), dim=-1).mean().item())
+                        vc_v = float(F.cosine_similarity(X_stud_cpu[N_TEXT_SEQ:N_TEXT_SEQ+16].float().reshape(-1, D_MOD), X_teach_cpu[N_TEXT_SEQ:N_TEXT_SEQ+16].float().reshape(-1, D_MOD), dim=-1).mean().item())
+                    print(f"  [Fast-Forward L{l_ff:02d}/35] txt_cos={tc_v:.5f} vlm_cos={vc_v:.5f} dt={time.perf_counter()-t_ff0:.1f}s", flush=True)
+                    layer_cos_log.append({"l": l_ff, "txt_cos": round(tc_v, 5), "vlm_cos": round(vc_v, 5), "fast_forwarded": True})
+
+        start_layer = 36
+        _atomic_torch_save(X_teach_cpu, CKPT_X_TEACH)
+        _atomic_torch_save(X_stud_cpu, CKPT_X_STUD)
+        _atomic_torch_save({
+            "next_layer": start_layer, "t16c_pos": t16c_pos, "lm_mats_count": lm_mats_count,
+            "norm_offsets": norm_offsets, "H_teach_eval": H_teach_eval, "H_stud_eval": H_stud_eval,
+            "layer_cos_log": layer_cos_log,
+            "v5_1_pos_norms_end": v5_1_pos_norms_end, "v5_1_pos_l36_start": v5_1_pos_l36_start,
+        }, STAGE3_CKPT_PATH)
+        t16c_fp = open(OUT_T16C, "r+b")
+        t16c_fp.seek(t16c_pos)
+        print(f"[Stage 3A V5.1 Fast-Forward DONE] Ready at L36 (pos={t16c_pos:,} B) in {time.perf_counter()-t_ff0:.1f}s!", flush=True)
     else:
         start_layer = 0
         layer_cos_log: List[dict] = []
@@ -1834,60 +2197,6 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
 
     del vlm_teach_soft, vlm_stud_soft, heldout_teach_soft, heldout_stud_soft
     gc.collect()
-
-    def unpack_qat(pfx: str) -> torch.Tensor:
-        wp = sf.get_tensor(f"{pfx}.weight_packed").to(DEVICE)
-        ws = sf.get_tensor(f"{pfx}.weight_scale").to(DEVICE, dtype=torch.float32)
-        sh = torch.arange(0, 32, 4, device=DEVICE, dtype=torch.int32)
-        nibs = ((wp.unsqueeze(-1) >> sh) & 0xF) - 8
-        return (nibs.to(torch.float32).reshape(wp.shape[0], -1, 32) * ws.unsqueeze(-1)).reshape(wp.shape[0], -1).cpu()
-
-    def teacher_layer_step(
-        X_cpu: torch.Tensor,
-        w_f16: Dict[str, torch.Tensor],
-        norms_g: Dict[str, torch.Tensor],
-        l_idx: int,
-        spans_dict: Optional[Dict[int, Tuple[int, int]]] = None,
-        return_mid_and_energy: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        is_full = LAYER_TYPES[l_idx] == "full_attention"
-        nkv = NKV_F if is_full else NKV_S
-        hd = HD_F if is_full else HD_S
-        theta = THETA_G if is_full else THETA_L
-        rot_d = int(round(hd * (PART_G if is_full else PART_L)))
-        cos_r, sin_r = make_rope(theta, rot_d, hd)
-        gqa_rep = NH // nkv
-        lsc = float(norms_g["lsc"])
-        out_cpu = torch.empty_like(X_cpu)
-        xm_cpu = torch.empty_like(X_cpu) if return_mid_and_energy else None
-        neuron_e = torch.zeros((21504,), device=DEVICE, dtype=torch.float64) if return_mid_and_energy else None
-        with torch.no_grad():
-            for b0 in range(0, X_cpu.shape[0], 32):
-                b1 = min(b0 + 32, X_cpu.shape[0])
-                xb = X_cpu[b0:b1].to(DEVICE)
-                inp = rmsn_f16(xb, norms_g["in"])
-                q = F.linear(inp, w_f16["q_proj"]).view(b1 - b0, SEQ_LEN, NH, hd)
-                k = F.linear(inp, w_f16["k_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
-                v = k.clone() if (is_full and K_EQ_V) else F.linear(inp, w_f16["v_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
-                qn = apply_rope_f32(rmsn_f16(q, norms_g["qn"]), cos_r, sin_r, rot_d, hd).transpose(1, 2)
-                kn = apply_rope_f32(rmsn_f16(k, norms_g["kn"]), cos_r, sin_r, rot_d, hd).transpose(1, 2)
-                vn = rmsn_f16(v, None).transpose(1, 2)
-                amask = None if (is_full or not spans_dict) else make_sliding_attn_mask(b0, b1, spans_dict, SEQ_LEN, DEVICE)
-                if amask is not None:
-                    ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(gqa_rep, 1), vn.repeat_interleave(gqa_rep, 1), attn_mask=amask, scale=1.0)
-                else:
-                    ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(gqa_rep, 1), vn.repeat_interleave(gqa_rep, 1), is_causal=True, scale=1.0)
-                ot = F.linear(ctx.transpose(1, 2).contiguous().view(b1 - b0, SEQ_LEN, NH * hd), w_f16["o_proj"])
-                xm = xb + rmsn_f16(ot, norms_g["pa"])
-                if xm_cpu is not None:
-                    xm_cpu[b0:b1] = xm.cpu()
-                hm = rmsn_f16(xm, norms_g["pf"])
-                act = (F.gelu(F.linear(hm, w_f16["gate_proj"]).float(), approximate="tanh") * F.linear(hm, w_f16["up_proj"]).float())
-                if neuron_e is not None:
-                    neuron_e.add_((act * act).reshape(-1, 21504).double().sum(dim=0))
-                dt_o = F.linear(act.to(torch.float16), w_f16["down_proj"])
-                out_cpu[b0:b1] = ((xm.float() + rmsn_f16(dt_o, norms_g["pff"]).float()) * lsc).to(torch.float16).cpu()
-        return out_cpu, xm_cpu, neuron_e
 
     try:
         for l_idx in range(start_layer, N_LAYERS):
@@ -2449,6 +2758,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         torch.cuda.empty_cache()
 
         assert lm_mats_count == expected_lm_mats, f"LM mat count mismatch: {lm_mats_count} != {expected_lm_mats}"
+        pos_after_l59 = t16c_pos
         _v_tail = torch.load(VIS_CKPT_PATH, map_location="cpu", weights_only=False)
         for _nm, _do, _di, _bs, _nb_i, _is_asym, _has_fwht, _pb, _inv_s, _lr in _v_tail["vision_records"]:
             t16c_pos = p3._write_mat_record(t16c_fp, t16c_pos, _nm, _do, _di, _bs, _nb_i, _is_asym, _has_fwht, _pb, _inv_s, _lr)
@@ -2459,14 +2769,40 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         t16c_fp.close()
 
 t16c_sz = OUT_T16C.stat().st_size
-assert t16c_sz <= 6_550_000_000, f"Serialized V5.0 .t16c exceeded budget: {t16c_sz:,} B"
+assert t16c_sz <= _max_budget_b, f"Serialized .t16c exceeded budget: {t16c_sz:,} B > {_max_budget_b:,} B"
+delta_info = None
+if V5_1_LITTLEBIT2 and v5_1_pos_l36_start > 0:
+    print(f"[Stage 3 V5.1 Delta] Exporting compact L36..L59 + norms delta bundle to {OUT_DELTA}...", flush=True)
+    with open(OUT_T16C, "rb") as sfp, open(OUT_DELTA, "wb") as dfp:
+        dfp.write(struct.pack("<QQQ", v5_1_pos_norms_end, v5_1_pos_l36_start, pos_after_l59))
+        sfp.seek(0)
+        dfp.write(sfp.read(v5_1_pos_norms_end))
+        sfp.seek(v5_1_pos_l36_start)
+        rem_d = pos_after_l59 - v5_1_pos_l36_start
+        while rem_d > 0:
+            chk_d = sfp.read(min(64 * 1024 * 1024, rem_d))
+            assert chk_d
+            dfp.write(chk_d)
+            rem_d -= len(chk_d)
+        dfp.flush()
+    d_sz = OUT_DELTA.stat().st_size
+    delta_info = {
+        "delta_path": str(OUT_DELTA),
+        "delta_bytes": int(d_sz),
+        "delta_sha256": sha256_file(OUT_DELTA),
+        "pos_norms_end": int(v5_1_pos_norms_end),
+        "pos_l36_start": int(v5_1_pos_l36_start),
+        "pos_after_l59": int(pos_after_l59),
+    }
+    print(f"[Stage 3 V5.1 Delta DONE] {OUT_DELTA} ({d_sz:,} B = {d_sz/1024**3:.3f} GiB)", flush=True)
+
 for _rm_p in (VIS_CKPT_PATH, VLM_SOFT_CACHE, STAGE3_CKPT_PATH, CKPT_X_TEACH, CKPT_X_STUD, Path("/tmp/v5_x_stud_pre56.pt"), Path("/tmp/v5_h_eval_pre56.pt")):
     if _rm_p.is_file():
         _rm_p.unlink()
 shutil.rmtree(TAIL_BUNDLE_DIR, ignore_errors=True)
 gc.collect()
 torch.cuda.empty_cache()
-print(f"[Stage 3 DONE] Unified V5.0 .t16c flushed: {OUT_T16C} ({t16c_sz:,} B, {t16c_sz/1024**3:.3f} GiB)!", flush=True)
+print(f"[Stage 3 DONE] Unified .t16c flushed: {OUT_T16C} ({t16c_sz:,} B, {t16c_sz/1024**3:.3f} GiB)!", flush=True)
 save_progress({"stage": "stage3_t16c_complete", "unified_t16c_bytes": int(t16c_sz)})
 
 
@@ -3059,13 +3395,14 @@ if VIS_META_PATH.is_file():
 t16c_sha = sha256_file(OUT_T16C)
 c8d_sha = sha256_file(OUT_C8D)
 report = {
-    "version": "V5.0-QAT-ZERO-TERN5",
+    "version": "V5.1-LITTLEBIT2-QAT-ZERO-1B-UPPER24" if V5_1_LITTLEBIT2 else "V5.0-QAT-ZERO-TERN5",
     "gpu": gpu_name,
     "elapsed_s": round(time.perf_counter() - T0_ALL, 2),
     "unified_t16c_path": str(OUT_T16C),
     "unified_t16c_bytes": int(t16c_sz),
     "unified_t16c_gib": round(t16c_sz / (1024**3), 4),
     "unified_t16c_sha256": t16c_sha,
+    "delta_l36_59": delta_info,
     "c8db_path": str(OUT_C8D),
     "c8db_bytes": int(c8d_sz),
     "c8db_sha256": c8d_sha,
@@ -3081,6 +3418,7 @@ report = {
     "heldout_coco_val0_3": heldout_vlm_report,
     "layer_cos_summary": [r for r in layer_cos_log if r["l"] in (0, 10, 20, 30, 35, 40, 45, 50, 55, 57, 58, 59)],
 }
-(OUT_DIR / "v5_0_qat_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+rep_name = "v5_1_qat_report.json" if V5_1_LITTLEBIT2 else "v5_0_qat_report.json"
+(OUT_DIR / rep_name).write_text(json.dumps(report, indent=2), encoding="utf-8")
 save_progress({"stage": "complete", "unified_t16c_bytes": int(t16c_sz), "post_cell60_val_kl": round(kl_q, 4), "teacher_agree": round(agr_q, 4)})
-print("\n[V5.0 COMPLETE]", json.dumps(report, indent=2), flush=True)
+print(f"\n[{'V5.1' if V5_1_LITTLEBIT2 else 'V5.0'} COMPLETE]", json.dumps(report, indent=2), flush=True)
