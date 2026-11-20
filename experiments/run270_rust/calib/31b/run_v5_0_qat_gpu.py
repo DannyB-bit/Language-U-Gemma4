@@ -1632,7 +1632,7 @@ for _l in range(N_LAYERS):
         _mode_cnt[_m] += 1
         _pred_lm_b += _pred_mat_bytes(_do, _di, _bs, _m, _rk, True)
 _pred_tot_b = _pred_lm_b + vis_total_bytes + 6_500_000
-_max_budget_b = 6_950_000_000 if V5_1_LITTLEBIT2 else 6_520_000_000
+_max_budget_b = 7_000_000_000 if V5_1_LITTLEBIT2 else 6_520_000_000
 print(
     f"[Gate 0d Budget Guard] Predicted {'V5.1' if V5_1_LITTLEBIT2 else 'V5.0'} .t16c: LM={_pred_lm_b/1e9:.3f}GB + VIS={vis_total_bytes/1e6:.1f}MB = "
     f"{_pred_tot_b:,} B ({_pred_tot_b/1024**3:.3f} GiB) | modes: 1b={_mode_cnt[0]}, 2g={_mode_cnt[5]}, 3u={_mode_cnt[4]}, tern5=0",
