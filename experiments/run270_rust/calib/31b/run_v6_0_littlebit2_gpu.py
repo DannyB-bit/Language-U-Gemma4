@@ -70,6 +70,8 @@ T0_ALL = time.perf_counter()
 OUT_DIR = Path(os.environ.get("V6_OUT_DIR", "/content/v6_outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 DRIVE_DIR_STR = os.environ.get("V6_DRIVE_DIR", "").strip()
+if not DRIVE_DIR_STR and Path("/content/drive/MyDrive").is_dir():
+    DRIVE_DIR_STR = "/content/drive/MyDrive/gemma4_v6_littlebit2"
 DRIVE_DIR = Path(DRIVE_DIR_STR) if DRIVE_DIR_STR else None
 if DRIVE_DIR is not None:
     DRIVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -81,6 +83,18 @@ OUT_C8D = OUT_DIR / "gemma4_31b_v6_0_littlebit2_c8d.c8d"
 OUT_AST = OUT_DIR / "gemma4_31b_assistant_v6.t16c"
 OUT_REPORT = OUT_DIR / "v6_0_qat_report.json"
 PROGRESS_JSON = CKPT_DIR / "progress.json"
+
+if DRIVE_DIR is not None and (DRIVE_DIR / "ckpt_v6_0_littlebit2").is_dir():
+    print(f"[Drive Resume] Checking persistent checkpoints at {DRIVE_DIR / 'ckpt_v6_0_littlebit2'}...", flush=True)
+    drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
+    for p in drive_ckpt.glob("*"):
+        if p.is_file() and not (CKPT_DIR / p.name).is_file():
+            shutil.copy2(p, CKPT_DIR / p.name)
+            print(f"  [Restored Checkpoint] {p.name} ({p.stat().st_size:,} B)", flush=True)
+    partial_t16c = DRIVE_DIR / (OUT_T16C.name + ".partial")
+    if partial_t16c.is_file() and not OUT_T16C.is_file():
+        print(f"[Drive Resume] Restoring partial {OUT_T16C.name} ({partial_t16c.stat().st_size:,} B)...", flush=True)
+        shutil.copy2(partial_t16c, OUT_T16C)
 
 EXTRA_BLACKLIST: Tuple[str, ...] = (
     "12 * 8", "12*8", "547", "193", "motorcycle", "motorbike", "honda",
@@ -125,6 +139,25 @@ def persist_to_drive(src: Path) -> Optional[str]:
     assert h_src == h_dst, f"Drive copy SHA-256 mismatch for {src.name}: {h_src} != {h_dst}"
     print(f"  [DRIVE PERSISTED] {dst} ({dst.stat().st_size:,} B, sha256={h_dst[:16]}...)", flush=True)
     return str(dst)
+
+
+def sync_checkpoint_to_drive() -> None:
+    if DRIVE_DIR is None:
+        return
+    drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
+    drive_ckpt.mkdir(parents=True, exist_ok=True)
+    for p in CKPT_DIR.glob("*"):
+        if p.is_file() and not p.name.endswith(".tmp"):
+            try:
+                shutil.copy2(p, drive_ckpt / p.name)
+            except Exception as e:
+                print(f"  [Drive Checkpoint Warn] Failed copying {p.name}: {e}", flush=True)
+    if OUT_T16C.is_file():
+        try:
+            shutil.copy2(OUT_T16C, DRIVE_DIR / (OUT_T16C.name + ".partial"))
+        except Exception as e:
+            print(f"  [Drive T16C Partial Warn] {e}", flush=True)
+    print(f"  [DRIVE CHECKPOINT SYNCED] -> {drive_ckpt}", flush=True)
 
 
 def save_progress(state: dict) -> None:
@@ -1221,6 +1254,7 @@ def _build_stage2_vision() -> dict:
         "cents_vis": cents_vis, "experts_vis": experts_vis,
     }
     _atomic_torch_save(vis_meta, VIS_META_PATH)
+    sync_checkpoint_to_drive()
     return vis_meta
 
 
@@ -1371,8 +1405,8 @@ def build_v6_proj(name: str, w_cpu: torch.Tensor, x_rms: Optional[torch.Tensor],
 # 6. Stage 3A: Streaming L00..L59 LittleBit-2 Joint-ITQ + Full-Weight STE QAT
 # ---------------------------------------------------------------------------
 STAGE3_CKPT_PATH = CKPT_DIR / "stage3_layer_ckpt.pt"
-CKPT_X_TEACH = Path("/tmp/v6_ckpt_x_teach.pt")
-CKPT_X_STUD = Path("/tmp/v6_ckpt_x_stud.pt")
+CKPT_X_TEACH = CKPT_DIR / "v6_ckpt_x_teach.pt"
+CKPT_X_STUD = CKPT_DIR / "v6_ckpt_x_stud.pt"
 TAIL_LAYERS = {56, 57, 58, 59}
 TAIL_MOD_DIR = Path("/tmp/v6_tail_mods")
 TAIL_MOD_DIR.mkdir(parents=True, exist_ok=True)
@@ -1910,7 +1944,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
             del X_teach_next, X_stud_next
             torch.cuda.empty_cache()
 
-            if l_idx in (7, 15, 23, 31, 39, 47, 55):
+            if (l_idx + 1) % 4 == 0 or l_idx == 55:
                 t16c_fp.flush(); os.fsync(t16c_fp.fileno())
                 _atomic_torch_save(X_teach_cpu, CKPT_X_TEACH)
                 _atomic_torch_save(X_stud_cpu, CKPT_X_STUD)
@@ -1919,6 +1953,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
                     "norm_offsets": norm_offsets, "H_teach_eval": H_teach_eval, "H_stud_eval": H_stud_eval,
                     "layer_cos_log": layer_cos_log,
                 }, STAGE3_CKPT_PATH)
+                sync_checkpoint_to_drive()
                 gc.collect()
             save_progress({"stage": f"L{l_idx:02d}_done", "next_layer": l_idx + 1, "txt_cos": round(cos_l_txt, 5)})
             print(
@@ -2167,6 +2202,13 @@ persist_to_drive(OUT_T16C)
 
 for _rm_p in (VIS_CKPT_PATH, VLM_SOFT_CACHE, STAGE3_CKPT_PATH, CKPT_X_TEACH, CKPT_X_STUD, Path("/tmp/v6_x_stud_pre56.pt"), Path("/tmp/v6_h_eval_pre56.pt")):
     _rm_p.unlink(missing_ok=True)
+if DRIVE_DIR is not None:
+    drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
+    if drive_ckpt.is_dir():
+        shutil.rmtree(drive_ckpt, ignore_errors=True)
+    partial_p = DRIVE_DIR / (OUT_T16C.name + ".partial")
+    if partial_p.is_file():
+        partial_p.unlink(missing_ok=True)
 shutil.rmtree(TAIL_MOD_DIR, ignore_errors=True)
 gc.collect(); torch.cuda.empty_cache()
 
@@ -2646,3 +2688,11 @@ report = {
 OUT_REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
 persist_to_drive(OUT_REPORT)
 print(f"\n[V6.0 LITTLEBIT-2 COMPLETE] Report={OUT_REPORT} | Elapsed={(time.perf_counter()-T0_ALL)/60:.1f} min!", flush=True)
+
+if os.environ.get("COLAB_AUTO_UNASSIGN", "1") == "1":
+    try:
+        from google.colab import runtime
+        print("[Auto-Unassign] Disconnecting and releasing Colab runtime to preserve compute units...", flush=True)
+        runtime.unassign()
+    except Exception as e:
+        print(f"[Auto-Unassign Note] {e}", flush=True)
