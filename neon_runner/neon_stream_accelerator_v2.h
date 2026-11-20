@@ -401,6 +401,27 @@ NEON_API int gemv_bitserial_tile16_mmap(
 );
 
 /**
+ * Configure activation bit-width (4, 5, or 6; default 5) for Row-Major
+ * `T16C_ROWMAJOR_BIT` (0x40) Horner AND+VCNT bit-sliced NEON execution.
+ * Pass 0 to query the current bit-width without modifying it.
+ */
+NEON_API int neon_set_andvcnt_abits(int a_bits);
+
+/**
+ * In-place transpose of a Tile-16 bit-serial weight buffer from Column-Major
+ * `[block_size/8][16]` bitplane layout to Row-Major `[16][block_size/8]` layout
+ * (identical byte size, zero extra DRAM allocation). Returns 0 on success.
+ */
+NEON_API int t16c_transpose_col_to_rowmajor_c(
+    uint8_t* packed,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym
+);
+
+/**
  * Two-stage block-ordered Cauchy-Schwarz / optional subspace-sieve LM-head
  * pruning directly on resident Tile-16 bit-serial `.t16c` weights (0 weight
  * duplication, 0 SSD reads). Preserves exact top-`top_k_keep` logits.

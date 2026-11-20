@@ -49,10 +49,13 @@ def tile16_blk_bytes(block_size: int, n_bits: int, is_asym: bool) -> int:
     """Return packed byte count of a single `16 x block_size` tile-block."""
     if block_size not in (64, 128, 256):
         raise ValueError(f"Unsupported block_size={block_size}")
-    eff_bits = n_bits & 0x7F
+    eff_bits = n_bits & 0x3F
     gauss = (n_bits & 0x80) != 0
+    rowmajor = (n_bits & 0x40) != 0
     if gauss and eff_bits not in (2, 3):
         raise ValueError(f"T16C_GAUSS_BIT (0x80) requires eff_bits in (2, 3), got n_bits={n_bits}")
+    if rowmajor and not (1 <= eff_bits <= 4):
+        raise ValueError(f"T16C_ROWMAJOR_BIT (0x40) requires eff_bits in 1..4, got n_bits={n_bits}")
     if eff_bits == 5:
         if is_asym:
             raise ValueError("n_bits=5 (5-trit ternary) requires is_asym=False")

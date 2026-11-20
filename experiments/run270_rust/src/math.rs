@@ -67,6 +67,69 @@ pub fn rope_head(head: &mut [f32], pos: u32, theta: f32, rotary_dims: usize, hea
     }
 }
 
+/// Precomputed inverse frequencies `1 / theta^(2*idx / head_dim)` for fast zero-powf RoPE.
+#[inline]
+pub fn rope_inv_freqs(theta: f32, rotary_dims: usize, head_dim: usize) -> Vec<f32> {
+    let half_rot = rotary_dims / 2;
+    let mut freqs = Vec::with_capacity(half_rot);
+    let inv_hd = 1.0f32 / (head_dim as f32);
+    for idx in 0..half_rot {
+        freqs.push(1.0f32 / theta.powf((idx * 2) as f32 * inv_hd));
+    }
+    freqs
+}
+
+/// Fill `(cos_out, sin_out)` once per `(pos, layer_type)` from precomputed `inv_freqs`.
+#[inline]
+pub fn rope_cos_sin_for_pos(inv_freqs: &[f32], pos: u32, cos_out: &mut [f32], sin_out: &mut [f32]) {
+    let pf = pos as f32;
+    for (idx, &freq) in inv_freqs.iter().enumerate() {
+        let (s, c) = (pf * freq).sin_cos();
+        cos_out[idx] = c;
+        sin_out[idx] = s;
+    }
+}
+
+/// Apply precomputed `(cos, sin)` RoPE rotation in-place across a single head slice.
+#[inline]
+pub fn rope_head_with_cos_sin(head: &mut [f32], cos_t: &[f32], sin_t: &[f32], head_dim: usize) {
+    let half_rot = cos_t.len();
+    let half_head = head_dim / 2;
+    for idx in 0..half_rot {
+        let c = cos_t[idx];
+        let s = sin_t[idx];
+        let x1 = head[idx];
+        let x2 = head[half_head + idx];
+        head[idx] = x1 * c - x2 * s;
+        head[half_head + idx] = x1 * s + x2 * c;
+    }
+}
+
+/// In-place RMSNorm across `n_heads` heads of length `head_dim` (zero temporary Vec allocations).
+#[inline]
+pub fn qk_norm_raw_inplace(x: &mut [f32], n_heads: usize, head_dim: usize, w: Option<&[f32]>, eps: f32) {
+    let inv_hd = 1.0f64 / (head_dim as f64);
+    let eps64 = eps as f64;
+    for h in 0..n_heads {
+        let sl = &mut x[h * head_dim..(h + 1) * head_dim];
+        let mut s = 0.0f64;
+        for &v in sl.iter() {
+            let vf = v as f64;
+            s += vf * vf;
+        }
+        let inv_rms = 1.0f32 / (s * inv_hd + eps64).sqrt() as f32;
+        if let Some(gain) = w {
+            for (v, &g) in sl.iter_mut().zip(gain.iter()) {
+                *v = *v * inv_rms * g;
+            }
+        } else {
+            for v in sl.iter_mut() {
+                *v *= inv_rms;
+            }
+        }
+    }
+}
+
 pub fn attn_decode(
     q: &[f32],
     k_seq: &[f32],

@@ -21,12 +21,13 @@ pub const T16C_VERSION: u32 = 1;
 pub const ARCH_FLAG_GEMMA4: u32 = 1 << 0;
 pub const ARCH_FLAG_TIED_HEAD: u32 = 1 << 1;
 pub const T16C_GAUSS_BIT: u8 = 0x80;
+pub const T16C_ROWMAJOR_BIT: u8 = 0x40;
 
 /// Reconstruct additive bit-plane scaling factor (`1<<p` uniform, or non-uniform Gaussian weights when `T16C_GAUSS_BIT` is set).
 #[inline]
 pub fn plane_weight(n_bits_raw: u8, p: usize) -> f32 {
     let gauss = (n_bits_raw & T16C_GAUSS_BIT) != 0;
-    let eff = n_bits_raw & 0x7F;
+    let eff = n_bits_raw & 0x3F;
     if gauss && eff == 2 {
         match p {
             0 => 1.087,
@@ -209,7 +210,7 @@ const TERN5_LUT: [[i8; 5]; 243] = build_tern5_lut();
 
 /// Packed byte size of a single `16 x block_size` tile-block.
 pub fn tile16_blk_bytes(block_size: usize, n_bits: u8, is_asym: bool) -> usize {
-    let eff_bits = n_bits & 0x7F;
+    let eff_bits = n_bits & 0x3F;
     if eff_bits == 5 {
         32 + block_size.div_ceil(5) * 16
     } else if eff_bits == 8 {
@@ -229,12 +230,16 @@ pub fn expected_tile16_bytes(d_out: usize, d_in: usize, block_size: usize, n_bit
         return Err(format!("invalid tile16 block_size={block_size} for d_in={d_in}"));
     }
     let gauss = (n_bits & T16C_GAUSS_BIT) != 0;
-    let eff_bits = n_bits & 0x7F;
+    let rowmajor = (n_bits & T16C_ROWMAJOR_BIT) != 0;
+    let eff_bits = n_bits & 0x3F;
     if eff_bits == 0 || (eff_bits > 5 && eff_bits != 8) {
         return Err(format!("invalid tile16 n_bits={n_bits}"));
     }
     if gauss && eff_bits != 2 && eff_bits != 3 {
         return Err(format!("invalid tile16 T16C_GAUSS_BIT with eff_bits={eff_bits}"));
+    }
+    if rowmajor && eff_bits > 4 {
+        return Err(format!("invalid tile16 T16C_ROWMAJOR_BIT with eff_bits={eff_bits}"));
     }
     if (eff_bits == 5 || eff_bits == 8) && is_asym {
         return Err(format!("invalid tile16 n_bits={n_bits} with is_asym=true"));
@@ -354,7 +359,8 @@ impl T16CMat {
         let plane_bytes = bytes_per_row_blk * 16;
         let tblk_bytes = tile16_blk_bytes(block_size, n_bits, is_asym);
         let quintets = block_size.div_ceil(5);
-        let eff_bits = n_bits & 0x7F;
+        let rowmajor = (n_bits & T16C_ROWMAJOR_BIT) != 0;
+        let eff_bits = n_bits & 0x3F;
         let max_level = if eff_bits == 5 {
             2
         } else if eff_bits == 8 {
@@ -413,7 +419,12 @@ impl T16CMat {
                                         byte |= 1u8 << (7 - bit);
                                     }
                                 }
-                                dst[p_off + bo * 16 + r] = byte;
+                                let dst_i = if rowmajor {
+                                    p_off + r * bytes_per_row_blk + bo
+                                } else {
+                                    p_off + bo * 16 + r
+                                };
+                                dst[dst_i] = byte;
                             }
                         }
                     }
@@ -462,7 +473,8 @@ impl T16CMat {
                 0.0f32
             };
             let w_blk = &mut w[blk * bsize..(blk + 1) * bsize];
-            let eff_bits = self.n_bits & 0x7F;
+            let rowmajor = (self.n_bits & T16C_ROWMAJOR_BIT) != 0;
+            let eff_bits = self.n_bits & 0x3F;
             if eff_bits == 5 {
                 for g in 0..quintets {
                     let code = src[off + 32 + g * 16 + r] as usize;
@@ -491,7 +503,11 @@ impl T16CMat {
                     let wp = sc * plane_weight(self.n_bits, p);
                     let p_off = off + hdr_bytes + p * plane_bytes;
                     for bo in 0..bytes_per_row_blk {
-                        let b = src[p_off + bo * 16 + r];
+                        let b = if rowmajor {
+                            src[p_off + r * bytes_per_row_blk + bo]
+                        } else {
+                            src[p_off + bo * 16 + r]
+                        };
                         for bit in 0..8 {
                             let sgn = if ((b >> (7 - bit)) & 1) != 0 { 1.0f32 } else { -1.0f32 };
                             w_blk[bo * 8 + bit] += wp * sgn;
@@ -560,7 +576,8 @@ impl T16CMat {
                         break;
                     }
                     let sc = fp16_to_f32(u16::from_le_bytes([src[off + r * 2], src[off + r * 2 + 1]]));
-                    let eff_bits = self.n_bits & 0x7F;
+                    let rowmajor = (self.n_bits & T16C_ROWMAJOR_BIT) != 0;
+                    let eff_bits = self.n_bits & 0x3F;
                     if eff_bits == 5 {
                         w_blk[..bsize].fill(0.0);
                         for g in 0..quintets {
@@ -592,7 +609,11 @@ impl T16CMat {
                             let wp = sc * plane_weight(self.n_bits, p);
                             let p_off = off + hdr_bytes + p * plane_bytes;
                             for bo in 0..bytes_per_row_blk {
-                                let b = src[p_off + bo * 16 + r];
+                                let b = if rowmajor {
+                                    src[p_off + r * bytes_per_row_blk + bo]
+                                } else {
+                                    src[p_off + bo * 16 + r]
+                                };
                                 for bit in 0..8 {
                                     let sgn = if ((b >> (7 - bit)) & 1) != 0 { 1.0f32 } else { -1.0f32 };
                                     w_blk[bo * 8 + bit] += wp * sgn;
@@ -856,7 +877,7 @@ impl T16CMat {
             None => x_eff,
         };
 
-        let eff_bits = self.n_bits & 0x7F;
+        let eff_bits = self.n_bits & 0x3F;
         let mut y = vec![0f32; k_tokens * d_out];
         let mut skipped: i64 = 0;
         if let Some(sp_fn) = native.and_then(|k| k.gemm_sparse_fn) {
@@ -1005,7 +1026,8 @@ impl T16CMat {
         let packed = self.packed_slice();
         let is_asym = self.is_asym;
         let n_bits_raw = self.n_bits;
-        let eff_bits = (n_bits_raw & 0x7F) as usize;
+        let rowmajor = (n_bits_raw & T16C_ROWMAJOR_BIT) != 0;
+        let eff_bits = (n_bits_raw & 0x3F) as usize;
         let total_skipped = std::sync::atomic::AtomicI64::new(0);
 
         let nthreads = threads.max(1).min(d_out);
@@ -1085,7 +1107,11 @@ impl T16CMat {
                                         let p_off = off + hdr_bytes + p * plane_bytes;
                                         let mut isum = 0.0f64;
                                         for bo in 0..bytes_per_row_blk {
-                                            let b = packed[p_off + bo * 16 + r];
+                                            let b = if rowmajor {
+                                                packed[p_off + r * bytes_per_row_blk + bo]
+                                            } else {
+                                                packed[p_off + bo * 16 + r]
+                                            };
                                             let base = bo * 8;
                                             for bit in 0..8 {
                                                 let v = xb[base + bit] as f64;
@@ -1126,7 +1152,8 @@ impl T16CMat {
         let packed = self.packed_slice();
         let is_asym = self.is_asym;
         let n_bits_raw = self.n_bits;
-        let eff_bits = (n_bits_raw & 0x7F) as usize;
+        let rowmajor = (n_bits_raw & T16C_ROWMAJOR_BIT) != 0;
+        let eff_bits = (n_bits_raw & 0x3F) as usize;
         let active_blks: Vec<usize> = match col_blk_mask {
             Some(cm) => (0..n_blks).filter(|&b| cm[b] != 0).collect(),
             None => (0..n_blks).collect(),
@@ -1199,7 +1226,11 @@ impl T16CMat {
                                         let p_off = off + hdr_bytes + p * plane_bytes;
                                         let mut isum = 0.0f64;
                                         for bo in 0..bytes_per_row_blk {
-                                            let b = packed[p_off + bo * 16 + r];
+                                            let b = if rowmajor {
+                                                packed[p_off + r * bytes_per_row_blk + bo]
+                                            } else {
+                                                packed[p_off + bo * 16 + r]
+                                            };
                                             let base = bo * 8;
                                             for bit in 0..8 {
                                                 let v = xb[base + bit] as f64;
@@ -1327,6 +1358,8 @@ pub type FlashGlyphAttentionGqaFn = unsafe extern "C" fn(
     num_threads: i32,
 ) -> i32;
 
+pub type SetAndVcntAbitsFn = unsafe extern "C" fn(a_bits: i32) -> i32;
+
 pub struct NativeTile16Kernel {
     handle: usize,
     pub path: String,
@@ -1337,6 +1370,7 @@ pub struct NativeTile16Kernel {
     pub lmhead_cs_fn: Option<LmHeadCsTile16BatchFn>,
     pub encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn>,
     pub flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn>,
+    pub set_andvcnt_abits_fn: Option<SetAndVcntAbitsFn>,
 }
 
 unsafe impl Send for NativeTile16Kernel {}
@@ -1433,6 +1467,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, FlashGlyphAttentionGqaFn>(fg_sym))
             };
+            let av_sym = sys::dlsym(h, b"neon_set_andvcnt_abits\0".as_ptr() as *const std::ffi::c_char);
+            let set_andvcnt_abits_fn: Option<SetAndVcntAbitsFn> = if av_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, SetAndVcntAbitsFn>(av_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: s.to_string(),
@@ -1443,6 +1483,7 @@ impl NativeTile16Kernel {
                 lmhead_cs_fn,
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
+                set_andvcnt_abits_fn,
             })
         }
         #[cfg(windows)]
@@ -1496,6 +1537,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, FlashGlyphAttentionGqaFn>(fg_sym))
             };
+            let av_sym = sys::GetProcAddress(h, b"neon_set_andvcnt_abits\0".as_ptr() as *const i8);
+            let set_andvcnt_abits_fn: Option<SetAndVcntAbitsFn> = if av_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, SetAndVcntAbitsFn>(av_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: path.display().to_string(),
@@ -1506,6 +1553,7 @@ impl NativeTile16Kernel {
                 lmhead_cs_fn,
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
+                set_andvcnt_abits_fn,
             })
         }
         #[cfg(not(any(unix, windows)))]
@@ -1543,6 +1591,10 @@ impl NativeTile16Kernel {
             }
         }
         None
+    }
+
+    pub fn set_andvcnt_abits(&self, a_bits: i32) -> Option<i32> {
+        self.set_andvcnt_abits_fn.map(|f| unsafe { f(a_bits) })
     }
 }
 
@@ -2608,6 +2660,102 @@ mod tests {
                                 y_rust[idx_o]
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn t16c_rowmajor_andvcnt_roundtrip_and_sparse_parity() {
+        let d_out = 64usize;
+        let d_in = 512usize;
+        let bsize = 256usize;
+        let n_blks = d_in / bsize;
+        let rmask = [1u8, 0u8, 1u8, 0u8];
+        let mut sc = vec![0.0f32; d_out * n_blks];
+        let mut bi = vec![0.0f32; d_out * n_blks];
+        let mut idx = vec![0u8; d_out * d_in];
+        for r in 0..d_out {
+            for b in 0..n_blks {
+                sc[r * n_blks + b] = 0.04 + 0.01 * ((r + b) % 5) as f32;
+                bi[r * n_blks + b] = -0.015 + 0.005 * ((r + 2 * b) % 3) as f32;
+            }
+            for j in 0..d_in {
+                idx[r * d_in + j] = ((r * 7 + j * 13) & 1) as u8;
+            }
+        }
+        let mat = T16CMat::pack_from_components(
+            "rowmajor.test".into(),
+            d_out,
+            d_in,
+            bsize,
+            1 | T16C_ROWMAJOR_BIT,
+            true,
+            true,
+            &sc,
+            Some(&bi),
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        let mat_col = T16CMat::pack_from_components(
+            "colmajor.test".into(),
+            d_out,
+            d_in,
+            bsize,
+            1,
+            true,
+            true,
+            &sc,
+            Some(&bi),
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        for r in 0..d_out {
+            let a = mat.decode_row(r).unwrap();
+            let b = mat_col.decode_row(r).unwrap();
+            for (va, vb) in a.iter().zip(b.iter()) {
+                assert!((va - vb).abs() < 1e-6, "rowmajor decode_row mismatch r={r}: {va} vs {vb}");
+            }
+        }
+        let kt = 4usize;
+        let x: Vec<f32> = (0..kt * d_in)
+            .map(|i| (((i * 19 + 7) % 29) as f32 - 14.0) * 0.08)
+            .collect();
+        let y_rust = mat.project_batch(&x, kt, None, 2).unwrap();
+        let y_col_rust = mat_col.project_batch(&x, kt, None, 2).unwrap();
+        for (a, b) in y_rust.iter().zip(y_col_rust.iter()) {
+            assert!((a - b).abs() < 1e-5, "rowmajor vs colmajor rust mismatch: {a} vs {b}");
+        }
+        if let Some(nk) = NativeTile16Kernel::discover(None) {
+            if nk.set_andvcnt_abits_fn.is_some() {
+                nk.set_andvcnt_abits(5);
+                let y_nat4 = mat.project_batch(&x, kt, Some(&nk), 2).unwrap();
+                for tok in 0..kt {
+                    let y_nat1 = mat.project_batch(&x[tok * d_in..(tok + 1) * d_in], 1, Some(&nk), 2).unwrap();
+                    let (mut dot, mut na, mut nb) = (0.0f64, 0.0f64, 0.0f64);
+                    for r in 0..d_out {
+                        let a = y_nat4[tok * d_out + r];
+                        let b = y_nat1[r];
+                        let yr = y_rust[tok * d_out + r];
+                        assert_eq!(a.to_bits(), b.to_bits(), "rowmajor native k=4 vs k=1 bit mismatch");
+                        dot += (a as f64) * (yr as f64);
+                        na += (a as f64) * (a as f64);
+                        nb += (yr as f64) * (yr as f64);
+                    }
+                    let cos = dot / (na.sqrt() * nb.sqrt() + 1e-12);
+                    assert!(cos > 0.995, "rowmajor native 5-bit cos={cos} tok={tok}");
+                }
+                let (y_sp, sk) = mat.project_batch_sparse(&x, kt, Some(&nk), 2, Some(&rmask), None).unwrap();
+                assert_eq!(sk, (2 * n_blks) as i64);
+                for tok in 0..kt {
+                    for r in 0..d_out {
+                        let want = if rmask[r / 16] != 0 { y_nat4[tok * d_out + r] } else { 0.0 };
+                        assert!((y_sp[tok * d_out + r] - want).abs() < 1e-6);
                     }
                 }
             }

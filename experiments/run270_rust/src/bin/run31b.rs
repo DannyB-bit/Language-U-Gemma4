@@ -10,7 +10,10 @@
 use run270_rust::codec::bf16_to_f32;
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
-use run270_rust::math::{attn_decode_range, gelu_tanh_scalar, qk_norm_raw, rmsn_raw, rope_head};
+use run270_rust::math::{
+    attn_decode_range, gelu_tanh_scalar, qk_norm_raw_inplace, rmsn_raw, rope_cos_sin_for_pos,
+    rope_head_with_cos_sin, rope_inv_freqs,
+};
 use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use run270_rust::packed::{PackedMatrix, QuantScheme};
@@ -994,45 +997,116 @@ impl Runtime31B {
                 if let Some(mats) = t16c_mats {
                     let k1 = format!("model.language_model.layers.{layer}.{proj_suffix}.weight");
                     let k2 = format!("model.layers.{layer}.{proj_suffix}.weight");
-                    let mat = mats
-                        .get(&k1)
-                        .or_else(|| mats.get(&k2))
-                        .ok_or_else(|| format!("T16C missing {k1}"))?;
-                    let mut out = if row_mask.is_some() || col_mask.is_some() {
-                        let (y_sp, skipped) = mat.project_batch_sparse_ext(
-                            x_batch,
-                            seq_len,
-                            native_t16c.as_deref(),
-                            threads,
-                            row_mask,
-                            col_mask,
-                            include_aux,
-                            proj_suffix == "mlp.gate_proj",
-                        )?;
-                        let n_tiles_m = mat.d_out.div_ceil(16) as u64;
-                        let n_blks_m = (mat.d_in / mat.block_size) as u64;
-                        let passes = (seq_len.div_ceil(4)).max(1) as u64;
-                        mlp_sp_total_step += n_tiles_m * n_blks_m * passes;
-                        if skipped > 0 {
-                            mlp_sp_skipped_step += skipped as u64;
+                    let mut out = if let Some(mat) = mats.get(&k1).or_else(|| mats.get(&k2)) {
+                        if row_mask.is_some() || col_mask.is_some() {
+                            let (y_sp, skipped) = mat.project_batch_sparse_ext(
+                                x_batch,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                row_mask,
+                                col_mask,
+                                include_aux,
+                                proj_suffix == "mlp.gate_proj",
+                            )?;
+                            let n_tiles_m = mat.d_out.div_ceil(16) as u64;
+                            let n_blks_m = (mat.d_in / mat.block_size) as u64;
+                            let passes = (seq_len.div_ceil(4)).max(1) as u64;
+                            mlp_sp_total_step += n_tiles_m * n_blks_m * passes;
+                            if skipped > 0 {
+                                mlp_sp_skipped_step += skipped as u64;
+                            }
+                            y_sp
+                        } else if proj_suffix == "mlp.down_proj" && cs_skip_thresh > 0.0 {
+                            let d_norms = cs_down_norms.get(layer).and_then(|o| o.as_deref());
+                            let (y_cs, skipped) = mat.project_batch_cs(
+                                x_batch,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                d_norms,
+                                cs_skip_thresh,
+                            )?;
+                            if skipped > 0 {
+                                cs_skipped_step += skipped as u64;
+                            }
+                            y_cs
+                        } else {
+                            mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
                         }
-                        y_sp
-                    } else if proj_suffix == "mlp.down_proj" && cs_skip_thresh > 0.0 {
-                        let d_norms = cs_down_norms.get(layer).and_then(|o| o.as_deref());
-                        let (y_cs, skipped) = mat.project_batch_cs(
-                            x_batch,
-                            seq_len,
-                            native_t16c.as_deref(),
-                            threads,
-                            d_norms,
-                            cs_skip_thresh,
-                        )?;
-                        if skipped > 0 {
-                            cs_skipped_step += skipped as u64;
-                        }
-                        y_cs
                     } else {
-                        mat.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
+                        /* Native Samsung LittleBit / LittleBit-2 Factored Projection:
+                           W ≈ U_q(V_q(x)) [+ optional residual U2_q(V2_q(x))] in pure 1-bit Row-Major AND+VCNT! */
+                        let kv1 = format!("{k1}.lb_v");
+                        let ku1 = format!("{k1}.lb_u");
+                        let kv2 = format!("{k2}.lb_v");
+                        let ku2 = format!("{k2}.lb_u");
+                        let mat_v = mats
+                            .get(&kv1)
+                            .or_else(|| mats.get(&kv2))
+                            .ok_or_else(|| format!("T16C missing {k1} (and LittleBit {kv1})"))?;
+                        let mat_u = mats
+                            .get(&ku1)
+                            .or_else(|| mats.get(&ku2))
+                            .ok_or_else(|| format!("T16C missing LittleBit {ku1}"))?;
+                        let (z, sk_v) = if col_mask.is_some() {
+                            mat_v.project_batch_sparse_ext(
+                                x_batch,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                None,
+                                col_mask,
+                                include_aux,
+                                false,
+                            )?
+                        } else {
+                            (mat_v.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?, 0)
+                        };
+                        let (mut y_lb, sk_u) = if row_mask.is_some() {
+                            mat_u.project_batch_sparse_ext(
+                                &z,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                row_mask,
+                                None,
+                                include_aux,
+                                false,
+                            )?
+                        } else {
+                            (mat_u.project_batch(&z, seq_len, native_t16c.as_deref(), threads)?, 0)
+                        };
+                        if row_mask.is_some() || col_mask.is_some() {
+                            let passes = (seq_len.div_ceil(8)).max(1) as u64;
+                            mlp_sp_total_step += (mat_v.d_out.div_ceil(16) * (mat_v.d_in / mat_v.block_size)
+                                + mat_u.d_out.div_ceil(16) * (mat_u.d_in / mat_u.block_size)) as u64
+                                * passes;
+                            if sk_v > 0 {
+                                mlp_sp_skipped_step += sk_v as u64;
+                            }
+                            if sk_u > 0 {
+                                mlp_sp_skipped_step += sk_u as u64;
+                            }
+                        }
+                        let krv1 = format!("{k1}.lb_rv");
+                        let kru1 = format!("{k1}.lb_ru");
+                        if let (Some(rv), Some(ru)) = (mats.get(&krv1), mats.get(&kru1)) {
+                            let zr = if col_mask.is_some() {
+                                rv.project_batch_sparse_ext(x_batch, seq_len, native_t16c.as_deref(), threads, None, col_mask, include_aux, false)?.0
+                            } else {
+                                rv.project_batch(x_batch, seq_len, native_t16c.as_deref(), threads)?
+                            };
+                            let yr = if row_mask.is_some() {
+                                ru.project_batch_sparse_ext(&zr, seq_len, native_t16c.as_deref(), threads, row_mask, None, include_aux, false)?.0
+                            } else {
+                                ru.project_batch(&zr, seq_len, native_t16c.as_deref(), threads)?
+                            };
+                            for (dst, &src) in y_lb.iter_mut().zip(yr.iter()) {
+                                *dst += src;
+                            }
+                        }
+                        y_lb
                     };
                     if include_aux && self.apply_c8d_proj {
                         if let Some(ref bank) = self.c8d_bank {
@@ -1078,15 +1152,43 @@ impl Runtime31B {
                 qat_project_batch(&qp, x_batch, seq_len, threads)
             };
 
+            // Precompute RoPE (cos, sin) tables ONCE per token position across all 60 layers (eliminating ~3M powf/sin_cos calls/step).
+            let rot_local = ((cfg.hd as f32) * cfg.partial_local) as usize;
+            let rot_global = ((cfg.global_hd as f32) * cfg.partial_global) as usize;
+            let inv_f_local = rope_inv_freqs(cfg.theta_local, rot_local, cfg.hd);
+            let inv_f_global = rope_inv_freqs(cfg.theta_global, rot_global, cfg.global_hd);
+            let half_rot_local = inv_f_local.len();
+            let half_rot_global = inv_f_global.len();
+            let mut rope_cos_local = vec![0.0f32; seq_len * half_rot_local];
+            let mut rope_sin_local = vec![0.0f32; seq_len * half_rot_local];
+            let mut rope_cos_global = vec![0.0f32; seq_len * half_rot_global];
+            let mut rope_sin_global = vec![0.0f32; seq_len * half_rot_global];
+            for t in 0..seq_len {
+                let pos = (start_pos + t) as u32;
+                if half_rot_local > 0 {
+                    rope_cos_sin_for_pos(
+                        &inv_f_local,
+                        pos,
+                        &mut rope_cos_local[t * half_rot_local..(t + 1) * half_rot_local],
+                        &mut rope_sin_local[t * half_rot_local..(t + 1) * half_rot_local],
+                    );
+                }
+                if half_rot_global > 0 {
+                    rope_cos_sin_for_pos(
+                        &inv_f_global,
+                        pos,
+                        &mut rope_cos_global[t * half_rot_global..(t + 1) * half_rot_global],
+                        &mut rope_sin_global[t * half_rot_global..(t + 1) * half_rot_global],
+                    );
+                }
+            }
+
             for l in 0..cfg.n_layers {
                 let tl = std::time::Instant::now();
                 let pfx = format!("model.language_model.layers.{l}");
                 let is_full = cfg.layer_full[l];
                 let hd = if is_full { cfg.global_hd } else { cfg.hd };
                 let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
-                let theta = if is_full { cfg.theta_global } else { cfg.theta_local };
-                let partial = if is_full { cfg.partial_global } else { cfg.partial_local };
-                let rotary_dims = ((hd as f32) * partial) as usize;
                 let sw = if is_full { None } else { Some(cfg.window) };
 
                 let mut inp = Vec::with_capacity(seq_len * d);
@@ -1115,25 +1217,28 @@ impl Runtime31B {
                 {
                     let qn = get_norm(&format!("{pfx}.self_attn.q_norm.weight"))?;
                     let kn = get_norm(&format!("{pfx}.self_attn.k_norm.weight"))?;
+                    let (rcos_all, rsin_all, hrot) = if is_full {
+                        (&rope_cos_global[..], &rope_sin_global[..], half_rot_global)
+                    } else {
+                        (&rope_cos_local[..], &rope_sin_local[..], half_rot_local)
+                    };
                     for t in 0..seq_len {
-                        let pos = (start_pos + t) as u32;
+                        let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
+                        let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
                         let qs = &mut q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                        let qnormed = qk_norm_raw(qs, n_heads, hd, Some(qn), eps);
-                        qs.copy_from_slice(&qnormed);
+                        qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
                         for h in 0..n_heads {
-                            rope_head(&mut qs[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
+                            rope_head_with_cos_sin(&mut qs[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
                         }
 
                         let ks = &mut k_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                        let knormed = qk_norm_raw(ks, n_kv, hd, Some(kn), eps);
-                        ks.copy_from_slice(&knormed);
+                        qk_norm_raw_inplace(ks, n_kv, hd, Some(kn), eps);
                         for h in 0..n_kv {
-                            rope_head(&mut ks[h * hd..(h + 1) * hd], pos, theta, rotary_dims, hd);
+                            rope_head_with_cos_sin(&mut ks[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
                         }
 
                         let vs = &mut v_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                        let vnormed = qk_norm_raw(vs, n_kv, hd, None, eps);
-                        vs.copy_from_slice(&vnormed);
+                        qk_norm_raw_inplace(vs, n_kv, hd, None, eps);
                     }
                 }
 
@@ -1257,12 +1362,14 @@ impl Runtime31B {
                     t16c_mats.as_ref().and_then(|mats| {
                         let ku1 = format!("model.language_model.layers.{l}.mlp.up_proj.weight");
                         let ku2 = format!("model.layers.{l}.mlp.up_proj.weight");
+                        let ku1_lb = format!("{ku1}.lb_u");
                         let kd1 = format!("model.language_model.layers.{l}.mlp.down_proj.weight");
                         let kd2 = format!("model.layers.{l}.mlp.down_proj.weight");
-                        let um = mats.get(&ku1).or_else(|| mats.get(&ku2))?;
-                        let dm = mats.get(&kd1).or_else(|| mats.get(&kd2))?;
-                        let ue = um.n_bits & 0x7F;
-                        let de = dm.n_bits & 0x7F;
+                        let kd1_lb = format!("{kd1}.lb_v");
+                        let um = mats.get(&ku1).or_else(|| mats.get(&ku2)).or_else(|| mats.get(&ku1_lb))?;
+                        let dm = mats.get(&kd1).or_else(|| mats.get(&kd2)).or_else(|| mats.get(&kd1_lb))?;
+                        let ue = um.n_bits & 0x3F;
+                        let de = dm.n_bits & 0x3F;
                         if ue == 5 || ue == 8 || de == 5 || de == 8 {
                             return None;
                         }
@@ -2304,6 +2411,16 @@ fn run() -> Result<(), String> {
     if !mlp_top_p.is_finite() || mlp_top_p <= 0.0 || mlp_top_p > 1.0 {
         return Err(format!("--mlp-top-p must be finite in (0.0, 1.0], got {mlp_top_p}"));
     }
+    let andvcnt_bits: Option<i32> = match get("--andvcnt-bits") {
+        Some(s) => {
+            let v: i32 = s.parse().map_err(|_| format!("invalid --andvcnt-bits '{s}'"))?;
+            if !(4..=6).contains(&v) {
+                return Err(format!("--andvcnt-bits must be 4, 5, or 6, got {v}"));
+            }
+            Some(v)
+        }
+        None => None,
+    };
     let profile_components = args.iter().any(|a| a == "--profile-components");
     let prompt_batch_arg = get("--prompt-batch");
     let lmhead_cs_sieve: Option<f32> = match get("--lmhead-cs") {
@@ -2398,6 +2515,11 @@ fn run() -> Result<(), String> {
     }
     rt.mlp_top_p = mlp_top_p;
     rt.profile_components = profile_components;
+    if let (Some(ab), Some(ref nat)) = (andvcnt_bits, rt.native_t16c.as_ref()) {
+        if let Some(active) = nat.set_andvcnt_abits(ab) {
+            eprintln!("[run31b] configured Row-Major AND+VCNT activation bits = {active}");
+        }
+    }
     if mlp_top_p < 0.9999 {
         eprintln!("[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p={mlp_top_p:.3}");
     }
