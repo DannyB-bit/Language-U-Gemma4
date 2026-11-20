@@ -88,7 +88,7 @@ if DRIVE_DIR is not None and (DRIVE_DIR / "ckpt_v6_0_littlebit2").is_dir():
     print(f"[Drive Resume] Checking persistent checkpoints at {DRIVE_DIR / 'ckpt_v6_0_littlebit2'}...", flush=True)
     drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
     for p in drive_ckpt.glob("*"):
-        if p.is_file() and not p.name.endswith(".synctmp") and not (CKPT_DIR / p.name).is_file():
+        if p.is_file() and not (CKPT_DIR / p.name).is_file():
             shutil.copy2(p, CKPT_DIR / p.name)
             print(f"  [Restored Checkpoint] {p.name} ({p.stat().st_size:,} B)", flush=True)
     partial_t16c = DRIVE_DIR / (OUT_T16C.name + ".partial")
@@ -144,30 +144,20 @@ def persist_to_drive(src: Path) -> Optional[str]:
 def sync_checkpoint_to_drive() -> None:
     if DRIVE_DIR is None:
         return
-    # Two-phase commit: copy every file to *.synctmp first (slow), then os.replace all (fast),
-    # so a crash mid-copy can never leave a mixed-generation checkpoint set on Drive.
     drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
     drive_ckpt.mkdir(parents=True, exist_ok=True)
-    pairs: List[Tuple[Path, Path]] = []
     for p in CKPT_DIR.glob("*"):
         if p.is_file() and not p.name.endswith(".tmp"):
-            pairs.append((p, drive_ckpt / p.name))
+            try:
+                shutil.copy2(p, drive_ckpt / p.name)
+            except Exception as e:
+                print(f"  [Drive Checkpoint Warn] Failed copying {p.name}: {e}", flush=True)
     if OUT_T16C.is_file():
-        pairs.append((OUT_T16C, DRIVE_DIR / (OUT_T16C.name + ".partial")))
-    staged: List[Tuple[Path, Path]] = []
-    for src, dst in pairs:
-        tmp = dst.with_name(dst.name + ".synctmp")
         try:
-            shutil.copy2(src, tmp)
-            staged.append((tmp, dst))
-        except OSError as e:
-            print(f"  [Drive Checkpoint Warn] staging {src.name} failed ({e}); aborting this sync, previous generation kept", flush=True)
-            for t, _ in staged:
-                t.unlink(missing_ok=True)
-            return
-    for tmp, dst in staged:
-        os.replace(tmp, dst)
-    print(f"  [DRIVE CHECKPOINT SYNCED] {len(staged)} files -> {drive_ckpt}", flush=True)
+            shutil.copy2(OUT_T16C, DRIVE_DIR / (OUT_T16C.name + ".partial"))
+        except Exception as e:
+            print(f"  [Drive T16C Partial Warn] {e}", flush=True)
+    print(f"  [DRIVE CHECKPOINT SYNCED] -> {drive_ckpt}", flush=True)
 
 
 def save_progress(state: dict) -> None:
