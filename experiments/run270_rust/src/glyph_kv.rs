@@ -911,63 +911,70 @@ impl GlyphKvLayer {
             }
         }
 
-        // 2. Evaluate exact Dual-Road sink + rolling hot-tail tokens `(out_e, m_e, l_e)`.
+        // 2. Evaluate exact Dual-Road sink + rolling hot-tail tokens `(out_e, m_e, l_e)`
+        //    using NEON-vectorizable 4-way FP32 dots and a single-pass softmax (zero per-token `out_e` rescaling).
         let mut out_e = vec![0.0f32; self.n_heads * self.hd];
         let mut m_e = vec![f32::NEG_INFINITY; self.n_heads];
         let mut l_e = vec![0.0f32; self.n_heads];
         let mut has_exact_contrib = false;
 
-        let mut eval_exact_slice = |positions: &[usize], k_buf: &[f32], v_buf: &[f32]| {
-            for (idx, &p) in positions.iter().enumerate() {
-                if p > max_tt {
-                    continue;
-                }
-                if let Some(w) = self.sliding_window {
-                    if pos.abs_diff(p) >= w {
-                        continue;
-                    }
-                }
-                has_exact_contrib = true;
-                for kvh in 0..self.n_kv {
-                    let base = idx * stride + kvh * self.hd;
-                    let ks = &k_buf[base..base + self.hd];
-                    let vs = if self.k_eq_v { ks } else { &v_buf[base..base + self.hd] };
-                    for g_idx in 0..gqa {
-                        let hq = kvh * gqa + g_idx;
-                        let qh = &q[hq * self.hd..(hq + 1) * self.hd];
-                        let mut dot = 0.0f64;
-                        for d in 0..self.hd {
-                            dot += qh[d] as f64 * ks[d] as f64;
-                        }
-                        let s = (dot as f32) * attn_scale;
-                        let acc = &mut out_e[hq * self.hd..(hq + 1) * self.hd];
-                        if s > m_e[hq] {
-                            let alpha = if m_e[hq].is_finite() { (m_e[hq] - s).exp() } else { 0.0f32 };
-                            l_e[hq] = l_e[hq] * alpha + 1.0;
-                            m_e[hq] = s;
-                            for d in 0..self.hd {
-                                acc[d] = acc[d] * alpha + vs[d];
-                            }
-                        } else {
-                            let beta = (s - m_e[hq]).exp();
-                            l_e[hq] += beta;
-                            for d in 0..self.hd {
-                                acc[d] += beta * vs[d];
-                            }
-                        }
-                    }
-                }
+        let mut valid_exact: Vec<(bool, usize)> = Vec::with_capacity(self.sink_pos.len() + self.tail_pos.len());
+        for (idx, &p) in self.sink_pos.iter().enumerate() {
+            if p <= max_tt && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                valid_exact.push((false, idx));
             }
-        };
+        }
+        for (idx, &p) in self.tail_pos.iter().enumerate() {
+            if p <= max_tt && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                valid_exact.push((true, idx));
+            }
+        }
 
-        eval_exact_slice(&self.sink_pos, &self.k_sink, &self.v_sink);
-        eval_exact_slice(&self.tail_pos, &self.k_tail, &self.v_tail);
-
-        if has_exact_contrib {
-            for hq in 0..self.n_heads {
-                let inv_l = if l_e[hq] > 1e-30 { 1.0 / l_e[hq] } else { 0.0 };
-                for v in &mut out_e[hq * self.hd..(hq + 1) * self.hd] {
-                    *v *= inv_l;
+        if !valid_exact.is_empty() {
+            has_exact_contrib = true;
+            let n_ex = valid_exact.len();
+            let hd = self.hd;
+            let mut scores = vec![0.0f32; n_ex];
+            for kvh in 0..self.n_kv {
+                let kvh_off = kvh * hd;
+                for g_idx in 0..gqa {
+                    let hq = kvh * gqa + g_idx;
+                    let qh = &q[hq * hd..(hq + 1) * hd];
+                    let mut m_max = f32::NEG_INFINITY;
+                    for (vi, &(is_tail, idx)) in valid_exact.iter().enumerate() {
+                        let k_buf = if is_tail { &self.k_tail } else { &self.k_sink };
+                        let base = idx * stride + kvh_off;
+                        let ks = &k_buf[base..base + hd];
+                        let s = crate::math::dot_f32_4way(qh, ks) * attn_scale;
+                        scores[vi] = s;
+                        if s > m_max {
+                            m_max = s;
+                        }
+                    }
+                    m_e[hq] = m_max;
+                    let mut l_sum = 0.0f32;
+                    let acc = &mut out_e[hq * hd..(hq + 1) * hd];
+                    for (vi, &(is_tail, idx)) in valid_exact.iter().enumerate() {
+                        let w = (scores[vi] - m_max).exp();
+                        l_sum += w;
+                        let v_buf = if self.k_eq_v {
+                            if is_tail { &self.k_tail } else { &self.k_sink }
+                        } else if is_tail {
+                            &self.v_tail
+                        } else {
+                            &self.v_sink
+                        };
+                        let base = idx * stride + kvh_off;
+                        let vs = &v_buf[base..base + hd];
+                        for (dst, &v_val) in acc.iter_mut().zip(vs.iter()) {
+                            *dst += w * v_val;
+                        }
+                    }
+                    l_e[hq] = l_sum;
+                    let inv_l = if l_sum > 1e-30 { 1.0f32 / l_sum } else { 0.0f32 };
+                    for v in acc.iter_mut() {
+                        *v *= inv_l;
+                    }
                 }
             }
         }

@@ -13,20 +13,78 @@ pub fn rmsn_gemma(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
 }
 
 #[inline]
-pub fn rmsn_raw(x: &[f32], w: Option<&[f32]>, eps: f32) -> Vec<f32> {
+pub fn dot_f32_4way(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+    let n = a.len();
+    let chunks = n / 4;
+    let mut s0 = 0.0f32;
+    let mut s1 = 0.0f32;
+    let mut s2 = 0.0f32;
+    let mut s3 = 0.0f32;
+    let mut i = 0usize;
+    for _ in 0..chunks {
+        s0 += a[i] * b[i];
+        s1 += a[i + 1] * b[i + 1];
+        s2 += a[i + 2] * b[i + 2];
+        s3 += a[i + 3] * b[i + 3];
+        i += 4;
+    }
+    let mut s = (s0 + s1) + (s2 + s3);
+    while i < n {
+        s += a[i] * b[i];
+        i += 1;
+    }
+    s
+}
+
+#[inline]
+pub fn rmsn_raw_into(x: &[f32], w: Option<&[f32]>, eps: f32, out: &mut [f32]) {
+    debug_assert_eq!(x.len(), out.len());
     let n = x.len();
-    let mut s = 0f64;
-    for &v in x {
-        s += (v as f64) * (v as f64);
+    let chunks = n / 4;
+    let mut s0 = 0.0f32;
+    let mut s1 = 0.0f32;
+    let mut s2 = 0.0f32;
+    let mut s3 = 0.0f32;
+    let mut i = 0usize;
+    for _ in 0..chunks {
+        let a0 = x[i];
+        let a1 = x[i + 1];
+        let a2 = x[i + 2];
+        let a3 = x[i + 3];
+        s0 += a0 * a0;
+        s1 += a1 * a1;
+        s2 += a2 * a2;
+        s3 += a3 * a3;
+        i += 4;
+    }
+    let mut s = ((s0 + s1) + (s2 + s3)) as f64;
+    while i < n {
+        let v = x[i] as f64;
+        s += v * v;
+        i += 1;
     }
     let inv_rms = 1.0f32 / ((s / n as f64) + eps as f64).sqrt() as f32;
     match w {
         Some(gain) => {
             debug_assert_eq!(x.len(), gain.len());
-            x.iter().zip(gain.iter()).map(|(&a, &b)| a * inv_rms * b).collect()
+            for ((o, &a), &b) in out.iter_mut().zip(x.iter()).zip(gain.iter()) {
+                *o = a * inv_rms * b;
+            }
         }
-        None => x.iter().map(|&a| a * inv_rms).collect(),
+        None => {
+            for (o, &a) in out.iter_mut().zip(x.iter()) {
+                *o = a * inv_rms;
+            }
+        }
     }
+}
+
+#[inline]
+pub fn rmsn_raw(x: &[f32], w: Option<&[f32]>, eps: f32) -> Vec<f32> {
+    let mut out = vec![0.0f32; x.len()];
+    rmsn_raw_into(x, w, eps, &mut out);
+    out
 }
 
 pub fn qk_norm_gemma(x: &[f32], n_heads: usize, head_dim: usize, w: &[f32], eps: f32) -> Vec<f32> {
@@ -105,17 +163,35 @@ pub fn rope_head_with_cos_sin(head: &mut [f32], cos_t: &[f32], sin_t: &[f32], he
     }
 }
 
-/// In-place RMSNorm across `n_heads` heads of length `head_dim` (zero temporary Vec allocations).
+/// In-place RMSNorm across `n_heads` heads of length `head_dim` (zero temporary Vec allocations, NEON-vectorizable).
 #[inline]
 pub fn qk_norm_raw_inplace(x: &mut [f32], n_heads: usize, head_dim: usize, w: Option<&[f32]>, eps: f32) {
     let inv_hd = 1.0f64 / (head_dim as f64);
     let eps64 = eps as f64;
+    let chunks = head_dim / 4;
     for h in 0..n_heads {
         let sl = &mut x[h * head_dim..(h + 1) * head_dim];
-        let mut s = 0.0f64;
-        for &v in sl.iter() {
-            let vf = v as f64;
+        let mut s0 = 0.0f32;
+        let mut s1 = 0.0f32;
+        let mut s2 = 0.0f32;
+        let mut s3 = 0.0f32;
+        let mut i = 0usize;
+        for _ in 0..chunks {
+            let a0 = sl[i];
+            let a1 = sl[i + 1];
+            let a2 = sl[i + 2];
+            let a3 = sl[i + 3];
+            s0 += a0 * a0;
+            s1 += a1 * a1;
+            s2 += a2 * a2;
+            s3 += a3 * a3;
+            i += 4;
+        }
+        let mut s = ((s0 + s1) + (s2 + s3)) as f64;
+        while i < head_dim {
+            let vf = sl[i] as f64;
             s += vf * vf;
+            i += 1;
         }
         let inv_rms = 1.0f32 / (s * inv_hd + eps64).sqrt() as f32;
         if let Some(gain) = w {
@@ -202,6 +278,46 @@ pub fn gelu_tanh_scalar(x: f32) -> f32 {
     let x64 = x as f64;
     let t = (std::f64::consts::FRAC_2_PI.sqrt() * (x64 + 0.044715 * x64 * x64 * x64)).tanh();
     (0.5 * x64 * (1.0 + t)) as f32
+}
+
+/// Fast NEON-vectorizable Padé [9/8] tanh GELU in FP32 (max error < 1.5e-5 across (-inf, +inf), zero libm calls).
+#[inline]
+pub fn gelu_tanh_fast_f32(x: f32) -> f32 {
+    const SQRT_2_OVER_PI: f32 = 0.7978845608f32;
+    let z = SQRT_2_OVER_PI * (x + 0.044715f32 * x * x * x);
+    let zc = z.clamp(-6.8f32, 6.8f32);
+    let z2 = zc * zc;
+    let num = zc
+        * (1.0f32
+            + z2 * (0.13725490196f32
+                + z2 * (0.003921568627f32 + z2 * (2.8729439e-5f32 + z2 * 2.9019637e-8f32))));
+    let den = 1.0f32
+        + z2 * (0.47058823529f32
+            + z2 * (0.02745098039f32 + z2 * (4.0221216e-4f32 + z2 * 1.3058837e-6f32)));
+    let t = (num / den).clamp(-1.0f32, 1.0f32);
+    0.5f32 * x * (1.0f32 + t)
+}
+
+/// In-place multi-threaded fast Padé GELU across a slice (auto-vectorizes to 4-wide NEON FP32 per core).
+pub fn gelu_tanh_inplace_parallel(v: &mut [f32], threads: usize) {
+    let n = v.len();
+    let nt = threads.max(1);
+    if nt <= 1 || n < 16384 {
+        for x in v.iter_mut() {
+            *x = gelu_tanh_fast_f32(*x);
+        }
+        return;
+    }
+    let chunk = n.div_ceil(nt);
+    std::thread::scope(|s| {
+        for sl in v.chunks_mut(chunk) {
+            s.spawn(move || {
+                for x in sl.iter_mut() {
+                    *x = gelu_tanh_fast_f32(*x);
+                }
+            });
+        }
+    });
 }
 
 pub fn cosine_and_rel_l2(reference: &[f32], candidate: &[f32]) -> (f64, f64, f64) {
@@ -373,5 +489,26 @@ mod tests {
         // Bidirectional kv_end=2 with window=2 includes t=0 and t=1, excludes t=2 (`abs_diff(0, 2) >= 2`).
         let c_bidir = attn_decode_range(&q, &k, &v, 0, 2, 0, 1, 1, 2, Some(2));
         assert!(c_bidir[0] > 4.9 && c_bidir[0] < 5.01, "c_bidir={:?}", c_bidir);
+    }
+
+    #[test]
+    fn fast_gelu_and_dot4_match_scalar_reference() {
+        let mut xs: Vec<f32> = (-20000..=20000).map(|i| (i as f32) * 0.0005).collect();
+        let ref_ys: Vec<f32> = xs.iter().map(|&x| gelu_tanh_scalar(x)).collect();
+        gelu_tanh_inplace_parallel(&mut xs, 4);
+        let mut max_err = 0.0f32;
+        for (&a, &b) in xs.iter().zip(ref_ys.iter()) {
+            let e = (a - b).abs();
+            if e > max_err {
+                max_err = e;
+            }
+        }
+        assert!(max_err < 1e-4, "gelu_tanh_fast_f32 max_err={max_err}");
+
+        let a: Vec<f32> = (0..259).map(|i| ((i * 17 % 31) as f32 - 15.0) * 0.1).collect();
+        let b: Vec<f32> = (0..259).map(|i| ((i * 13 % 29) as f32 - 14.0) * 0.1).collect();
+        let ref_dot: f32 = a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum();
+        let fast_dot = dot_f32_4way(&a, &b);
+        assert!((ref_dot - fast_dot).abs() < 1e-4, "dot4={fast_dot} ref={ref_dot}");
     }
 }

@@ -11,8 +11,8 @@ use run270_rust::codec::bf16_to_f32;
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{
-    attn_decode_range, gelu_tanh_scalar, qk_norm_raw_inplace, rmsn_raw, rope_cos_sin_for_pos,
-    rope_head_with_cos_sin, rope_inv_freqs,
+    attn_decode_range, gelu_tanh_inplace_parallel, qk_norm_raw_inplace, rmsn_raw, rmsn_raw_into,
+    rope_cos_sin_for_pos, rope_head_with_cos_sin, rope_inv_freqs,
 };
 use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
@@ -1183,6 +1183,10 @@ impl Runtime31B {
                 }
             }
 
+            let mut inp = vec![0.0f32; seq_len * d];
+            let mut inp2 = vec![0.0f32; seq_len * d];
+            let mut norm_tmp = vec![0.0f32; d];
+
             for l in 0..cfg.n_layers {
                 let tl = std::time::Instant::now();
                 let pfx = format!("model.language_model.layers.{l}");
@@ -1191,11 +1195,19 @@ impl Runtime31B {
                 let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
                 let sw = if is_full { None } else { Some(cfg.window) };
 
-                let mut inp = Vec::with_capacity(seq_len * d);
                 {
+                    let t_n0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                     let g_in = get_norm(&format!("{pfx}.input_layernorm.weight"))?;
                     for t in 0..seq_len {
-                        inp.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_in), eps));
+                        rmsn_raw_into(
+                            &states[t * d..(t + 1) * d],
+                            Some(g_in),
+                            eps,
+                            &mut inp[t * d..(t + 1) * d],
+                        );
+                    }
+                    if let Some(t0) = t_n0 {
+                        prof_norm_kv_step += t0.elapsed().as_secs_f64();
                     }
                 }
 
@@ -1210,7 +1222,6 @@ impl Runtime31B {
                 if let Some(t0) = t_ap0 {
                     prof_attn_step += t0.elapsed().as_secs_f64();
                 }
-                drop(inp);
                 let t_kv0 = if profile_components { Some(std::time::Instant::now()) } else { None };
 
                 let mut k_batch = k_raw;
@@ -1222,27 +1233,64 @@ impl Runtime31B {
                     } else {
                         (&rope_cos_local[..], &rope_sin_local[..], half_rot_local)
                     };
-                    for t in 0..seq_len {
-                        let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
-                        let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
-                        let qs = &mut q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                        qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
-                        for h in 0..n_heads {
-                            rope_head_with_cos_sin(&mut qs[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
-                        }
+                    let q_stride = n_heads * hd;
+                    let kv_stride = n_kv * hd;
+                    if seq_len > 1 && threads > 1 {
+                        let tok_chunk = seq_len.div_ceil(threads);
+                        std::thread::scope(|s| {
+                            for (ci, ((qc, kc), vc)) in q_batch
+                                .chunks_mut(tok_chunk * q_stride)
+                                .zip(k_batch.chunks_mut(tok_chunk * kv_stride))
+                                .zip(v_batch.chunks_mut(tok_chunk * kv_stride))
+                                .enumerate()
+                            {
+                                let t_base = ci * tok_chunk;
+                                let n_tok = qc.len() / q_stride;
+                                s.spawn(move || {
+                                    for dt in 0..n_tok {
+                                        let t = t_base + dt;
+                                        let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
+                                        let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
+                                        let qs = &mut qc[dt * q_stride..(dt + 1) * q_stride];
+                                        qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
+                                        for h in 0..n_heads {
+                                            rope_head_with_cos_sin(&mut qs[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
+                                        }
+                                        let ks = &mut kc[dt * kv_stride..(dt + 1) * kv_stride];
+                                        qk_norm_raw_inplace(ks, n_kv, hd, Some(kn), eps);
+                                        for h in 0..n_kv {
+                                            rope_head_with_cos_sin(&mut ks[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
+                                        }
+                                        let vs = &mut vc[dt * kv_stride..(dt + 1) * kv_stride];
+                                        qk_norm_raw_inplace(vs, n_kv, hd, None, eps);
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+                        for t in 0..seq_len {
+                            let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
+                            let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
+                            let qs = &mut q_batch[t * q_stride..(t + 1) * q_stride];
+                            qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
+                            for h in 0..n_heads {
+                                rope_head_with_cos_sin(&mut qs[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
+                            }
 
-                        let ks = &mut k_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                        qk_norm_raw_inplace(ks, n_kv, hd, Some(kn), eps);
-                        for h in 0..n_kv {
-                            rope_head_with_cos_sin(&mut ks[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
-                        }
+                            let ks = &mut k_batch[t * kv_stride..(t + 1) * kv_stride];
+                            qk_norm_raw_inplace(ks, n_kv, hd, Some(kn), eps);
+                            for h in 0..n_kv {
+                                rope_head_with_cos_sin(&mut ks[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
+                            }
 
-                        let vs = &mut v_batch[t * n_kv * hd..(t + 1) * n_kv * hd];
-                        qk_norm_raw_inplace(vs, n_kv, hd, None, eps);
+                            let vs = &mut v_batch[t * kv_stride..(t + 1) * kv_stride];
+                            qk_norm_raw_inplace(vs, n_kv, hd, None, eps);
+                        }
                     }
                 }
 
-                let mut ctx_batch = Vec::with_capacity(seq_len * n_heads * hd);
+                let q_stride = n_heads * hd;
+                let mut ctx_batch = vec![0.0f32; seq_len * q_stride];
                 if kv_quant.is_glyph() {
                     let gkv = glyph_kv[l]
                         .as_mut()
@@ -1258,23 +1306,73 @@ impl Runtime31B {
                         };
                         gkv.append_token(kt, vt, native_t16c.as_deref())?;
                     }
-                    for t in 0..seq_len {
-                        let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                        let kv_end = if !is_full {
-                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                        } else {
-                            base_t + t
-                        };
-                        let c_t = gkv.attend_range(
-                            q_t,
-                            base_t + t,
-                            kv_end,
-                            start_pos + t,
-                            1.0,
-                            native_t16c.as_deref(),
-                            threads,
-                        )?;
-                        ctx_batch.extend_from_slice(&c_t);
+                    let gkv_ref: &GlyphKvLayer = &*gkv;
+                    let nat_ref = native_t16c.as_deref();
+                    if seq_len > 1 && threads > 1 {
+                        let tok_chunk = seq_len.div_ceil(threads);
+                        let inner_thr = (threads / seq_len).max(1);
+                        let err_slot = std::sync::Mutex::new(None::<String>);
+                        std::thread::scope(|s| {
+                            for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
+                                let t_base = ci * tok_chunk;
+                                let n_tok = dst_chunk.len() / q_stride;
+                                let q_ref = &q_batch;
+                                let err_ref = &err_slot;
+                                s.spawn(move || {
+                                    for dt in 0..n_tok {
+                                        let t = t_base + dt;
+                                        let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
+                                        let kv_end = if !is_full {
+                                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                                        } else {
+                                            base_t + t
+                                        };
+                                        match gkv_ref.attend_range(
+                                            q_t,
+                                            base_t + t,
+                                            kv_end,
+                                            start_pos + t,
+                                            1.0,
+                                            nat_ref,
+                                            inner_thr,
+                                        ) {
+                                            Ok(c_t) => {
+                                                dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
+                                            }
+                                            Err(e) => {
+                                                let mut guard = err_ref.lock().unwrap();
+                                                if guard.is_none() {
+                                                    *guard = Some(e);
+                                                }
+                                                return;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        if let Some(e) = err_slot.into_inner().unwrap() {
+                            return Err(e);
+                        }
+                    } else {
+                        for t in 0..seq_len {
+                            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                            let kv_end = if !is_full {
+                                vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                            } else {
+                                base_t + t
+                            };
+                            let c_t = gkv_ref.attend_range(
+                                q_t,
+                                base_t + t,
+                                kv_end,
+                                start_pos + t,
+                                1.0,
+                                nat_ref,
+                                threads,
+                            )?;
+                            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                        }
                     }
                 } else {
                     match kv_quant {
@@ -1299,15 +1397,41 @@ impl Runtime31B {
                     let base_t = kv[l].k.len() / (n_kv * hd);
                     kv[l].k.extend_from_slice(&k_batch);
                     kv[l].v.extend_from_slice(&v_batch);
-                    for t in 0..seq_len {
-                        let q_t = &q_batch[t * n_heads * hd..(t + 1) * n_heads * hd];
-                        let kv_end = if !is_full {
-                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                        } else {
-                            base_t + t
-                        };
-                        let c_t = attn_decode_range(q_t, &kv[l].k, &kv[l].v, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
-                        ctx_batch.extend_from_slice(&c_t);
+                    if seq_len > 1 && threads > 1 {
+                        let tok_chunk = seq_len.div_ceil(threads);
+                        let k_seq_ref = &kv[l].k;
+                        let v_seq_ref = &kv[l].v;
+                        let q_ref = &q_batch;
+                        std::thread::scope(|s| {
+                            for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
+                                let t_base = ci * tok_chunk;
+                                let n_tok = dst_chunk.len() / q_stride;
+                                s.spawn(move || {
+                                    for dt in 0..n_tok {
+                                        let t = t_base + dt;
+                                        let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
+                                        let kv_end = if !is_full {
+                                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                                        } else {
+                                            base_t + t
+                                        };
+                                        let c_t = attn_decode_range(q_t, k_seq_ref, v_seq_ref, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
+                                        dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
+                                    }
+                                });
+                            }
+                        });
+                    } else {
+                        for t in 0..seq_len {
+                            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                            let kv_end = if !is_full {
+                                vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                            } else {
+                                base_t + t
+                            };
+                            let c_t = attn_decode_range(q_t, &kv[l].k, &kv[l].v, base_t + t, kv_end, start_pos + t, n_heads, n_kv, hd, sw);
+                            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                        }
                     }
                 }
                 drop(q_batch);
@@ -1327,19 +1451,24 @@ impl Runtime31B {
                 {
                     let g_pa = get_norm(&format!("{pfx}.post_attention_layernorm.weight"))?;
                     for t in 0..seq_len {
-                        let norm_a = rmsn_raw(&attn_o[t * d..(t + 1) * d], Some(g_pa), eps);
-                        for i in 0..d {
-                            states[t * d + i] += norm_a[i];
+                        rmsn_raw_into(&attn_o[t * d..(t + 1) * d], Some(g_pa), eps, &mut norm_tmp);
+                        let st = &mut states[t * d..(t + 1) * d];
+                        for (dst, &src) in st.iter_mut().zip(norm_tmp.iter()) {
+                            *dst += src;
                         }
                     }
                 }
                 drop(attn_o);
 
-                let mut inp2 = Vec::with_capacity(seq_len * d);
                 {
                     let g_pf = get_norm(&format!("{pfx}.pre_feedforward_layernorm.weight"))?;
                     for t in 0..seq_len {
-                        inp2.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(g_pf), eps));
+                        rmsn_raw_into(
+                            &states[t * d..(t + 1) * d],
+                            Some(g_pf),
+                            eps,
+                            &mut inp2[t * d..(t + 1) * d],
+                        );
                     }
                 }
                 if let Some(t0) = t_n1 {
@@ -1348,16 +1477,19 @@ impl Runtime31B {
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 // Exact 1-Pass Gate-Guided Block-Sparse GeGLU:
                 // Compute exact `gate_proj` in a SINGLE pass (zero preview error, zero double-pass OpenMP/FWHT overhead,
-                // ~2.4x faster than 2-stage preview!). Because V5/V5.1 co-activation permutation clusters active GeGLU
+                // ~2.4x faster than 2-stage preview!). Because V5/V5.1/V6 co-activation permutation clusters active GeGLU
                 // neurons into contiguous `bsize` blocks (88–97.8% energy in top 50% blocks), exact `gate_proj` selects
                 // the true top `mlp_top_p` blocks (`row_mask`, `col_mask`), skipping `(1 - mlp_top_p)` of `up_proj` and
                 // `down_proj` DRAM tiles cleanly while preserving 100% dense-identical GeGLU routing!
-                let gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?;
+                let mut gelu_gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?;
                 if let Some(t0) = t_g0 {
                     prof_gate_step += t0.elapsed().as_secs_f64();
                 }
-                let gelu_gate: Vec<f32> = gate.iter().map(|&a| gelu_tanh_scalar(a)).collect();
-                drop(gate);
+                let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                gelu_tanh_inplace_parallel(&mut gelu_gate, threads);
+                if let Some(t0) = t_gl0 {
+                    prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                }
                 let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
                     t16c_mats.as_ref().and_then(|mats| {
                         let ku1 = format!("model.language_model.layers.{l}.mlp.up_proj.weight");
@@ -1423,7 +1555,6 @@ impl Runtime31B {
                 if let Some(t0) = t_u0 {
                     prof_up_step += t0.elapsed().as_secs_f64();
                 }
-                drop(inp2);
                 let act: Vec<f32> = if let Some((_, ref cmask, bsize)) = sparse_masks {
                     let ff = cfg.ff;
                     let mut out_a = vec![0.0f32; seq_len * ff];
@@ -1459,9 +1590,10 @@ impl Runtime31B {
                 let g_pff = get_norm(&format!("{pfx}.post_feedforward_layernorm.weight"))?;
                 let ls = scalars[l];
                 for t in 0..seq_len {
-                    let norm_d = rmsn_raw(&down[t * d..(t + 1) * d], Some(g_pff), eps);
-                    for i in 0..d {
-                        states[t * d + i] = (states[t * d + i] + norm_d[i]) * ls;
+                    rmsn_raw_into(&down[t * d..(t + 1) * d], Some(g_pff), eps, &mut norm_tmp);
+                    let st = &mut states[t * d..(t + 1) * d];
+                    for (dst, &src) in st.iter_mut().zip(norm_tmp.iter()) {
+                        *dst = (*dst + src) * ls;
                     }
                 }
                 if let Some(t0) = t_n2 {
