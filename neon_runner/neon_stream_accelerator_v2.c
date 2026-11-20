@@ -4264,10 +4264,10 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                                     int8x16_t rl0 = vqtbl1q_s8(vld1q_s8(lp0 + 16), vandq_u8(bv0, mask0f));
                                     int8x16_t rh1 = vqtbl1q_s8(vld1q_s8(lp1),      vshrq_n_u8(bv1, 4));
                                     int8x16_t rl1 = vqtbl1q_s8(vld1q_s8(lp1 + 16), vandq_u8(bv1, mask0f));
-                                    a0l = vaddw_s8(a0l, vget_low_s8(rh0)); a0h = vaddw_high_s8(a0h, rh0);
-                                    b0l = vaddw_s8(b0l, vget_low_s8(rh1)); b0h = vaddw_high_s8(b0h, rh1);
-                                    a0l = vaddw_s8(a0l, vget_low_s8(rl0)); a0h = vaddw_high_s8(a0h, rl0);
-                                    b0l = vaddw_s8(b0l, vget_low_s8(rl1)); b0h = vaddw_high_s8(b0h, rl1);
+                                    a0l = vaddq_s16(a0l, vaddl_s8(vget_low_s8(rh0), vget_low_s8(rl0)));
+                                    a0h = vaddq_s16(a0h, vaddl_high_s8(rh0, rl0));
+                                    b0l = vaddq_s16(b0l, vaddl_s8(vget_low_s8(rh1), vget_low_s8(rl1)));
+                                    b0h = vaddq_s16(b0h, vaddl_high_s8(rh1, rl1));
                                 }
                                 a0l = vaddq_s16(a0l, b0l);
                                 a0h = vaddq_s16(a0h, b0h);
@@ -4396,6 +4396,20 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                     }
 
                     const uint8_t* planes = bptr + hdr_bytes;
+                    /* Hoist FP16->FP32 tile scale decode ONCE per block into an L1 stack array
+                       instead of repeating 4-8x inside every (s0, p, sb) iteration! */
+                    NEON_ALIGN64 float sc_blk[16];
+                    {
+                        uint16_t raw_sc[8];
+                        memcpy(raw_sc, bptr + 0, 16);
+                        float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                        memcpy(raw_sc, bptr + 16, 16);
+                        float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                        vst1q_f32(sc_blk + 0,  vcvt_f32_f16(vget_low_f16(hsc0)));
+                        vst1q_f32(sc_blk + 4,  vcvt_f32_f16(vget_high_f16(hsc0)));
+                        vst1q_f32(sc_blk + 8,  vcvt_f32_f16(vget_low_f16(hsc1)));
+                        vst1q_f32(sc_blk + 12, vcvt_f32_f16(vget_high_f16(hsc1)));
+                    }
                     for (int s0 = 0; s0 < slots; s0 += 4) {
                         const int sc_g = (slots - s0 >= 4) ? 4 : (slots - s0);
                         float32x4_t acc00 = vld1q_f32(tile_acc[s0 + 0] + 0), acc01 = vld1q_f32(tile_acc[s0 + 0] + 4);
@@ -4434,28 +4448,22 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                                         uint8x16_t nlo = vandq_u8(bv, mask0f);
                                         int8x16_t rh, rl;
                                         rh = vqtbl1q_s8(vld1q_s8(lp + 0),  nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 16),  nlo);
-                                        a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
-                                        a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                        a0l = vaddq_s16(a0l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                        a0h = vaddq_s16(a0h, vaddl_high_s8(rh, rl));
                                         rh = vqtbl1q_s8(vld1q_s8(lp + 32), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 48),  nlo);
-                                        a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
-                                        a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                        a1l = vaddq_s16(a1l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                        a1h = vaddq_s16(a1h, vaddl_high_s8(rh, rl));
                                         rh = vqtbl1q_s8(vld1q_s8(lp + 64), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 80),  nlo);
-                                        a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
-                                        a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                        a2l = vaddq_s16(a2l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                        a2h = vaddq_s16(a2h, vaddl_high_s8(rh, rl));
                                         rh = vqtbl1q_s8(vld1q_s8(lp + 96), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 112), nlo);
-                                        a3l = vaddw_s8(a3l, vget_low_s8(rh)); a3h = vaddw_high_s8(a3h, rh);
-                                        a3l = vaddw_s8(a3l, vget_low_s8(rl)); a3h = vaddw_high_s8(a3h, rl);
+                                        a3l = vaddq_s16(a3l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                        a3h = vaddq_s16(a3h, vaddl_high_s8(rh, rl));
                                     }
-                                    /* Decode sc0..sc3 AFTER bo loop so <=31 NEON regs are live inside bo (zero spills!) */
-                                    uint16_t raw_sc[8];
-                                    memcpy(raw_sc, bptr + 0, 16);
-                                    float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                                    memcpy(raw_sc, bptr + 16, 16);
-                                    float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                                    float32x4_t sc0 = vcvt_f32_f16(vget_low_f16(hsc0));
-                                    float32x4_t sc1 = vcvt_f32_f16(vget_high_f16(hsc0));
-                                    float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
-                                    float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
+                                    float32x4_t sc0 = vld1q_f32(sc_blk + 0);
+                                    float32x4_t sc1 = vld1q_f32(sc_blk + 4);
+                                    float32x4_t sc2 = vld1q_f32(sc_blk + 8);
+                                    float32x4_t sc3 = vld1q_f32(sc_blk + 12);
                                     float m0 = sub_scales[(size_t)(s0 + 0) * (size_t)n_subs + (size_t)g_sub] * weight_p;
                                     float m1 = sub_scales[(size_t)(s0 + 1) * (size_t)n_subs + (size_t)g_sub] * weight_p;
                                     float m2 = sub_scales[(size_t)(s0 + 2) * (size_t)n_subs + (size_t)g_sub] * weight_p;
@@ -4493,28 +4501,23 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                                         uint8x16_t nlo = vandq_u8(bv, mask0f);
                                         int8x16_t rh = vqtbl1q_s8(vld1q_s8(l0 + loff), nhi);
                                         int8x16_t rl = vqtbl1q_s8(vld1q_s8(l0 + loff + 16), nlo);
-                                        a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
-                                        a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                        a0l = vaddq_s16(a0l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                        a0h = vaddq_s16(a0h, vaddl_high_s8(rh, rl));
                                         if (sc_g >= 2) {
                                             rh = vqtbl1q_s8(vld1q_s8(l1 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l1 + loff + 16), nlo);
-                                            a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
-                                            a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                            a1l = vaddq_s16(a1l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                            a1h = vaddq_s16(a1h, vaddl_high_s8(rh, rl));
                                         }
                                         if (sc_g >= 3) {
                                             rh = vqtbl1q_s8(vld1q_s8(l2 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l2 + loff + 16), nlo);
-                                            a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
-                                            a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                            a2l = vaddq_s16(a2l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                            a2h = vaddq_s16(a2h, vaddl_high_s8(rh, rl));
                                         }
                                     }
-                                    uint16_t raw_sc[8];
-                                    memcpy(raw_sc, bptr + 0, 16);
-                                    float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                                    memcpy(raw_sc, bptr + 16, 16);
-                                    float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                                    float32x4_t sc0 = vcvt_f32_f16(vget_low_f16(hsc0));
-                                    float32x4_t sc1 = vcvt_f32_f16(vget_high_f16(hsc0));
-                                    float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
-                                    float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
+                                    float32x4_t sc0 = vld1q_f32(sc_blk + 0);
+                                    float32x4_t sc1 = vld1q_f32(sc_blk + 4);
+                                    float32x4_t sc2 = vld1q_f32(sc_blk + 8);
+                                    float32x4_t sc3 = vld1q_f32(sc_blk + 12);
                                     float m0 = sub_scales[(size_t)(s0 + 0) * (size_t)n_subs + (size_t)g_sub] * weight_p;
                                     acc00 = vfmaq_f32(acc00, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0l))), m0));
                                     acc01 = vfmaq_f32(acc01, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0l)), m0));
@@ -4667,6 +4670,18 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                 }
 
                 const uint8_t* planes = bptr + hdr_bytes;
+                NEON_ALIGN64 float sc_blk[16];
+                {
+                    uint16_t raw_sc[8];
+                    memcpy(raw_sc, bptr + 0, 16);
+                    float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                    memcpy(raw_sc, bptr + 16, 16);
+                    float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
+                    vst1q_f32(sc_blk + 0,  vcvt_f32_f16(vget_low_f16(hsc0)));
+                    vst1q_f32(sc_blk + 4,  vcvt_f32_f16(vget_high_f16(hsc0)));
+                    vst1q_f32(sc_blk + 8,  vcvt_f32_f16(vget_low_f16(hsc1)));
+                    vst1q_f32(sc_blk + 12, vcvt_f32_f16(vget_high_f16(hsc1)));
+                }
                 for (int p = 0; p < eff_bits; p++) {
                     const uint8_t* pptr = planes + (size_t)p * (size_t)bytes_per_plane_blk;
                     float weight_p = t16c_plane_weight(gauss_lut, eff_bits, p);
@@ -4684,28 +4699,22 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                                 uint8x16_t nlo = vandq_u8(bv, mask0f);
                                 int8x16_t rh, rl;
                                 rh = vqtbl1q_s8(vld1q_s8(lp + 0),  nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 16),  nlo);
-                                a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
-                                a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                a0l = vaddq_s16(a0l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                a0h = vaddq_s16(a0h, vaddl_high_s8(rh, rl));
                                 rh = vqtbl1q_s8(vld1q_s8(lp + 32), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 48),  nlo);
-                                a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
-                                a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                a1l = vaddq_s16(a1l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                a1h = vaddq_s16(a1h, vaddl_high_s8(rh, rl));
                                 rh = vqtbl1q_s8(vld1q_s8(lp + 64), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 80),  nlo);
-                                a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
-                                a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                a2l = vaddq_s16(a2l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                a2h = vaddq_s16(a2h, vaddl_high_s8(rh, rl));
                                 rh = vqtbl1q_s8(vld1q_s8(lp + 96), nhi); rl = vqtbl1q_s8(vld1q_s8(lp + 112), nlo);
-                                a3l = vaddw_s8(a3l, vget_low_s8(rh)); a3h = vaddw_high_s8(a3h, rh);
-                                a3l = vaddw_s8(a3l, vget_low_s8(rl)); a3h = vaddw_high_s8(a3h, rl);
+                                a3l = vaddq_s16(a3l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                a3h = vaddq_s16(a3h, vaddl_high_s8(rh, rl));
                             }
-                            /* Decode sc0..sc3 AFTER bo loop so <=31 NEON regs are live inside bo (zero spills!) */
-                            uint16_t raw_sc[8];
-                            memcpy(raw_sc, bptr + 0, 16);
-                            float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                            memcpy(raw_sc, bptr + 16, 16);
-                            float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                            float32x4_t sc0 = vcvt_f32_f16(vget_low_f16(hsc0));
-                            float32x4_t sc1 = vcvt_f32_f16(vget_high_f16(hsc0));
-                            float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
-                            float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
+                            float32x4_t sc0 = vld1q_f32(sc_blk + 0);
+                            float32x4_t sc1 = vld1q_f32(sc_blk + 4);
+                            float32x4_t sc2 = vld1q_f32(sc_blk + 8);
+                            float32x4_t sc3 = vld1q_f32(sc_blk + 12);
                             float m0 = sub_scales[0 * n_subs + g_sub] * weight_p;
                             float m1 = sub_scales[1 * n_subs + g_sub] * weight_p;
                             float m2 = sub_scales[2 * n_subs + g_sub] * weight_p;
@@ -4743,28 +4752,23 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                                 uint8x16_t nlo = vandq_u8(bv, mask0f);
                                 int8x16_t rh = vqtbl1q_s8(vld1q_s8(l0 + loff), nhi);
                                 int8x16_t rl = vqtbl1q_s8(vld1q_s8(l0 + loff + 16), nlo);
-                                a0l = vaddw_s8(a0l, vget_low_s8(rh)); a0h = vaddw_high_s8(a0h, rh);
-                                a0l = vaddw_s8(a0l, vget_low_s8(rl)); a0h = vaddw_high_s8(a0h, rl);
+                                a0l = vaddq_s16(a0l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                a0h = vaddq_s16(a0h, vaddl_high_s8(rh, rl));
                                 if (slots >= 2) {
                                     rh = vqtbl1q_s8(vld1q_s8(l1 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l1 + loff + 16), nlo);
-                                    a1l = vaddw_s8(a1l, vget_low_s8(rh)); a1h = vaddw_high_s8(a1h, rh);
-                                    a1l = vaddw_s8(a1l, vget_low_s8(rl)); a1h = vaddw_high_s8(a1h, rl);
+                                    a1l = vaddq_s16(a1l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                    a1h = vaddq_s16(a1h, vaddl_high_s8(rh, rl));
                                 }
                                 if (slots >= 3) {
                                     rh = vqtbl1q_s8(vld1q_s8(l2 + loff), nhi); rl = vqtbl1q_s8(vld1q_s8(l2 + loff + 16), nlo);
-                                    a2l = vaddw_s8(a2l, vget_low_s8(rh)); a2h = vaddw_high_s8(a2h, rh);
-                                    a2l = vaddw_s8(a2l, vget_low_s8(rl)); a2h = vaddw_high_s8(a2h, rl);
+                                    a2l = vaddq_s16(a2l, vaddl_s8(vget_low_s8(rh), vget_low_s8(rl)));
+                                    a2h = vaddq_s16(a2h, vaddl_high_s8(rh, rl));
                                 }
                             }
-                            uint16_t raw_sc[8];
-                            memcpy(raw_sc, bptr + 0, 16);
-                            float16x8_t hsc0 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                            memcpy(raw_sc, bptr + 16, 16);
-                            float16x8_t hsc1 = vreinterpretq_f16_u16(vld1q_u16(raw_sc));
-                            float32x4_t sc0 = vcvt_f32_f16(vget_low_f16(hsc0));
-                            float32x4_t sc1 = vcvt_f32_f16(vget_high_f16(hsc0));
-                            float32x4_t sc2 = vcvt_f32_f16(vget_low_f16(hsc1));
-                            float32x4_t sc3 = vcvt_f32_f16(vget_high_f16(hsc1));
+                            float32x4_t sc0 = vld1q_f32(sc_blk + 0);
+                            float32x4_t sc1 = vld1q_f32(sc_blk + 4);
+                            float32x4_t sc2 = vld1q_f32(sc_blk + 8);
+                            float32x4_t sc3 = vld1q_f32(sc_blk + 12);
                             float m0 = sub_scales[0 * n_subs + g_sub] * weight_p;
                             acc00 = vfmaq_f32(acc00, sc0, vmulq_n_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(a0l))), m0));
                             acc01 = vfmaq_f32(acc01, sc1, vmulq_n_f32(vcvtq_f32_s32(vmovl_high_s16(a0l)), m0));
