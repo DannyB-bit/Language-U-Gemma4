@@ -8,11 +8,12 @@
 //!     `q4`/`q6`/`q8` sub-byte packed via `run270_rust::packed::PackedMatrix`).
 
 use run270_rust::codec::bf16_to_f32;
+use run270_rust::cortical_router::CorticalRouterBank;
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{
-    attn_decode_range, gelu_tanh_inplace_parallel, qk_norm_raw_inplace, rmsn_raw, rmsn_raw_into,
-    rope_cos_sin_for_pos, rope_head_with_cos_sin, rope_inv_freqs,
+    attn_decode_range, gelu_tanh_fast_f32, gelu_tanh_inplace_parallel, qk_norm_raw_inplace,
+    rmsn_raw, rmsn_raw_into, rope_cos_sin_for_pos, rope_head_with_cos_sin, rope_inv_freqs,
 };
 use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
@@ -637,6 +638,14 @@ fn parse_lmhead_cs_mode(s: &str) -> Result<Option<f32>, String> {
     Err(format!("invalid --lmhead-cs '{s}' (expected off|exact|sieve[:frac])"))
 }
 
+fn parse_mod_thresh(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| format!("invalid --mod-thresh '{s}'"))?;
+    if !v.is_finite() || !(0.0..1.0).contains(&v) {
+        return Err(format!("--mod-thresh must be finite in [0.0, 1.0), got {v}"));
+    }
+    Ok(v)
+}
+
 struct Runtime31B {
     cfg: Gemma4Cfg,
     sf: Option<SafeTensors>,
@@ -655,6 +664,12 @@ struct Runtime31B {
     mlp_top_p: f32,
     mlp_sparse_skipped_blks: u64,
     mlp_sparse_total_blks: u64,
+    cortical_router: Option<CorticalRouterBank>,
+    mod_thresh: f32,
+    mod_skipped_layers: u64,
+    mod_total_layers: u64,
+    cortical_gate_skipped_blks: u64,
+    cortical_gate_total_blks: u64,
     profile_components: bool,
     prof_attn_s: f64,
     prof_gate_s: f64,
@@ -662,6 +677,7 @@ struct Runtime31B {
     prof_down_s: f64,
     prof_norm_kv_s: f64,
     prof_lmhead_s: f64,
+    prof_router_s: f64,
     prof_steps: usize,
     embed_tile_norms: Option<Vec<u16>>,
     lmhead_cs_sieve: Option<f32>,
@@ -919,6 +935,8 @@ impl Runtime31B {
         let cs_down_norms = &self.cs_down_norms;
         let cs_skip_thresh = self.cs_skip_thresh;
         let mlp_top_p = self.mlp_top_p;
+        let cortical_router = &self.cortical_router;
+        let mod_thresh = self.mod_thresh;
         let profile_components = self.profile_components;
         let kv_quant = self.kv_quant;
         let fp8_lut = &self.fp8_lut;
@@ -929,11 +947,16 @@ impl Runtime31B {
         let mut cs_skipped_step = 0u64;
         let mut mlp_sp_skipped_step = 0u64;
         let mut mlp_sp_total_step = 0u64;
+        let mut mod_skipped_step = 0u64;
+        let mut mod_total_step = 0u64;
+        let mut cortical_gate_skipped_step = 0u64;
+        let mut cortical_gate_total_step = 0u64;
         let mut prof_attn_step = 0.0f64;
         let mut prof_gate_step = 0.0f64;
         let mut prof_up_step = 0.0f64;
         let mut prof_down_step = 0.0f64;
         let mut prof_norm_kv_step = 0.0f64;
+        let mut prof_router_step = 0.0f64;
         let mut kv_raw_step = 0usize;
         let mut kv_cmp_step = 0usize;
 
@@ -1211,6 +1234,115 @@ impl Runtime31B {
                     }
                 }
 
+                // KV-Safe V7.0 MoD Residual Highway (Option 1): on eligible sliding middle layers, skip
+                // q_proj, attention_decode, o_proj, and 100% of MLP (~90.8% of layer DRAM/compute), while
+                // refreshing k_proj/v_proj so all 60 layers remain KV-contiguous for truncate_kv & spec rollback.
+                let mod_eligible = mod_thresh > 0.0
+                    && !is_full
+                    && l >= 4
+                    && l + 4 < cfg.n_layers
+                    && t16c_mats.is_some()
+                    && cortical_router.is_some();
+                let mod_skip_layer = if mod_eligible {
+                    mod_total_step += 1;
+                    let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let exec_prob = cortical_router
+                        .as_ref()
+                        .unwrap()
+                        .layers[l]
+                        .predict_mod_exec_prob(&inp, seq_len)?
+                        .ok_or_else(|| format!("MoD gate missing on layer {l}"))?;
+                    if let Some(t0) = tr0 {
+                        prof_router_step += t0.elapsed().as_secs_f64();
+                    }
+                    exec_prob < mod_thresh
+                } else {
+                    false
+                };
+                if mod_skip_layer {
+                    mod_skipped_step += 1;
+                    let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let mut k_batch = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
+                    let mut v_batch = if is_full && cfg.attention_k_eq_v {
+                        k_batch.clone()
+                    } else {
+                        run_proj_masked(l, "self_attn.v_proj", &inp, None, None, true)?
+                    };
+                    if let Some(t0) = t_ap0 {
+                        prof_attn_step += t0.elapsed().as_secs_f64();
+                    }
+                    let t_kv0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    {
+                        let kn = get_norm(&format!("{pfx}.self_attn.k_norm.weight"))?;
+                        let kv_stride = n_kv * hd;
+                        for t in 0..seq_len {
+                            let cos_t = &rope_cos_local[t * half_rot_local..(t + 1) * half_rot_local];
+                            let sin_t = &rope_sin_local[t * half_rot_local..(t + 1) * half_rot_local];
+                            let ks = &mut k_batch[t * kv_stride..(t + 1) * kv_stride];
+                            qk_norm_raw_inplace(ks, n_kv, hd, Some(kn), eps);
+                            for h in 0..n_kv {
+                                rope_head_with_cos_sin(&mut ks[h * hd..(h + 1) * hd], cos_t, sin_t, hd);
+                            }
+                            let vs = &mut v_batch[t * kv_stride..(t + 1) * kv_stride];
+                            qk_norm_raw_inplace(vs, n_kv, hd, None, eps);
+                        }
+                    }
+                    if kv_quant.is_glyph() {
+                        let gkv = glyph_kv[l]
+                            .as_mut()
+                            .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                        let stride = n_kv * hd;
+                        for t in 0..seq_len {
+                            let kt = &k_batch[t * stride..(t + 1) * stride];
+                            let vt = if gkv.k_eq_v {
+                                &[][..]
+                            } else {
+                                &v_batch[t * stride..(t + 1) * stride]
+                            };
+                            gkv.append_token(kt, vt, native_t16c.as_deref())?;
+                        }
+                    } else {
+                        match kv_quant {
+                            KvQuantMode::Fp32 => {
+                                let kb = k_batch.len() * 4 + v_batch.len() * 4;
+                                kv_raw_step += kb;
+                                kv_cmp_step += kb;
+                            }
+                            KvQuantMode::Q8 => {
+                                kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                                kv_cmp_step += quantize_dequant_kv_q8_inplace(&mut k_batch, hd)
+                                    + quantize_dequant_kv_q8_inplace(&mut v_batch, hd);
+                            }
+                            KvQuantMode::Fp8E4M3 => {
+                                kv_raw_step += (k_batch.len() + v_batch.len()) * 4;
+                                kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
+                                    + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
+                            }
+                            KvQuantMode::Glyph | KvQuantMode::GlyphPure => unreachable!(),
+                        }
+                        kv[l].k.extend_from_slice(&k_batch);
+                        kv[l].v.extend_from_slice(&v_batch);
+                    }
+                    if let Some(t0) = t_kv0 {
+                        prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                    }
+                    let ls = scalars[l];
+                    if (ls - 1.0).abs() > 1e-7 {
+                        for v in states.iter_mut() {
+                            *v *= ls;
+                        }
+                    }
+                    if verbose_layers && (l == 0 || l == 5 || l % 15 == 14 || l + 1 == cfg.n_layers) {
+                        eprintln!(
+                            "[run31b] layer {l:02}/{} MOD_SKIP in {:.2}s (pinned={})",
+                            cfg.n_layers,
+                            tl.elapsed().as_secs_f64(),
+                            all_pinned || l < pinned.len()
+                        );
+                    }
+                    continue;
+                }
+
                 let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, None, None, true)?;
                 let k_raw = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
@@ -1475,22 +1607,73 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                // Exact 1-Pass Gate-Guided Block-Sparse GeGLU:
-                // Compute exact `gate_proj` in a SINGLE pass (zero preview error, zero double-pass OpenMP/FWHT overhead,
-                // ~2.4x faster than 2-stage preview!). Because V5/V5.1/V6 co-activation permutation clusters active GeGLU
-                // neurons into contiguous `bsize` blocks (88–97.8% energy in top 50% blocks), exact `gate_proj` selects
-                // the true top `mlp_top_p` blocks (`row_mask`, `col_mask`), skipping `(1 - mlp_top_p)` of `up_proj` and
-                // `down_proj` DRAM tiles cleanly while preserving 100% dense-identical GeGLU routing!
-                let mut gelu_gate = run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?;
+                let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
+                    if let (Some(cr), Some(mats)) = (cortical_router.as_ref(), t16c_mats.as_ref()) {
+                        let check_proj_blk = |suf: &str, l_key: &str| -> Option<usize> {
+                            let k1 = format!("model.language_model.layers.{l}.{suf}.weight");
+                            let k2 = format!("model.layers.{l}.{suf}.weight");
+                            let k1_lb = format!("{k1}.{l_key}");
+                            let m = mats.get(&k1).or_else(|| mats.get(&k2)).or_else(|| mats.get(&k1_lb))?;
+                            let eb = m.n_bits & 0x3F;
+                            if eb == 5 || eb == 8 { None } else { Some(m.block_size) }
+                        };
+                        let gb = check_proj_blk("mlp.gate_proj", "lb_u");
+                        let ub = check_proj_blk("mlp.up_proj", "lb_u");
+                        let db = check_proj_blk("mlp.down_proj", "lb_v");
+                        let bsize = cr.block_size;
+                        if gb == Some(bsize) && ub == Some(bsize) && db == Some(bsize) && bsize > 0 && cfg.ff % bsize == 0 {
+                            let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                            let (rmask, cmask, blk_sz) = cr.layers[l].predict_masks(&inp2, seq_len, mlp_top_p)?;
+                            if let Some(t0) = tr0 {
+                                prof_router_step += t0.elapsed().as_secs_f64();
+                            }
+                            cortical_gate_total_step += cmask.len() as u64;
+                            cortical_gate_skipped_step += cmask.iter().filter(|&&v| v == 0).count() as u64;
+                            Some((rmask, cmask, blk_sz))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // V6.1 Predictive Cortical Column Routing (when --cortical-router is loaded) skips `(1 - mlp_top_p)`
+                // of `gate_proj` DRAM reads too; otherwise preserves exact 1-pass `gate_proj` routing unchanged.
+                let mut gelu_gate = if let Some((ref rmask, _, _)) = predicted_masks {
+                    run_proj_masked(l, "mlp.gate_proj", &inp2, Some(rmask), None, true)?
+                } else {
+                    run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?
+                };
                 if let Some(t0) = t_g0 {
                     prof_gate_step += t0.elapsed().as_secs_f64();
                 }
                 let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                gelu_tanh_inplace_parallel(&mut gelu_gate, threads);
+                if let Some((_, ref cmask, bsize)) = predicted_masks {
+                    let ff = cfg.ff;
+                    for t in 0..seq_len {
+                        let base = t * ff;
+                        for (b, &active) in cmask.iter().enumerate() {
+                            if active != 0 {
+                                for x in &mut gelu_gate[base + b * bsize..base + (b + 1) * bsize] {
+                                    *x = gelu_tanh_fast_f32(*x);
+                                }
+                            } else {
+                                gelu_gate[base + b * bsize..base + (b + 1) * bsize].fill(0.0);
+                            }
+                        }
+                    }
+                } else {
+                    gelu_tanh_inplace_parallel(&mut gelu_gate, threads);
+                }
                 if let Some(t0) = t_gl0 {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
-                let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
+                let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if predicted_masks.is_some() {
+                    predicted_masks
+                } else if mlp_top_p < 0.9999 {
                     t16c_mats.as_ref().and_then(|mats| {
                         let ku1 = format!("model.language_model.layers.{l}.mlp.up_proj.weight");
                         let ku2 = format!("model.layers.{l}.mlp.up_proj.weight");
@@ -1609,12 +1792,17 @@ impl Runtime31B {
         self.cs_skipped_blocks += cs_skipped_step;
         self.mlp_sparse_skipped_blks += mlp_sp_skipped_step;
         self.mlp_sparse_total_blks += mlp_sp_total_step;
+        self.mod_skipped_layers += mod_skipped_step;
+        self.mod_total_layers += mod_total_step;
+        self.cortical_gate_skipped_blks += cortical_gate_skipped_step;
+        self.cortical_gate_total_blks += cortical_gate_total_step;
         if profile_components {
             self.prof_attn_s += prof_attn_step;
             self.prof_gate_s += prof_gate_step;
             self.prof_up_s += prof_up_step;
             self.prof_down_s += prof_down_step;
             self.prof_norm_kv_s += prof_norm_kv_step;
+            self.prof_router_s += prof_router_step;
             self.prof_steps += 1;
         }
         self.kv_raw_bytes += kv_raw_step;
@@ -1841,6 +2029,12 @@ fn load_runtime_31b(
             mlp_top_p: 1.0,
             mlp_sparse_skipped_blks: 0,
             mlp_sparse_total_blks: 0,
+            cortical_router: None,
+            mod_thresh: 0.0,
+            mod_skipped_layers: 0,
+            mod_total_layers: 0,
+            cortical_gate_skipped_blks: 0,
+            cortical_gate_total_blks: 0,
             profile_components: false,
             prof_attn_s: 0.0,
             prof_gate_s: 0.0,
@@ -1848,6 +2042,7 @@ fn load_runtime_31b(
             prof_down_s: 0.0,
             prof_norm_kv_s: 0.0,
             prof_lmhead_s: 0.0,
+            prof_router_s: 0.0,
             prof_steps: 0,
             embed_tile_norms: None,
             lmhead_cs_sieve: None,
@@ -2028,6 +2223,12 @@ fn load_runtime_31b_t16c(
             mlp_top_p: 1.0,
             mlp_sparse_skipped_blks: 0,
             mlp_sparse_total_blks: 0,
+            cortical_router: None,
+            mod_thresh: 0.0,
+            mod_skipped_layers: 0,
+            mod_total_layers: 0,
+            cortical_gate_skipped_blks: 0,
+            cortical_gate_total_blks: 0,
             profile_components: false,
             prof_attn_s: 0.0,
             prof_gate_s: 0.0,
@@ -2035,6 +2236,7 @@ fn load_runtime_31b_t16c(
             prof_down_s: 0.0,
             prof_norm_kv_s: 0.0,
             prof_lmhead_s: 0.0,
+            prof_router_s: 0.0,
             prof_steps: 0,
             embed_tile_norms: None,
             lmhead_cs_sieve: None,
@@ -2543,6 +2745,11 @@ fn run() -> Result<(), String> {
     if !mlp_top_p.is_finite() || mlp_top_p <= 0.0 || mlp_top_p > 1.0 {
         return Err(format!("--mlp-top-p must be finite in (0.0, 1.0], got {mlp_top_p}"));
     }
+    let cortical_router_arg = get("--cortical-router");
+    let mod_thresh: f32 = match get("--mod-thresh") {
+        Some(s) => parse_mod_thresh(&s)?,
+        None => 0.0,
+    };
     let andvcnt_bits: Option<i32> = match get("--andvcnt-bits") {
         Some(s) => {
             let v: i32 = s.parse().map_err(|_| format!("invalid --andvcnt-bits '{s}'"))?;
@@ -2646,6 +2853,40 @@ fn run() -> Result<(), String> {
         );
     }
     rt.mlp_top_p = mlp_top_p;
+    if let Some(ref crp) = cortical_router_arg {
+        if rt.t16c_mats.is_none() {
+            return Err("--cortical-router requires --t16c resident quantized runtime".into());
+        }
+        let cr = CorticalRouterBank::load(Path::new(crp))?;
+        if cr.n_layers != rt.cfg.n_layers || cr.d_model != rt.cfg.d || cr.ff != rt.cfg.ff {
+            return Err(format!(
+                "cortical router {} dims (L={} d={} ff={}) incompatible with model (L={} d={} ff={})",
+                crp, cr.n_layers, cr.d_model, cr.ff, rt.cfg.n_layers, rt.cfg.d, rt.cfg.ff
+            ));
+        }
+        eprintln!(
+            "[run31b] loaded CorticalRouter {}: layers={} rank={} bsize={} blocks={} mod_gate={} ({:.2} MB)",
+            crp,
+            cr.n_layers,
+            cr.rank,
+            cr.block_size,
+            cr.n_blocks,
+            cr.has_mod_gate(),
+            cr.byte_len() as f64 / (1024.0 * 1024.0)
+        );
+        rt.cortical_router = Some(cr);
+    }
+    if mod_thresh > 0.0 {
+        let cr = rt
+            .cortical_router
+            .as_ref()
+            .ok_or("--mod-thresh > 0 requires --cortical-router with MoD gates")?;
+        if !cr.has_mod_gate() {
+            return Err("--mod-thresh > 0 requires --cortical-router built with CRTR_FLAG_MOD_GATE".into());
+        }
+        rt.mod_thresh = mod_thresh;
+        eprintln!("[run31b] enabled KV-Safe V7.0 MoD residual highway: thresh={mod_thresh:.3}");
+    }
     rt.profile_components = profile_components;
     if let (Some(ab), Some(ref nat)) = (andvcnt_bits, rt.native_t16c.as_ref()) {
         if let Some(active) = nat.set_andvcnt_abits(ab) {
@@ -3286,10 +3527,28 @@ fn run() -> Result<(), String> {
             rt.mlp_top_p, rt.mlp_sparse_skipped_blks, rt.mlp_sparse_total_blks, pct
         );
     }
+    if rt.cortical_router.is_some() && rt.cortical_gate_total_blks > 0 {
+        let pct = 100.0 * (rt.cortical_gate_skipped_blks as f64) / (rt.cortical_gate_total_blks as f64);
+        println!(
+            "CORTICAL_ROUTER gate_skipped_blks={} gate_total_blks={} gate_saved_pct={:.1}%",
+            rt.cortical_gate_skipped_blks, rt.cortical_gate_total_blks, pct
+        );
+    }
+    if rt.mod_thresh > 0.0 {
+        let pct = if rt.mod_total_layers > 0 {
+            100.0 * (rt.mod_skipped_layers as f64) / (rt.mod_total_layers as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "MOD31B thresh={:.3} skipped_layers={} eligible_layers={} skipped_pct={:.1}%",
+            rt.mod_thresh, rt.mod_skipped_layers, rt.mod_total_layers, pct
+        );
+    }
     if rt.profile_components && rt.prof_steps > 0 {
         let n = rt.prof_steps as f64;
         println!(
-            "PROFILE31B steps={} attn_s={:.3} gate_s={:.3} up_s={:.3} down_s={:.3} norm_kv_s={:.3} lmhead_s={:.3} avg_step_s={:.3}",
+            "PROFILE31B steps={} attn_s={:.3} gate_s={:.3} up_s={:.3} down_s={:.3} norm_kv_s={:.3} lmhead_s={:.3} avg_step_s={:.3} router_s={:.3}",
             rt.prof_steps,
             rt.prof_attn_s,
             rt.prof_gate_s,
@@ -3297,7 +3556,8 @@ fn run() -> Result<(), String> {
             rt.prof_down_s,
             rt.prof_norm_kv_s,
             rt.prof_lmhead_s,
-            (rt.prof_attn_s + rt.prof_gate_s + rt.prof_up_s + rt.prof_down_s + rt.prof_norm_kv_s + rt.prof_lmhead_s) / n
+            (rt.prof_attn_s + rt.prof_gate_s + rt.prof_up_s + rt.prof_down_s + rt.prof_norm_kv_s + rt.prof_lmhead_s + rt.prof_router_s) / n,
+            rt.prof_router_s
         );
     }
     println!(
@@ -3641,5 +3901,106 @@ mod tests {
         assert_eq!(rec, prompt_ids);
         assert_eq!(stats.n_tokens, prompt_ids.len());
         assert!(stats.fps > 0.0);
+    }
+
+    #[test]
+    fn parse_mod_thresh_validates_bounds() {
+        assert!((parse_mod_thresh("0").unwrap() - 0.0).abs() < 1e-6);
+        assert!((parse_mod_thresh("0.35").unwrap() - 0.35).abs() < 1e-6);
+        assert!(parse_mod_thresh("-0.1").is_err());
+        assert!(parse_mod_thresh("1.0").is_err());
+        assert!(parse_mod_thresh("NaN").is_err());
+        assert!(parse_mod_thresh("bad").is_err());
+    }
+
+    #[test]
+    fn predictive_cortical_row_mask_matches_dense_on_active_t16c_blocks() {
+        use run270_rust::cortical_router::CorticalRouterLayer;
+        use run270_rust::t16c::{T16CMat, T16C_ROWMAJOR_BIT};
+
+        let d_out = 256usize; // ff = 4 blocks * 64 rows (4 row tiles per block)
+        let d_in = 128usize;
+        let block_size = 64usize;
+        let n_blks_in = d_in / block_size;
+        let mut sc = vec![0.125f32; d_out * n_blks_in];
+        let mut idx = vec![0u8; d_out * d_in];
+        for r in 0..d_out {
+            sc[r * n_blks_in + (r % n_blks_in)] = 0.25 + ((r % 5) as f32) * 0.05;
+            for c in 0..d_in {
+                idx[r * d_in + c] = ((r * 7 + c * 11) % 4) as u8;
+            }
+        }
+        let mat = T16CMat::pack_from_components(
+            "test.mlp.gate_proj.weight".into(),
+            d_out,
+            d_in,
+            block_size,
+            2 | T16C_ROWMAJOR_BIT,
+            false,
+            false,
+            &sc,
+            None,
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let n_blocks = 4usize;
+        let rank = 4usize;
+        let mut v_i8 = vec![0i8; rank * d_in];
+        let mut u_i8 = vec![0i8; n_blocks * rank];
+        for k in 0..rank {
+            for j in 0..8 {
+                v_i8[k * d_in + k * 8 + j] = 100i8;
+            }
+            u_i8[k * rank + k] = 100i8;
+        }
+        let cr = CorticalRouterLayer {
+            d_model: d_in,
+            ff: d_out,
+            block_size,
+            n_blocks,
+            rank,
+            v_i8,
+            sv: vec![0.02f32; rank],
+            b1: vec![-0.2f32; rank],
+            u_i8,
+            su: vec![0.15f32; n_blocks],
+            b2: vec![-2.5f32; n_blocks],
+            mod_w_i8: None,
+            mod_scale: 0.0,
+            mod_bias: 0.0,
+        };
+
+        let mut x = vec![0.0f32; 2 * d_in];
+        x[8..16].fill(2.5); // token 0 triggers block 1
+        x[d_in + 24..d_in + 32].fill(2.5); // token 1 triggers block 3
+        let (rmask, cmask, bsz) = cr.predict_masks(&x, 2, 0.50).unwrap();
+        assert_eq!(bsz, 64);
+        assert_eq!(cmask[1], 1);
+        assert_eq!(cmask[3], 1);
+
+        let y_dense = mat.project_batch(&x, 2, None, 2).unwrap();
+        let (y_sparse, skipped) = mat
+            .project_batch_sparse_ext(&x, 2, None, 2, Some(&rmask), None, true, true)
+            .unwrap();
+        assert!(skipped > 0, "expected skipped > 0 tiles on masked gate_proj");
+        for tok in 0..2 {
+            for (b, &active) in cmask.iter().enumerate() {
+                let s0 = tok * d_out + b * block_size;
+                let s1 = s0 + block_size;
+                if active != 0 {
+                    let max_err = y_dense[s0..s1]
+                        .iter()
+                        .zip(&y_sparse[s0..s1])
+                        .map(|(a, c)| (a - c).abs())
+                        .fold(0.0f32, f32::max);
+                    assert!(max_err < 1e-5, "tok {tok} blk {b} max_err={max_err}");
+                } else {
+                    assert!(y_sparse[s0..s1].iter().all(|&v| v == 0.0));
+                }
+            }
+        }
     }
 }

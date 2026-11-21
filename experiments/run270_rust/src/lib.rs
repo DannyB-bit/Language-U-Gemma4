@@ -1,5 +1,6 @@
 pub mod assistant;
 pub mod codec;
+pub mod cortical_router;
 pub mod cuneiform_tbi;
 pub mod glyph_kv;
 pub mod json;
