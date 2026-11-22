@@ -1220,6 +1220,124 @@ def capture_and_train_layer_crtr(
     )
 
 
+class OffloadedAdamW:
+    """
+    Exact decoupled FP32 AdamW + CosineAnnealingLR with CPU-offloaded grad/m/v state.
+
+    Accumulates leaf `.grad` immediately onto CPU via `register_post_accumulate_grad_hook`
+    and updates parameters one-by-one on their native device to keep peak VRAM low.
+    """
+
+    def __init__(
+        self,
+        param_groups: List[dict],
+        weight_decay: float = 1e-4,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        t_max: int = 150,
+        eta_min: float = 4e-5,
+    ) -> None:
+        self.weight_decay = float(weight_decay)
+        self.betas = (float(betas[0]), float(betas[1]))
+        self.eps = float(eps)
+        self.t_max = max(1, int(t_max))
+        self.eta_min = float(eta_min)
+        self.t = 0
+        self.groups: List[Tuple[float, List[nn.Parameter]]] = []
+        self.g_acc: Dict[int, torch.Tensor] = {}
+        self.m_cpu: Dict[int, torch.Tensor] = {}
+        self.v_cpu: Dict[int, torch.Tensor] = {}
+        self.touched: set[int] = set()
+        self.hooks: List[object] = []
+
+        for pg in param_groups:
+            lr_g = float(pg["lr"])
+            plist: List[nn.Parameter] = []
+            for p in pg["params"]:
+                if not p.requires_grad:
+                    continue
+                pid = id(p)
+                plist.append(p)
+                if pid not in self.g_acc:
+                    sh = p.shape
+                    self.g_acc[pid] = torch.zeros(sh, device="cpu", dtype=torch.float32)
+                    self.m_cpu[pid] = torch.zeros(sh, device="cpu", dtype=torch.float32)
+                    self.v_cpu[pid] = torch.zeros(sh, device="cpu", dtype=torch.float32)
+
+                    def _make_hook(target_id: int):
+                        def _hook(param: torch.Tensor) -> None:
+                            if param.grad is not None:
+                                self.g_acc[target_id].add_(
+                                    param.grad.detach().to(device="cpu", dtype=torch.float32)
+                                )
+                                self.touched.add(target_id)
+                                param.grad = None
+                        return _hook
+
+                    self.hooks.append(p.register_post_accumulate_grad_hook(_make_hook(pid)))
+            self.groups.append((lr_g, plist))
+
+    def zero_grad(self) -> None:
+        for pid in self.touched:
+            self.g_acc[pid].zero_()
+        self.touched.clear()
+        for _, plist in self.groups:
+            for p in plist:
+                p.grad = None
+
+    def step(self, max_grad_norm: float = 1.0) -> float:
+        self.t += 1
+        sq_norm = 0.0
+        for pid in self.touched:
+            nrm = float(torch.linalg.vector_norm(self.g_acc[pid]).item())
+            sq_norm += nrm * nrm
+        total_norm = math.sqrt(sq_norm)
+        clip_coef = float(max_grad_norm) / (total_norm + 1e-6)
+        do_clip = clip_coef < 1.0
+
+        b1, b2 = self.betas
+        bc1 = 1.0 - (b1 ** self.t)
+        bc2_sqrt = math.sqrt(1.0 - (b2 ** self.t))
+        cos_f = 0.5 * (1.0 + math.cos(math.pi * float(self.t - 1) / float(self.t_max)))
+
+        with torch.no_grad():
+            for base_lr, plist in self.groups:
+                lr_t = self.eta_min + (base_lr - self.eta_min) * cos_f
+                for p in plist:
+                    pid = id(p)
+                    if pid not in self.touched:
+                        continue
+                    g_d = self.g_acc[pid].to(device=p.device, dtype=torch.float32)
+                    if do_clip:
+                        g_d.mul_(clip_coef)
+                    m_d = self.m_cpu[pid].to(device=p.device, dtype=torch.float32)
+                    v_d = self.v_cpu[pid].to(device=p.device, dtype=torch.float32)
+
+                    p.mul_(1.0 - lr_t * self.weight_decay)
+                    m_d.lerp_(g_d, 1.0 - b1)
+                    v_d.mul_(b2).addcmul_(g_d, g_d, value=1.0 - b2)
+                    denom = (v_d.sqrt() / bc2_sqrt).add_(self.eps)
+                    p.addcdiv_(m_d, denom, value=-(lr_t / bc1))
+
+                    self.m_cpu[pid].copy_(m_d.cpu())
+                    self.v_cpu[pid].copy_(v_d.cpu())
+                    self.g_acc[pid].zero_()
+        self.touched.clear()
+        return total_norm
+
+    def close(self) -> None:
+        for h in self.hooks:
+            h.remove()
+        self.hooks.clear()
+        self.g_acc.clear()
+        self.m_cpu.clear()
+        self.v_cpu.clear()
+        self.touched.clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 def run_selftest() -> int:
     """Mandatory 6-gate CPU-runnable verification battery for V6.1 Hybrid + CRTR."""
     failures = 0
@@ -1249,12 +1367,47 @@ def run_selftest() -> int:
         f"LM+Emb={binfo['pred_lm_b']/1e9:.3f}GB Vis3b={binfo['pred_vis_3b']/1e9:.3f}GB Total={tot_b/1e9:.3f}GB ({tot_b/1024**3:.3f}GiB)",
     )
 
-    # Gate 2: Real LittleBit-2 (sr=256) + Direct2b (lr=16) gradient STE convergence & T16C packing
+    # Gate 2: Real LittleBit-2 (sr=256) + Direct2b (lr=16) gradient STE convergence + OffloadedAdamW parity
     g0 = run_gate_0a(seed=42)
+
+    class _CkptBlk(nn.Module):
+        def __init__(self, d: int) -> None:
+            super().__init__()
+            self.l1 = nn.Linear(d, d, bias=False)
+            self.l2 = nn.Linear(d, d, bias=True)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = F.gelu(grad_checkpoint(self.l1, x, use_reentrant=False), approximate="tanh")
+            return grad_checkpoint(self.l2, h, use_reentrant=False)
+
+    torch.manual_seed(123)
+    m_ref = _CkptBlk(16).to(DEVICE)
+    m_off = _CkptBlk(16).to(DEVICE)
+    m_off.load_state_dict(m_ref.state_dict())
+    pg_ref = [{"params": [m_ref.l1.weight], "lr": 2.5e-3}, {"params": [m_ref.l2.weight, m_ref.l2.bias], "lr": 6e-4}]
+    pg_off = [{"params": [m_off.l1.weight], "lr": 2.5e-3}, {"params": [m_off.l2.weight, m_off.l2.bias], "lr": 6e-4}]
+    opt_ref = torch.optim.AdamW(pg_ref, weight_decay=1e-4)
+    sch_ref = torch.optim.lr_scheduler.CosineAnnealingLR(opt_ref, T_max=10, eta_min=4e-5)
+    opt_off = OffloadedAdamW(pg_off, weight_decay=1e-4, t_max=10, eta_min=4e-5)
+    for _st in range(3):
+        x_in = torch.randn((4, 16), device=DEVICE) * 4.0
+        y_tg = torch.randn((4, 16), device=DEVICE) * 4.0
+        opt_ref.zero_grad()
+        F.mse_loss(grad_checkpoint(m_ref, x_in.detach().requires_grad_(True), use_reentrant=False), y_tg).backward()
+        torch.nn.utils.clip_grad_norm_(list(m_ref.parameters()), 1.0)
+        opt_ref.step(); sch_ref.step()
+        opt_off.zero_grad()
+        for mb_i in range(2):
+            xi = x_in[mb_i * 2 : (mb_i + 1) * 2].detach().requires_grad_(True)
+            yi = y_tg[mb_i * 2 : (mb_i + 1) * 2]
+            (F.mse_loss(grad_checkpoint(m_off, xi, use_reentrant=False), yi) / 2.0).backward()
+        opt_off.step(max_grad_norm=1.0)
+    off_err = max(float((p1 - p2).abs().max().item()) for p1, p2 in zip(m_ref.parameters(), m_off.parameters()))
+    opt_off.close()
     gate(
-        "Gate 2 (LittleBit-2 + Direct2b STE Convergence & Packing)",
-        g0["lb_l1"] < g0["lb_l0"] * 0.75 and g0["dr_l1"] < g0["dr_l0"] and g0["flips"] > 0,
-        f"lb={g0['lb_l0']:.4f}->{g0['lb_l1']:.4f} dr={g0['dr_l0']:.4f}->{g0['dr_l1']:.4f} flips={g0['flips']}",
+        "Gate 2 (LittleBit-2 + Direct2b STE & OffloadedAdamW Parity)",
+        g0["lb_l1"] < g0["lb_l0"] * 0.75 and g0["dr_l1"] < g0["dr_l0"] and g0["flips"] > 0 and off_err < 1e-5,
+        f"lb={g0['lb_l0']:.4f}->{g0['lb_l1']:.4f} dr={g0['dr_l0']:.4f}->{g0['dr_l1']:.4f} flips={g0['flips']} off_err={off_err:.2e}",
     )
 
     # Gate 3: Representation-matched live CRTR + MoD training & CRTR v1 export/load roundtrip
@@ -2515,6 +2668,9 @@ def run_pipeline() -> None:
             # 7. Stage 3B: Joint 4-Layer (L56..L59) + final_norm End-to-End Logit-KL Distillation
             # -------------------------------------------------------------------
             print("\n[Stage 3B] Joint 4-Layer (L56..L59 + final_norm) End-to-End Logit-KL Distillation...", flush=True)
+            del X_stud_cpu
+            gc.collect()
+            torch.cuda.empty_cache()
             fn_g_teach = fn_orig_cpu.to(DEVICE)
             vlm_ans_pos = np.flatnonzero(all_vlm_ans_mask.reshape(-1))
             txt_ans_pos = np.flatnonzero((all_ans_mask & (~all_vlm_ans_mask)).reshape(-1))
@@ -2586,8 +2742,15 @@ def run_pipeline() -> None:
                     ot = self.o_proj(ctx.transpose(1, 2).contiguous().view(mb, SEQ_LEN, NH * self.hd))
                     xm = xb.float() + rmsn_diff(ot, self.n_pa)
                     hm = rmsn_diff(xm, self.n_pf)
-                    act = F.gelu(self.gate_proj(hm), approximate="tanh") * self.up_proj(hm)
-                    out = (xm + rmsn_diff(self.down_proj(act), self.n_pff)) * self.lsc
+                    if torch.is_grad_enabled() and hm.requires_grad:
+                        g_act = F.gelu(grad_checkpoint(self.gate_proj, hm, use_reentrant=False), approximate="tanh")
+                        u_act = grad_checkpoint(self.up_proj, hm, use_reentrant=False)
+                        act = g_act * u_act
+                        dt_out = grad_checkpoint(self.down_proj, act, use_reentrant=False)
+                    else:
+                        act = F.gelu(self.gate_proj(hm), approximate="tanh") * self.up_proj(hm)
+                        dt_out = self.down_proj(act)
+                    out = (xm + rmsn_diff(dt_out, self.n_pff)) * self.lsc
                     return (out, xm) if return_mid else out
 
                 def forward(self, xb: torch.Tensor, amask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -2596,11 +2759,25 @@ def run_pipeline() -> None:
                 def forward_with_mid(self, xb: torch.Tensor, amask: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
                     return self._forward_impl(xb, amask, return_mid=True)
 
+            for _li_chk in (56, 57, 58, 59):
+                _tp = TAIL_MOD_DIR / f"L{_li_chk:02d}.pt"
+                assert _tp.is_file(), f"FAIL-CLOSED Stage 3B missing tail module checkpoint: {_tp}"
+            assert Path("/tmp/v6_x_stud_pre56.pt").is_file(), "FAIL-CLOSED Stage 3B missing /tmp/v6_x_stud_pre56.pt"
+            assert Path("/tmp/v6_h_eval_pre56.pt").is_file(), "FAIL-CLOSED Stage 3B missing /tmp/v6_h_eval_pre56.pt"
+
             tail_ckpts = {li: torch.load(TAIL_MOD_DIR / f"L{li:02d}.pt", map_location="cpu", weights_only=False) for li in (56, 57, 58, 59)}
             tail_mods = nn.ModuleList([TailLayerV6(li, tail_ckpts[li]) for li in (56, 57, 58, 59)])
+            del tail_ckpts
+            gc.collect()
+            torch.cuda.empty_cache()
             p_final_norm = nn.Parameter(fn_orig_cpu.to(DEVICE, dtype=torch.float32).clone())
             x_pre56_cpu = torch.load("/tmp/v6_x_stud_pre56.pt", map_location="cpu", weights_only=True)
             h_ev_pre56_cpu = torch.load("/tmp/v6_h_eval_pre56.pt", map_location="cpu", weights_only=True)
+
+            low_vram_3b = (gpu_vram_gb < 36.0)
+            VAL_MB_3B = 2 if low_vram_3b else 4
+            GRAD_ACCUM_3B = 2 if low_vram_3b else 1
+            TRAIN_MB_3B = 4 // GRAD_ACCUM_3B
 
             def run_tail_4layers(x_in: torch.Tensor, amask: Optional[torch.Tensor], use_ckpt: bool) -> torch.Tensor:
                 h = x_in.float()
@@ -2614,8 +2791,8 @@ def run_pipeline() -> None:
             def eval_tail_3b() -> Tuple[float, float]:
                 with torch.no_grad():
                     kl_s, agr_s, cnt = 0.0, 0.0, 0
-                    for v0 in range(0, len(VAL_SEQ_IDX), 4):
-                        sidx = VAL_SEQ_IDX[v0 : v0 + 4].tolist()
+                    for v0 in range(0, len(VAL_SEQ_IDX), VAL_MB_3B):
+                        sidx = VAL_SEQ_IDX[v0 : v0 + VAL_MB_3B].tolist()
                         am = make_sliding_attn_mask_for_indices(sidx, vlm_spans)
                         hs = rmsn_diff(run_tail_4layers(x_pre56_cpu[sidx].to(DEVICE), am, False), p_final_norm)
                         ht = rmsn_diff(X_teach_cpu[sidx].to(DEVICE), fn_g_teach)
@@ -2632,7 +2809,11 @@ def run_pipeline() -> None:
                     return kl_s / max(cnt, 1), agr_s / max(cnt, 1)
 
             kl_3b_0, agr_3b_0 = eval_tail_3b()
-            print(f"  [Stage 3B Before] Val KL={kl_3b_0:.4f} | Teacher-Agree={agr_3b_0*100:.1f}%", flush=True)
+            print(
+                f"  [Stage 3B Before] Val KL={kl_3b_0:.4f} | Teacher-Agree={agr_3b_0*100:.1f}% "
+                f"| offload={low_vram_3b} mb={TRAIN_MB_3B}x{GRAD_ACCUM_3B}",
+                flush=True,
+            )
             opt_groups_3b: List[dict] = []
             norm_params_3b: List[nn.Parameter] = [p_final_norm]
             for tmod in tail_mods:
@@ -2643,54 +2824,87 @@ def run_pipeline() -> None:
                 norm_params_3b.extend([tmod.n_in, tmod.n_qn, tmod.n_kn, tmod.n_pa, tmod.n_pf, tmod.n_pff, tmod.lsc])
             opt_groups_3b.append({"params": norm_params_3b, "lr": 6e-4})
             assert sum(len(g["params"]) for g in opt_groups_3b) == len(list(tail_mods.parameters()) + [p_final_norm])
-            opt_3b = torch.optim.AdamW(opt_groups_3b, weight_decay=1e-4)
             STEPS_3B = 150
-            sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=4e-5)
+            if low_vram_3b:
+                opt_3b = OffloadedAdamW(opt_groups_3b, weight_decay=1e-4, t_max=STEPS_3B, eta_min=4e-5)
+                sch_3b = None
+            else:
+                opt_3b = torch.optim.AdamW(opt_groups_3b, weight_decay=1e-4)
+                sch_3b = torch.optim.lr_scheduler.CosineAnnealingLR(opt_3b, T_max=STEPS_3B, eta_min=4e-5)
             best_kl_3b, best_agr_3b = kl_3b_0, agr_3b_0
-            best_3b_sd = {
-                "tail": {k: v.detach().cpu().clone() for k, v in tail_mods.state_dict().items()},
-                "fn": p_final_norm.detach().cpu().clone(),
-            }
+            BEST_3B_PATH = Path("/tmp/v6_stage3b_best.pt")
+            _atomic_torch_save({
+                "tail": {k: v.detach().cpu() for k, v in tail_mods.state_dict().items()},
+                "fn": p_final_norm.detach().cpu(),
+            }, BEST_3B_PATH)
             for st in range(STEPS_3B):
                 opt_3b.zero_grad()
-                sel = TRAIN_SEQ_IDX[np.random.choice(len(TRAIN_SEQ_IDX), size=4, replace=False)].tolist()
-                am = make_sliding_attn_mask_for_indices(sel, vlm_spans)
-                xb = x_pre56_cpu[sel].to(DEVICE).float().requires_grad_(True)
-                hs = rmsn_diff(run_tail_4layers(xb, am, True), p_final_norm)
-                with torch.no_grad():
-                    ht = rmsn_diff(X_teach_cpu[sel].to(DEVICE), fn_g_teach)
-                am_tok = torch.from_numpy(all_ans_mask[sel]).to(DEVICE)
-                l_cos = 1.0 - F.cosine_similarity(hs.reshape(-1, D_MOD), ht.reshape(-1, D_MOD), dim=-1).mean()
-                if am_tok.any():
-                    hs_a, ht_a = hs[am_tok].to(COMPUTE_DTYPE), ht[am_tok].to(COMPUTE_DTYPE)
-                    zs = 30.0 * torch.tanh(F.linear(hs_a, W_cand_3b).float() / 30.0)
+                if st == 0:
+                    torch.cuda.reset_peak_memory_stats(DEVICE)
+                sel_all = TRAIN_SEQ_IDX[np.random.choice(len(TRAIN_SEQ_IDX), size=4, replace=False)].tolist()
+                loss_acc_val = 0.0
+                for mb_i in range(GRAD_ACCUM_3B):
+                    sel = sel_all[mb_i * TRAIN_MB_3B : (mb_i + 1) * TRAIN_MB_3B]
+                    am = make_sliding_attn_mask_for_indices(sel, vlm_spans)
+                    xb = x_pre56_cpu[sel].to(DEVICE).float().requires_grad_(True)
+                    hs = rmsn_diff(run_tail_4layers(xb, am, True), p_final_norm)
                     with torch.no_grad():
-                        zt = 30.0 * torch.tanh(F.linear(ht_a, W_cand_3b).float() / 30.0)
-                        pt = F.softmax(zt / TAU, dim=-1)
-                    l_kl = ((pt * (torch.log(pt.clamp(min=1e-12)) - F.log_softmax(zs / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
-                    loss = l_kl + 2.0 * l_cos
+                        ht = rmsn_diff(X_teach_cpu[sel].to(DEVICE), fn_g_teach)
+                    am_tok = torch.from_numpy(all_ans_mask[sel]).to(DEVICE)
+                    l_cos = 1.0 - F.cosine_similarity(hs.reshape(-1, D_MOD), ht.reshape(-1, D_MOD), dim=-1).mean()
+                    if am_tok.any():
+                        hs_a, ht_a = hs[am_tok].to(COMPUTE_DTYPE), ht[am_tok].to(COMPUTE_DTYPE)
+                        zs = 30.0 * torch.tanh(F.linear(hs_a, W_cand_3b).float() / 30.0)
+                        with torch.no_grad():
+                            zt = 30.0 * torch.tanh(F.linear(ht_a, W_cand_3b).float() / 30.0)
+                            pt = F.softmax(zt / TAU, dim=-1)
+                        l_kl = ((pt * (torch.log(pt.clamp(min=1e-12)) - F.log_softmax(zs / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
+                        mb_loss = l_kl + 2.0 * l_cos
+                    else:
+                        mb_loss = 2.0 * l_cos
+                    loss_acc_val += float(mb_loss.item()) / float(GRAD_ACCUM_3B)
+                    (mb_loss / float(GRAD_ACCUM_3B)).backward()
+                    del xb, am, hs, ht, am_tok, l_cos, mb_loss
+                if low_vram_3b:
+                    opt_3b.step(max_grad_norm=1.0)
                 else:
-                    loss = 2.0 * l_cos
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(list(tail_mods.parameters()) + [p_final_norm], 1.0)
-                opt_3b.step(); sch_3b.step()
-                if (st + 1) % 30 == 0:
-                    kl_v, agr_v = eval_tail_3b()
-                    print(f"    [Stage 3B step {st+1:03d}/{STEPS_3B}] loss={loss.item():.4f} | Val KL={kl_v:.4f} Agree={agr_v*100:.1f}%", flush=True)
-                    if kl_v < best_kl_3b:
-                        best_kl_3b, best_agr_3b = kl_v, agr_v
-                        best_3b_sd = {
-                            "tail": {k: v.detach().cpu().clone() for k, v in tail_mods.state_dict().items()},
-                            "fn": p_final_norm.detach().cpu().clone(),
-                        }
+                    torch.nn.utils.clip_grad_norm_(list(tail_mods.parameters()) + [p_final_norm], 1.0)
+                    opt_3b.step(); sch_3b.step()
+                if st == 0 or (st + 1) % 30 == 0:
+                    peak_vram_gib = torch.cuda.max_memory_allocated(DEVICE) / (1024**3)
+                    if st == 0:
+                        print(
+                            f"    [Stage 3B step {st+1:03d}/{STEPS_3B}] loss={loss_acc_val:.4f} "
+                            f"| peak_vram={peak_vram_gib:.2f}GiB ram={host_ram_gb()[0]:.2f}GiB",
+                            flush=True,
+                        )
+                    if (st + 1) % 30 == 0:
+                        kl_v, agr_v = eval_tail_3b()
+                        print(
+                            f"    [Stage 3B step {st+1:03d}/{STEPS_3B}] loss={loss_acc_val:.4f} | Val KL={kl_v:.4f} "
+                            f"Agree={agr_v*100:.1f}% | peak_vram={peak_vram_gib:.2f}GiB ram={host_ram_gb()[0]:.2f}GiB",
+                            flush=True,
+                        )
+                        if kl_v < best_kl_3b:
+                            best_kl_3b, best_agr_3b = kl_v, agr_v
+                            _atomic_torch_save({
+                                "tail": {k: v.detach().cpu() for k, v in tail_mods.state_dict().items()},
+                                "fn": p_final_norm.detach().cpu(),
+                            }, BEST_3B_PATH)
 
-            tail_mods.load_state_dict({k: v.to(DEVICE) for k, v in best_3b_sd["tail"].items()})
-            p_final_norm.data.copy_(best_3b_sd["fn"].to(DEVICE))
+            _best_3b = torch.load(BEST_3B_PATH, map_location="cpu", weights_only=True)
+            tail_mods.load_state_dict({k: v.to(DEVICE) for k, v in _best_3b["tail"].items()})
+            p_final_norm.data.copy_(_best_3b["fn"].to(DEVICE))
+            del _best_3b
+            BEST_3B_PATH.unlink(missing_ok=True)
             kl_3b_1, agr_3b_1 = eval_tail_3b()
             fn_distilled_cpu = p_final_norm.detach().float().cpu().clone()
             write_norm_inplace(t16c_fp, norm_offsets, "model.language_model.norm.weight", fn_distilled_cpu.numpy())
             print(f"  [Stage 3B DONE] Val KL: {kl_3b_0:.4f} -> {kl_3b_1:.4f} | Teacher-Agree: {agr_3b_0*100:.1f}% -> {agr_3b_1*100:.1f}%!", flush=True)
-            del opt_3b, sch_3b, best_3b_sd, W_cand_3b
+            if hasattr(opt_3b, "close"):
+                opt_3b.close()
+            del opt_3b, sch_3b, W_cand_3b
+            torch.cuda.empty_cache()
 
             x_cur_tail, h_ev_tail = x_pre56_cpu, h_ev_pre56_cpu
             tail_crtr_info: Dict[int, dict] = {}
@@ -2753,7 +2967,7 @@ def run_pipeline() -> None:
                 x_cur_tail = x_next_t
                 del w_exp
             X_stud_cpu, H_stud_eval = x_cur_tail, h_ev_tail
-            del tail_mods, tail_ckpts, x_pre56_cpu, h_ev_pre56_cpu, p_final_norm
+            del tail_mods, x_pre56_cpu, h_ev_pre56_cpu, p_final_norm
             torch.cuda.empty_cache()
 
             assert lm_mats_count == _pred_lm_mats, f"LM record count mismatch: {lm_mats_count} != {_pred_lm_mats}"
