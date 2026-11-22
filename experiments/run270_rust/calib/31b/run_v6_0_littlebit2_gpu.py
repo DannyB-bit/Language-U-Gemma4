@@ -88,7 +88,7 @@ if DRIVE_DIR is not None and (DRIVE_DIR / "ckpt_v6_0_littlebit2").is_dir():
     print(f"[Drive Resume] Checking persistent checkpoints at {DRIVE_DIR / 'ckpt_v6_0_littlebit2'}...", flush=True)
     drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
     for p in drive_ckpt.glob("*"):
-        if p.is_file() and not (CKPT_DIR / p.name).is_file():
+        if p.is_file() and not p.name.endswith(".tmp") and not (CKPT_DIR / p.name).is_file():
             shutil.copy2(p, CKPT_DIR / p.name)
             print(f"  [Restored Checkpoint] {p.name} ({p.stat().st_size:,} B)", flush=True)
     partial_t16c = DRIVE_DIR / (OUT_T16C.name + ".partial")
@@ -127,6 +127,85 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def verify_t16c_integrity(
+    path: Path,
+    expected_mats: Optional[int] = None,
+    expected_end_pos: Optional[int] = None,
+) -> Tuple[int, int]:
+    """Fail-closed binary structure verifier for T16C headers, norms, and tensor records."""
+    if not path.is_file():
+        raise FileNotFoundError(f"verify_t16c_integrity: missing {path}")
+    file_size = path.stat().st_size
+    if file_size < 24:
+        raise RuntimeError(f"verify_t16c_integrity: {path} truncated header ({file_size} < 24)")
+    with open(path, "rb") as fp:
+        hdr = fp.read(24)
+        magic, ver, _flags, n_norms, n_mats, reserved = struct.unpack("<4s5I", hdr)
+        if magic != p3.T16C_MAGIC or ver != p3.T16C_VERSION or reserved != 0 or n_mats == 0:
+            raise RuntimeError(
+                f"verify_t16c_integrity: invalid header magic={magic!r} ver={ver} reserved={reserved} n_mats={n_mats}"
+            )
+        for ni in range(n_norms):
+            kb = fp.read(2)
+            if len(kb) != 2:
+                raise RuntimeError(f"verify_t16c_integrity: EOF reading norm[{ni}] key len at {fp.tell()}")
+            klen = struct.unpack("<H", kb)[0]
+            if klen == 0 or fp.seek(klen, 1) > file_size:
+                raise RuntimeError(f"verify_t16c_integrity: invalid norm[{ni}] key len={klen}")
+            ab = fp.read(4)
+            if len(ab) != 4:
+                raise RuntimeError(f"verify_t16c_integrity: EOF reading norm[{ni}] len at {fp.tell()}")
+            alen = struct.unpack("<I", ab)[0]
+            if alen == 0 or fp.seek(alen * 4, 1) > file_size:
+                raise RuntimeError(f"verify_t16c_integrity: invalid norm[{ni}] len={alen}")
+        target_mats = n_mats if expected_mats is None else int(expected_mats)
+        if target_mats <= 0 or target_mats > n_mats:
+            raise RuntimeError(f"verify_t16c_integrity: invalid target_mats={target_mats} (header n_mats={n_mats})")
+        for mi in range(target_mats):
+            rec_pos = fp.tell()
+            raw_hdr = fp.read(34)
+            if len(raw_hdr) != 34:
+                raise RuntimeError(f"verify_t16c_integrity: EOF reading mat[{mi}] header at {rec_pos}")
+            (
+                nlen, d_out, d_in, block_size, n_bits, is_asym, has_fwht,
+                inv_s_kind, low_rank, packed_bytes, lr_bytes,
+            ) = struct.unpack("<HIIHBBBBHQQ", raw_hdr)
+            if nlen == 0 or d_out == 0 or d_in == 0 or is_asym > 1 or has_fwht > 1 or inv_s_kind > 2:
+                raise RuntimeError(
+                    f"verify_t16c_integrity: invalid mat[{mi}] @ {rec_pos:,}: "
+                    f"nlen={nlen} d=({d_out},{d_in}) bsz={block_size} nb=0x{n_bits:02x} "
+                    f"asym={is_asym} fwht={has_fwht} invs={inv_s_kind}"
+                )
+            nbuf = fp.read(nlen)
+            if len(nbuf) != nlen:
+                raise RuntimeError(f"verify_t16c_integrity: EOF reading mat[{mi}] name at {rec_pos}")
+            name = nbuf.decode("utf-8", errors="strict")
+            pos = fp.tell()
+            pad = (64 - (pos % 64)) % 64
+            if pad:
+                fp.seek(pad, 1)
+            exp_p = p3.expected_tile16_bytes(d_out, d_in, block_size, n_bits, is_asym == 1)
+            if packed_bytes != exp_p:
+                raise RuntimeError(f"verify_t16c_integrity: {name} packed_bytes={packed_bytes} != exp={exp_p}")
+            inv_s_bytes = (d_in * 4) if inv_s_kind == 1 else ((d_in * 2) if inv_s_kind == 2 else 0)
+            exp_lr = (d_out * 4 + low_rank * 4 + d_out * low_rank + low_rank * d_in) if low_rank > 0 else 0
+            if lr_bytes != exp_lr:
+                raise RuntimeError(f"verify_t16c_integrity: {name} lr_bytes={lr_bytes} != exp={exp_lr}")
+            end_rec = fp.seek(packed_bytes + inv_s_bytes + lr_bytes, 1)
+            if end_rec > file_size:
+                raise RuntimeError(f"verify_t16c_integrity: {name} overruns EOF ({end_rec} > {file_size})")
+        end_pos = fp.tell()
+        if expected_end_pos is not None and end_pos != expected_end_pos:
+            raise RuntimeError(
+                f"verify_t16c_integrity: verified end_pos={end_pos:,} != expected_end_pos={expected_end_pos:,}"
+            )
+        if expected_end_pos is None and expected_mats is None and end_pos != file_size:
+            raise RuntimeError(
+                f"verify_t16c_integrity: trailing unparsed bytes after {target_mats} mats ({end_pos:,} != {file_size:,})"
+            )
+    return target_mats, end_pos
+
+
 def persist_to_drive(src: Path) -> Optional[str]:
     if DRIVE_DIR is None or not src.is_file():
         return None
@@ -141,22 +220,49 @@ def persist_to_drive(src: Path) -> Optional[str]:
     return str(dst)
 
 
-def sync_checkpoint_to_drive() -> None:
+def sync_checkpoint_to_drive(expected_t16c_pos: Optional[int] = None) -> None:
     if DRIVE_DIR is None:
         return
     drive_ckpt = DRIVE_DIR / "ckpt_v6_0_littlebit2"
     drive_ckpt.mkdir(parents=True, exist_ok=True)
-    for p in CKPT_DIR.glob("*"):
-        if p.is_file() and not p.name.endswith(".tmp"):
-            try:
-                shutil.copy2(p, drive_ckpt / p.name)
-            except Exception as e:
-                print(f"  [Drive Checkpoint Warn] Failed copying {p.name}: {e}", flush=True)
-    if OUT_T16C.is_file():
+    # 1. Commit .t16c.partial FIRST and verify exact byte size BEFORE touching Drive metadata checkpoints.
+    if expected_t16c_pos is not None or OUT_T16C.is_file():
+        if not OUT_T16C.is_file():
+            print(f"  [Drive Checkpoint Abort] Missing local {OUT_T16C}; skipping Drive sync.", flush=True)
+            return
+        local_sz = OUT_T16C.stat().st_size
+        if expected_t16c_pos is not None and local_sz != expected_t16c_pos:
+            print(
+                f"  [Drive Checkpoint Abort] {OUT_T16C.name} size={local_sz:,} != expected_t16c_pos={expected_t16c_pos:,}; skipping Drive sync.",
+                flush=True,
+            )
+            return
+        partial_dst = DRIVE_DIR / (OUT_T16C.name + ".partial")
         try:
-            shutil.copy2(OUT_T16C, DRIVE_DIR / (OUT_T16C.name + ".partial"))
+            shutil.copy2(OUT_T16C, partial_dst)
+            remote_sz = partial_dst.stat().st_size
+            if remote_sz != local_sz:
+                raise IOError(f"partial size mismatch local={local_sz:,} drive={remote_sz:,}")
         except Exception as e:
-            print(f"  [Drive T16C Partial Warn] {e}", flush=True)
+            print(
+                f"  [Drive T16C Partial Abort] {e} — NOT updating stage3_layer_ckpt.pt on Drive to avoid zero-hole mismatch.",
+                flush=True,
+            )
+            return
+    # 2. Sync supporting checkpoint tensors BEFORE the commit marker `stage3_layer_ckpt.pt` LAST.
+    ck_files = sorted(
+        (p for p in CKPT_DIR.glob("*") if p.is_file() and not p.name.endswith(".tmp")),
+        key=lambda p: (1 if p.name == "stage3_layer_ckpt.pt" else 0, p.name),
+    )
+    for p in ck_files:
+        try:
+            dst = drive_ckpt / p.name
+            shutil.copy2(p, dst)
+            if dst.stat().st_size != p.stat().st_size:
+                raise IOError(f"size mismatch local={p.stat().st_size} drive={dst.stat().st_size}")
+        except Exception as e:
+            print(f"  [Drive Checkpoint Abort] Failed copying {p.name}: {e}", flush=True)
+            return
     print(f"  [DRIVE CHECKPOINT SYNCED] -> {drive_ckpt}", flush=True)
 
 
@@ -1662,9 +1768,15 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
         X_teach_cpu = torch.load(CKPT_X_TEACH, map_location="cpu", weights_only=True)
         X_stud_cpu = torch.load(CKPT_X_STUD, map_location="cpu", weights_only=True)
         del _lc
+        t16c_actual_sz = OUT_T16C.stat().st_size
+        if t16c_actual_sz < t16c_pos:
+            raise RuntimeError(
+                f"FAIL-CLOSED Stage 3A Resume aborted: {OUT_T16C} size={t16c_actual_sz:,} B < ckpt t16c_pos={t16c_pos:,} B (refusing POSIX zero-extension)"
+            )
+        verify_t16c_integrity(OUT_T16C, expected_mats=lm_mats_count, expected_end_pos=t16c_pos)
         t16c_fp = open(OUT_T16C, "r+b")
         t16c_fp.seek(t16c_pos); t16c_fp.truncate(t16c_pos)
-        print(f"[Resume Stage 3A] Resuming at L{start_layer:02d} (pos={t16c_pos:,} B)", flush=True)
+        print(f"[Resume Stage 3A] Resuming cleanly at L{start_layer:02d} (verified {lm_mats_count} mats, pos={t16c_pos:,} B)", flush=True)
     else:
         start_layer = 0
         layer_cos_log = []
@@ -1953,7 +2065,7 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
                     "norm_offsets": norm_offsets, "H_teach_eval": H_teach_eval, "H_stud_eval": H_stud_eval,
                     "layer_cos_log": layer_cos_log,
                 }, STAGE3_CKPT_PATH)
-                sync_checkpoint_to_drive()
+                sync_checkpoint_to_drive(expected_t16c_pos=t16c_pos)
                 gc.collect()
             save_progress({"stage": f"L{l_idx:02d}_done", "next_layer": l_idx + 1, "txt_cos": round(cos_l_txt, 5)})
             print(
@@ -2195,9 +2307,13 @@ with safe_open(sf_path, framework="pt", device="cpu") as sf:
     finally:
         t16c_fp.close()
 
+_v_mats, _v_end = verify_t16c_integrity(OUT_T16C)
+if _v_mats != total_mats:
+    raise RuntimeError(f"Serialized V6.0 .t16c mat count mismatch: {_v_mats} != {total_mats}")
 t16c_sz = OUT_T16C.stat().st_size
+assert _v_end == t16c_sz, f"Serialized V6.0 .t16c EOF mismatch: {_v_end:,} != {t16c_sz:,}"
 assert t16c_sz <= 3_700_000_000, f"Serialized V6.0 .t16c exceeded 3.70 GB guard: {t16c_sz:,} B"
-print(f"[Stage 3 DONE] Unified V6.0 LittleBit-2 .t16c flushed: {OUT_T16C} ({t16c_sz:,} B = {t16c_sz/1024**3:.3f} GiB)!", flush=True)
+print(f"[Stage 3 DONE] Unified V6.0 LittleBit-2 .t16c verified & flushed: {OUT_T16C} ({_v_mats}/{total_mats} mats, {t16c_sz:,} B = {t16c_sz/1024**3:.3f} GiB)!", flush=True)
 persist_to_drive(OUT_T16C)
 
 for _rm_p in (VIS_CKPT_PATH, VLM_SOFT_CACHE, STAGE3_CKPT_PATH, CKPT_X_TEACH, CKPT_X_STUD, Path("/tmp/v6_x_stud_pre56.pt"), Path("/tmp/v6_h_eval_pre56.pt")):
