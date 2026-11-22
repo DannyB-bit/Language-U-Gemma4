@@ -1,0 +1,82 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=718 norms=585 body_bytes=2626693760 vision_bytes=173734272 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.500
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 20.48s pinned_layers=60/60 pinned_bytes=2806276528 embed_bytes=539492352 vm=(Some(3647740), Some(3647740))
+[run31b] prompt 26 tokens ids=[2, 105, 2364, 107, 155122, 528, 1156, 2822, 23974, 1217, 93036, 47874, 26808, 1131, 7395, 2778, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.30s (pinned=true)
+[run31b] layer 05/60 done in 0.23s (pinned=true)
+[run31b] layer 14/60 done in 0.22s (pinned=true)
+[run31b] layer 29/60 done in 0.23s (pinned=true)
+[run31b] layer 44/60 done in 0.27s (pinned=true)
+[run31b] layer 59/60 done in 0.46s (pinned=true)
+[run31b] prefill done in 15.37s ssd_read_mb=0.0 vm=(Some(3952600), Some(3891712))
+PREFILL_TOP5 [236780:"C"(15.199), 140:"    "(15.119), 236775:"\""(14.819), 522:"ing"(14.449), 501:"en"(14.311)]
+[STEP 0] id=236780 text="C"
+[run31b] spec fallback k=1 step=0 in 1.21s k_window=3 vm=(Some(3952600), Some(3891712))
+[STEP 1] id=532 text=" and"
+[run31b] spec fallback k=1 step=1 in 1.15s k_window=3 vm=(Some(3952600), Some(3891712))
+[STEP 2] id=1852 text=" own"
+[run31b] spec fallback k=1 step=2 in 1.16s k_window=3 vm=(Some(3952600), Some(3891712))
+[STEP 3] id=529 text=" of"
+[run31b] spec batch=1 drafted=1 accepted=0 next_k=3 ewma=0.80 in 1.63s vm=(Some(3952600), Some(3891712))
+[STEP 4] id=496 text=" a"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 2.91s vm=(Some(3952600), Some(3891796))
+[STEP 5] id=236772 text="-"
+[STEP 6] id=236761 text="."
+[run31b] spec batch=3 drafted=1 accepted=1 next_k=3 ewma=0.71 in 1.69s vm=(Some(3952600), Some(3891796))
+[STEP 7] id=236764 text=","
+[run31b] spec fallback k=1 step=7 in 1.16s k_window=3 vm=(Some(3952600), Some(3891796))
+[STEP 8] id=236775 text="\""
+[run31b] spec batch=4 drafted=1 accepted=0 next_k=3 ewma=0.57 in 1.62s vm=(Some(3952600), Some(3891796))
+[STEP 9] id=107 text="\n"
+[STEP 10] id=236761 text="."
+[run31b] spec batch=5 drafted=1 accepted=1 next_k=3 ewma=0.66 in 1.68s vm=(Some(3952600), Some(3891796))
+[STEP 11] id=532 text=" and"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=3 ewma=0.52 in 2.24s vm=(Some(3952600), Some(3891796))
+[STEP 12] id=506 text=" the"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=2 ewma=0.42 in 1.65s vm=(Some(3952600), Some(3891796))
+[STEP 13] id=623 text=" \""
+[run31b] spec fallback k=1 step=13 in 1.17s k_window=2 vm=(Some(3952600), Some(3891796))
+[STEP 14] id=236789 text="'"
+[run31b] spec fallback k=1 step=14 in 1.17s k_window=2 vm=(Some(3952600), Some(3891796))
+[STEP 15] id=236751 text="s"
+[run31b] spec fallback k=1 step=15 in 1.21s k_window=2 vm=(Some(3952600), Some(3891796))
+[STEP 16] id=236764 text=","
+[run31b] spec batch=8 drafted=2 accepted=0 next_k=1 ewma=0.34 in 2.28s vm=(Some(3952600), Some(3891796))
+[STEP 17] id=586 text="ly"
+[run31b] spec fallback k=1 step=17 in 1.21s k_window=1 vm=(Some(3952600), Some(3891796))
+[STEP 18] id=236772 text="-"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.27 in 1.65s vm=(Some(3952600), Some(3891796))
+[STEP 19] id=236770 text="1"
+[run31b] spec fallback k=1 step=19 in 1.18s k_window=1 vm=(Some(3952600), Some(3891796))
+[STEP 20] id=236771 text="0"
+[run31b] spec fallback k=1 step=20 in 1.18s k_window=1 vm=(Some(3952600), Some(3891796))
+[STEP 21] id=522 text="ing"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.21 in 1.68s vm=(Some(3952600), Some(3891796))
+[STEP 22] id=529 text=" of"
+[STEP 23] id=236743 text=" "
+[run31b] spec batch=11 drafted=1 accepted=1 next_k=1 ewma=0.37 in 1.66s vm=(Some(3952600), Some(3891796))
+[STEP 24] id=236778 text="2"
+[run31b] spec fallback k=1 step=24 in 1.19s k_window=1 vm=(Some(3952600), Some(3891796))
+[STEP 25] id=498 text="on"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.30 in 1.82s vm=(Some(3952600), Some(3937640))
+[STEP 26] id=1852 text=" own"
+[run31b] spec fallback k=1 step=26 in 1.19s k_window=1 vm=(Some(3952600), Some(3937640))
+[STEP 27] id=532 text=" and"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.24 in 1.78s vm=(Some(3952600), Some(3939208))
+[STEP 28] id=1638 text=" same"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.19 in 1.66s vm=(Some(3952600), Some(3939996))
+[STEP 29] id=563 text=" is"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.15 in 1.64s vm=(Some(3952600), Some(3940780))
+[STEP 30] id=236762 text="y"
+[run31b] spec fallback k=1 step=30 in 1.21s k_window=1 vm=(Some(3952600), Some(3940780))
+[STEP 31] id=236775 text="\""
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 step_pos=true min_margin=0.75 margin_stopped=18 ast_lm_skipped=1157171 drafted=19 accepted=3 batches=15 fallback_k1=13 accept_rate=0.158 generated=32 s_per_tok=1.535
+GEN31B ids=[236780, 532, 1852, 529, 496, 236772, 236761, 236764, 236775, 107, 236761, 532, 506, 623, 236789, 236751, 236764, 586, 236772, 236770, 236771, 522, 529, 236743, 236778, 498, 1852, 532, 1638, 563, 236762, 236775]
+GEN31B text="C and own of a-.,\"\n. and the \"'s,ly-10ing of 2on own and same isy\""
+KV31B mode=Fp32 raw_bytes=131563520 compressed_bytes=131563520 shrink=1.00x
+MLP_SPARSE top_p=0.500 skipped_blks=23052288 total_blks=57630720 dram_saved_pct=40.0%
+PROFILE31B steps=29 attn_s=21.688 gate_s=9.415 up_s=6.862 down_s=8.838 norm_kv_s=4.764 lmhead_s=5.942 avg_step_s=1.983 router_s=0.000
+MEM31B pinned_bytes=2806276528 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=106934 prefill_s=15.37 decode_s=47.58 vm_hwm_kb=Some(3952600) vm_rss_kb=Some(3940780)

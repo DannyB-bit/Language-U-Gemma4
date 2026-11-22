@@ -1,0 +1,55 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp32
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=718 norms=585 body_bytes=2626693760 vision_bytes=173734272 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp32
+[run31b] loaded CorticalRouter /tmp/bench_crtr_60l.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled KV-Safe V7.0 MoD residual highway: thresh=0.500
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.300
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 9.46s pinned_layers=60/60 pinned_bytes=2806276528 embed_bytes=539492352 vm=(Some(3316092), Some(3316092))
+[run31b] prompt 24 tokens ids=[2, 105, 2364, 107, 155122, 528, 1156, 2822, 23974, 3217, 506, 7217, 7412, 3730, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.24s (pinned=true)
+[run31b] layer 05/60 done in 0.19s (pinned=true)
+[run31b] layer 14/60 MOD_SKIP in 0.04s (pinned=true)
+[run31b] layer 29/60 done in 0.19s (pinned=true)
+[run31b] layer 44/60 done in 0.21s (pinned=true)
+[run31b] layer 59/60 done in 0.38s (pinned=true)
+[run31b] prefill done in 9.50s ssd_read_mb=0.0 vm=(Some(3621164), Some(3560160))
+PREFILL_TOP5 [623:" \""(13.091), 5213:" **"(12.699), 609:" $"(12.678), 6143:"<<"(11.804), 1018:"**"(11.296)]
+[STEP 0] id=623 text=" \""
+[run31b] decode step 0 in 0.81s vm=(Some(3621164), Some(3560160))
+[STEP 1] id=5213 text=" **"
+[run31b] decode step 1 in 0.70s vm=(Some(3621164), Some(3560160))
+[STEP 2] id=609 text=" $"
+[run31b] decode step 2 in 0.67s vm=(Some(3621164), Some(3560160))
+[STEP 3] id=236772 text="-"
+[run31b] decode step 3 in 0.76s vm=(Some(3621164), Some(3560160))
+[STEP 4] id=107 text="\n"
+[run31b] decode step 4 in 0.69s vm=(Some(3621164), Some(3560160))
+[STEP 5] id=236778 text="2"
+[run31b] decode step 5 in 0.72s vm=(Some(3621164), Some(3560160))
+[STEP 6] id=6143 text="<<"
+[run31b] decode step 6 in 0.76s vm=(Some(3621164), Some(3560160))
+[STEP 7] id=108 text="\n\n"
+[run31b] decode step 7 in 0.74s vm=(Some(3621164), Some(3560160))
+[STEP 8] id=236800 text="3"
+[run31b] decode step 8 in 0.70s vm=(Some(3621164), Some(3560160))
+[STEP 9] id=1018 text="**"
+[run31b] decode step 9 in 0.76s vm=(Some(3621164), Some(3560160))
+[STEP 10] id=236764 text=","
+[run31b] decode step 10 in 0.75s vm=(Some(3621164), Some(3560160))
+[STEP 11] id=623 text=" \""
+[run31b] decode step 11 in 0.74s vm=(Some(3621164), Some(3560160))
+[STEP 12] id=236743 text=" "
+[run31b] decode step 12 in 0.70s vm=(Some(3621164), Some(3560160))
+[STEP 13] id=236799 text="B"
+[run31b] decode step 13 in 0.70s vm=(Some(3621164), Some(3560160))
+[STEP 14] id=5213 text=" **"
+[run31b] decode step 14 in 0.76s vm=(Some(3621164), Some(3560160))
+[STEP 15] id=236778 text="2"
+GEN31B ids=[623, 5213, 609, 236772, 107, 236778, 6143, 108, 236800, 1018, 236764, 623, 236743, 236799, 5213, 236778]
+GEN31B text=" \" ** $-\n2<<\n\n3**, \" B **2"
+KV31B mode=Fp32 raw_bytes=70287360 compressed_bytes=70287360 shrink=1.00x
+MLP_SPARSE top_p=0.300 skipped_blks=15028032 total_blks=27205920 dram_saved_pct=55.2%
+CORTICAL_ROUTER gate_skipped_blks=29754 gate_total_blks=43092 gate_saved_pct=69.0%
+MOD31B thresh=0.500 skipped_layers=447 eligible_layers=688 skipped_pct=65.0%
+PROFILE31B steps=16 attn_s=9.546 gate_s=2.291 up_s=1.955 down_s=2.434 norm_kv_s=1.131 lmhead_s=2.878 avg_step_s=1.288 router_s=0.382
+MEM31B pinned_bytes=2806276528 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=16547 prefill_s=9.50 decode_s=10.97 vm_hwm_kb=Some(3621164) vm_rss_kb=Some(3560160)

@@ -1,0 +1,44 @@
+=== [0] PI4 PATCHER SELFTEST ===
+[PASS] Gate 1 (Stream Alignment & Byte Count) — pos=1,663,149,952 sz=149,841,920 mats=48
+[PASS] Gate 2 (Tile16 RowMajor + FWHT Decode Parity) — cos=0.8163 max_diff=0.00e+00
+[PASS] Gate 3 (Cholesky-QR2 + V_q-Refit + Non-Degenerate Rank) — cos_lr=0.7304
+[PASS] Gate 4 (MatVec Semantic Fidelity) — act_cos=0.8547
+[PASS] Gate 5 (Fail-Closed Hole Verifier) — mats=1 caught_hole=True
+[PASS] Gate 6 (Transposed LowRank + W4A16 Branch) — wide_rel_err=2.98e-07
+SELFTEST SUMMARY: 6/6 gates passed
+=== [1] PI4 IN-PLACE L24..L27 PATCH ===
+[Verified Hole] Confirmed 149,841,920 zero bytes at [1,513,308,032..1,663,149,952].
+  [L24.q_proj   ] kind=lb mats=02/48 pos=1,517,237,376 (57.1s)
+  [L24.k_proj   ] kind=dr mats=03/48 pos=1,520,355,584 (5.2s)
+  [L24.v_proj   ] kind=dr mats=04/48 pos=1,523,473,792 (5.3s)
+  [L24.o_proj   ] kind=lb mats=06/48 pos=1,527,414,400 (75.5s)
+  [L24.gate_proj] kind=lb mats=08/48 pos=1,535,177,600 (115.4s)
+  [L24.up_proj  ] kind=lb mats=10/48 pos=1,542,940,800 (113.3s)
+  [L24.down_proj] kind=lb mats=12/48 pos=1,550,768,512 (123.2s)
+  [L25.q_proj   ] kind=lb mats=14/48 pos=1,554,697,856 (53.0s)
+  [L25.k_proj   ] kind=dr mats=15/48 pos=1,557,816,064 (4.6s)
+  [L25.v_proj   ] kind=dr mats=16/48 pos=1,560,934,272 (4.7s)
+  [L25.o_proj   ] kind=lb mats=18/48 pos=1,564,874,880 (61.2s)
+  [L25.gate_proj] kind=lb mats=20/48 pos=1,572,638,080 (114.7s)
+  [L25.up_proj  ] kind=lb mats=22/48 pos=1,580,401,280 (116.0s)
+  [L25.down_proj] kind=lb mats=24/48 pos=1,588,228,992 (126.3s)
+  [L26.q_proj   ] kind=lb mats=26/48 pos=1,592,158,336 (54.7s)
+  [L26.k_proj   ] kind=dr mats=27/48 pos=1,595,276,544 (4.8s)
+  [L26.v_proj   ] kind=dr mats=28/48 pos=1,598,394,752 (4.9s)
+  [L26.o_proj   ] kind=lb mats=30/48 pos=1,602,335,360 (61.2s)
+  [L26.gate_proj] kind=lb mats=32/48 pos=1,610,098,560 (115.6s)
+  [L26.up_proj  ] kind=lb mats=34/48 pos=1,617,861,760 (117.4s)
+  [L26.down_proj] kind=lb mats=36/48 pos=1,625,689,472 (126.8s)
+  [L27.q_proj   ] kind=lb mats=38/48 pos=1,629,618,816 (55.3s)
+  [L27.k_proj   ] kind=dr mats=39/48 pos=1,632,737,024 (4.8s)
+  [L27.v_proj   ] kind=dr mats=40/48 pos=1,635,855,232 (4.8s)
+  [L27.o_proj   ] kind=lb mats=42/48 pos=1,639,795,840 (62.1s)
+  [L27.gate_proj] kind=lb mats=44/48 pos=1,647,559,040 (117.7s)
+  [L27.up_proj  ] kind=lb mats=46/48 pos=1,655,322,240 (120.2s)
+  [L27.down_proj] kind=lb mats=48/48 pos=1,663,149,952 (128.6s)
+[Splicing] Writing 149,841,920 B into /home/astronautshe/gemma4_v6/gemma4_31b_v6_0_littlebit2.t16c @ 1,513,308,032...
+[PATCH COMPLETE] Verified 912/912 mats to EOF=3,345,923,072 B in 1965.8s!
+=== [2] RUN 1: 2+2 EXACT ===
+=== [3] RUN 2: FRANCE EXACT ===
+=== [4] RUN 3: SPECULATIVE K=4 + ASSISTANT_V6 + SP50 ===
+=== [5] RUN 4: CRTR+MOD COMPONENT BENCHMARK ===
