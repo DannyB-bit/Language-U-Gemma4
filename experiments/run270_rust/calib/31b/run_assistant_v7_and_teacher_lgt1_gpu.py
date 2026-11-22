@@ -426,7 +426,7 @@ def run_gpu_pipeline(
         emb_31b = sf.get_tensor("model.language_model.embed_tokens.weight")
         X_cpu = (emb_31b[torch.from_numpy(all_seq_ids).long()].float() * escale).to(compute_dtype).cpu()
         heldout_states = [
-            (emb_31b[torch.tensor(item["ids"], dtype=torch.long)].unsqueeze(0).float() * escale).to(compute_dtype)
+            (emb_31b[torch.tensor(item["ids"], dtype=torch.long)].unsqueeze(0).float() * escale).to(device=device, dtype=compute_dtype)
             for item in heldout_items
         ]
         fn_w_31b = sf.get_tensor("model.language_model.norm.weight").to(device, dtype=torch.float32)
