@@ -2990,6 +2990,14 @@ NEON_API int t16c_transpose_col_to_rowmajor_c(
     return 0;
 }
 
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+static inline float32x4_t sum4_u8x16_exact_neon(uint8x16_t a0, uint8x16_t a1, uint8x16_t a2, uint8x16_t a3) {
+    uint16x8_t s01 = vpaddq_u16(vpaddlq_u8(a0), vpaddlq_u8(a1));
+    uint16x8_t s23 = vpaddq_u16(vpaddlq_u8(a2), vpaddlq_u8(a3));
+    uint16x8_t p   = vpaddq_u16(s01, s23);
+    return vcvtq_f32_u32(vpaddlq_u16(p));
+}
+#else
 static const uint8_t POPCNT_BYTE_LUT[256] = {
     0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,
     1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
@@ -3000,14 +3008,6 @@ static const uint8_t POPCNT_BYTE_LUT[256] = {
     2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
     3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8
 };
-
-#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
-static inline float32x4_t sum4_u8x16_exact_neon(uint8x16_t a0, uint8x16_t a1, uint8x16_t a2, uint8x16_t a3) {
-    uint16x8_t s01 = vpaddq_u16(vpaddlq_u8(a0), vpaddlq_u8(a1));
-    uint16x8_t s23 = vpaddq_u16(vpaddlq_u8(a2), vpaddlq_u8(a3));
-    uint16x8_t p   = vpaddq_u16(s01, s23);
-    return vcvtq_f32_u32(vpaddlq_u16(p));
-}
 #endif
 
 /* Quantize one activation block xb[0..block_size-1] into a_bits MSB-first bitplanes
@@ -4143,7 +4143,6 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
     if (a_bits < 4) a_bits = 4;
     if (a_bits > 6) a_bits = 6;
     const float half_f = (float)(1 << (a_bits - 1));
-    const float bsize_f = (float)block_size;
 
     const int n_tiles = (d_out + 15) / 16;
     const int n_blks = d_in / block_size;
@@ -4267,7 +4266,7 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                 acc[kk][2] = vdupq_n_f32(0.0f);
                 acc[kk][3] = vdupq_n_f32(0.0f);
             }
-            const float32x4_t v_bsize = vdupq_n_f32(bsize_f);
+            const float32x4_t v_bsize = vdupq_n_f32((float)block_size);
 
             for (int ai = 0; ai < n_active_blks; ai++) {
                 const int blk = active_blks[ai];
@@ -6670,7 +6669,18 @@ static int gate_e_test_config(
         int rc_skip = gemm_bitserial_tile16_batch(
             packed, norms, x, y_got, d_out, d_in, bsize, n_bits, is_asym, k_tokens, 1e9f, 2, &skipped
         );
-        const int kc_exp = x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4;
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+        const int eff_b = n_bits & 0x3F;
+        const int kc_exp = ((n_bits & T16C_ROWMAJOR_BIT) != 0)
+            ? 8
+            : ((eff_b != 5 && eff_b != 8)
+                ? (x_needs_dual_plane(x, d_in, k_tokens) ? 8 : 16)
+                : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4));
+#else
+        const int kc_exp = ((n_bits & T16C_ROWMAJOR_BIT) != 0)
+            ? 8
+            : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4);
+#endif
         int64_t exp_skips = (int64_t)((k_tokens + kc_exp - 1) / kc_exp) * (int64_t)n_tiles * (int64_t)n_blks;
         if (rc_skip != 0 || skipped != exp_skips) ok = 0;
         for (int i = 0; i < k_tokens * d_out && ok; i++) {
