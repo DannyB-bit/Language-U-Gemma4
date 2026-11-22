@@ -5,6 +5,7 @@
 //! model.norm -> post_projection & lm_head`) packed in 4-bit `.t16c` format (~247 MB)
 //! via `libneon_stream_accelerator.so` or bit-accurate Rust fallback.
 
+use crate::byte_head::{BpePrefixTrie, ByteHeadDecoder};
 use crate::math::{
     attn_decode, gelu_tanh_fast_f32, qk_norm_raw_inplace, rmsn_raw, rope_cos_sin_for_pos,
     rope_head_with_cos_sin, rope_inv_freqs,
@@ -12,6 +13,7 @@ use crate::math::{
 use crate::speculative::argmax_f32;
 use crate::t16c::T16CModel;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Structural hyperparameters for a KV-sharing Gemma4Assistant drafter.
 #[derive(Debug, Clone)]
@@ -33,6 +35,7 @@ pub struct AssistantCfg {
     pub partial_global: f32,
     pub vocab: usize,
     pub layer_full: Vec<bool>,
+    pub has_lm_head: bool,
 }
 
 impl AssistantCfg {
@@ -56,6 +59,7 @@ impl AssistantCfg {
             partial_global: 0.25,
             vocab: 262_144,
             layer_full: vec![false, false, false, true],
+            has_lm_head: true,
         }
     }
 
@@ -65,6 +69,17 @@ impl AssistantCfg {
         n_kv_slide: usize,
         n_kv_full: usize,
         window: usize,
+    ) -> Result<Self, String> {
+        Self::infer_from_model_with_vocab(model, n_kv_slide, n_kv_full, window, 0)
+    }
+
+    /// Infer core dimensions from `T16CModel`, allowing embed-free `Assistant-V7` bodies when `fallback_vocab > 0`.
+    pub fn infer_from_model_with_vocab(
+        model: &T16CModel,
+        n_kv_slide: usize,
+        n_kv_full: usize,
+        window: usize,
+        fallback_vocab: usize,
     ) -> Result<Self, String> {
         let pre = model.mat("pre_projection.weight")?;
         if pre.d_in % 2 != 0 {
@@ -79,11 +94,16 @@ impl AssistantCfg {
                 post.d_out, post.d_in, backbone_hidden, d
             ));
         }
-        let emb = model.mat("model.embed_tokens.weight")?;
-        if emb.d_in != d {
-            return Err(format!("assistant embed d_in {} != d {d}", emb.d_in));
-        }
-        let vocab = emb.d_out;
+        let (vocab, has_lm_head) = if let Ok(emb) = model.mat("model.embed_tokens.weight") {
+            if emb.d_in != d {
+                return Err(format!("assistant embed d_in {} != d {d}", emb.d_in));
+            }
+            (emb.d_out, true)
+        } else if fallback_vocab > 0 {
+            (fallback_vocab, false)
+        } else {
+            return Err("assistant T16CModel missing model.embed_tokens.weight and fallback_vocab == 0".into());
+        };
 
         let mut layer_full = Vec::new();
         let mut n_heads = 0usize;
@@ -141,6 +161,7 @@ impl AssistantCfg {
             partial_global: 0.25,
             vocab,
             layer_full,
+            has_lm_head,
         })
     }
 
@@ -156,9 +177,11 @@ impl AssistantCfg {
         if post.d_out != self.backbone_hidden || post.d_in != self.d {
             return Err(format!("post_projection shape {}x{} != {}x{}", post.d_out, post.d_in, self.backbone_hidden, self.d));
         }
-        let emb = model.mat("model.embed_tokens.weight")?;
-        if emb.d_out != self.vocab || emb.d_in != self.d {
-            return Err(format!("assistant embed shape {}x{} != {}x{}", emb.d_out, emb.d_in, self.vocab, self.d));
+        if self.has_lm_head {
+            let emb = model.mat("model.embed_tokens.weight")?;
+            if emb.d_out != self.vocab || emb.d_in != self.d {
+                return Err(format!("assistant embed shape {}x{} != {}x{}", emb.d_out, emb.d_in, self.vocab, self.d));
+            }
         }
         let fn_w = model.norm("model.norm.weight")?;
         if fn_w.len() != self.d {
@@ -231,6 +254,7 @@ pub struct AssistantRuntime {
     pub cfg: AssistantCfg,
     pub threads: usize,
     pub embed_tile_norms_fp16: Vec<u16>,
+    pub byte_head: Option<(ByteHeadDecoder, Arc<BpePrefixTrie>)>,
 }
 
 impl AssistantRuntime {
@@ -244,35 +268,107 @@ impl AssistantRuntime {
         n_kv_full: usize,
         window: usize,
     ) -> Result<Self, String> {
+        Self::load_31b_with_byte_head(
+            path,
+            None,
+            None,
+            native_lib,
+            disable_native,
+            threads,
+            n_kv_slide,
+            n_kv_full,
+            window,
+            0,
+        )
+    }
+
+    /// Load an Assistant backbone `.t16c` alongside an optional `BHDR` v1 Byte-Head decoder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_31b_with_byte_head(
+        path: &Path,
+        byte_head_path: Option<&Path>,
+        trie: Option<Arc<BpePrefixTrie>>,
+        native_lib: Option<&Path>,
+        disable_native: bool,
+        threads: usize,
+        n_kv_slide: usize,
+        n_kv_full: usize,
+        window: usize,
+        target_vocab: usize,
+    ) -> Result<Self, String> {
         let model = T16CModel::load(path, native_lib, disable_native)?;
-        let cfg = AssistantCfg::infer_from_model(&model, n_kv_slide, n_kv_full, window)?;
-        Self::from_model(model, cfg, threads)
+        let cfg = AssistantCfg::infer_from_model_with_vocab(&model, n_kv_slide, n_kv_full, window, target_vocab)?;
+        let byte_head = match byte_head_path {
+            Some(bp) => {
+                let bh = ByteHeadDecoder::load(bp)?;
+                if bh.d_in != cfg.d {
+                    return Err(format!(
+                        "byte head {} d_in={} != assistant d={}",
+                        bp.display(),
+                        bh.d_in,
+                        cfg.d
+                    ));
+                }
+                let tr = trie.ok_or("byte_head requires a loaded BpePrefixTrie")?;
+                Some((bh, tr))
+            }
+            None => None,
+        };
+        if !cfg.has_lm_head && byte_head.is_none() {
+            return Err(format!(
+                "assistant {} lacks model.embed_tokens.weight; provide --spec-byte-head <file.bhdr>",
+                path.display()
+            ));
+        }
+        Self::from_model_with_byte_head(model, cfg, threads, byte_head)
     }
 
     /// Construct from a pre-loaded `T16CModel` and validated config.
     pub fn from_model(model: T16CModel, cfg: AssistantCfg, threads: usize) -> Result<Self, String> {
+        Self::from_model_with_byte_head(model, cfg, threads, None)
+    }
+
+    /// Construct from a pre-loaded `T16CModel`, validated config, and optional `ByteHeadDecoder`.
+    pub fn from_model_with_byte_head(
+        model: T16CModel,
+        cfg: AssistantCfg,
+        threads: usize,
+        byte_head: Option<(ByteHeadDecoder, Arc<BpePrefixTrie>)>,
+    ) -> Result<Self, String> {
         cfg.validate(&model)?;
-        let embed_tile_norms_fp16 = model.mat("model.embed_tokens.weight")?.compute_tile_norms_fp16();
+        let embed_tile_norms_fp16 = if cfg.has_lm_head && byte_head.is_none() {
+            model.mat("model.embed_tokens.weight")?.compute_tile_norms_fp16()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             model,
             cfg,
             threads: threads.max(1),
             embed_tile_norms_fp16,
+            byte_head,
         })
     }
 
-    /// Total compressed weight + norm + cached CS norm bytes resident for this assistant cell.
+    /// Whether this runtime uses a byte-head micro-decoder instead of the 262K LM head.
+    pub fn has_byte_head(&self) -> bool {
+        self.byte_head.is_some()
+    }
+
+    /// Total compressed weight + norm + cached CS norm (+ optional byte head/trie) bytes resident.
     pub fn resident_bytes(&self) -> usize {
         let mat_b: usize = self.model.mats.values().map(|m| m.total_bytes()).sum();
         let norm_b: usize = self.model.norms.values().map(|v| v.len() * 4).sum();
-        mat_b + norm_b + self.embed_tile_norms_fp16.len() * 2
+        let bh_b: usize = self
+            .byte_head
+            .as_ref()
+            .map_or(0, |(bh, tr)| bh.byte_len() + tr.byte_len());
+        mat_b + norm_b + self.embed_tile_norms_fp16.len() * 2 + bh_b
     }
 
-    /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
-    ///
-    /// Returns `(predicted_next_token, next_backbone_hidden_state, logits)`.
+    /// Execute the 4-layer KV-sharing assistant backbone, returning `(h_final, next_backbone_h)`.
     #[allow(clippy::too_many_arguments)]
-    pub fn forward_step_logits(
+    pub fn forward_backbone_step(
         &self,
         tok_embed: &[f32],
         backbone_h: &[f32],
@@ -282,27 +378,7 @@ impl AssistantRuntime {
         kv_full_v: &[f32],
         kv_len: usize,
         q_pos: usize,
-    ) -> Result<(u32, Vec<f32>, Vec<f32>), String> {
-        self.forward_step_logits_cs(
-            tok_embed, backbone_h, kv_slide_k, kv_slide_v, kv_full_k, kv_full_v, kv_len, q_pos, None,
-        )
-        .map(|(tok, next_h, logits, _)| (tok, next_h, logits))
-    }
-
-    /// Execute one autoregressive speculative draft step with optional Cauchy-Schwarz LM-head pruning.
-    #[allow(clippy::too_many_arguments)]
-    pub fn forward_step_logits_cs(
-        &self,
-        tok_embed: &[f32],
-        backbone_h: &[f32],
-        kv_slide_k: &[f32],
-        kv_slide_v: &[f32],
-        kv_full_k: &[f32],
-        kv_full_v: &[f32],
-        kv_len: usize,
-        q_pos: usize,
-        lmhead_cs_sieve: Option<f32>,
-    ) -> Result<(u32, Vec<f32>, Vec<f32>, i64), String> {
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
         let bh = self.cfg.backbone_hidden;
         if tok_embed.len() != bh || backbone_h.len() != bh {
             return Err(format!(
@@ -386,6 +462,51 @@ impl AssistantRuntime {
         let fn_w = self.model.norm("model.norm.weight")?;
         let h_final = rmsn_raw(&state, Some(fn_w), eps);
         let next_backbone = self.model.mat("post_projection.weight")?.project_batch(&h_final, 1, native, self.threads)?;
+        Ok((h_final, next_backbone))
+    }
+
+    /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
+    ///
+    /// Returns `(predicted_next_token, next_backbone_hidden_state, logits)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_step_logits(
+        &self,
+        tok_embed: &[f32],
+        backbone_h: &[f32],
+        kv_slide_k: &[f32],
+        kv_slide_v: &[f32],
+        kv_full_k: &[f32],
+        kv_full_v: &[f32],
+        kv_len: usize,
+        q_pos: usize,
+    ) -> Result<(u32, Vec<f32>, Vec<f32>), String> {
+        self.forward_step_logits_cs(
+            tok_embed, backbone_h, kv_slide_k, kv_slide_v, kv_full_k, kv_full_v, kv_len, q_pos, None,
+        )
+        .map(|(tok, next_h, logits, _)| (tok, next_h, logits))
+    }
+
+    /// Execute one autoregressive speculative draft step with optional Cauchy-Schwarz LM-head pruning.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_step_logits_cs(
+        &self,
+        tok_embed: &[f32],
+        backbone_h: &[f32],
+        kv_slide_k: &[f32],
+        kv_slide_v: &[f32],
+        kv_full_k: &[f32],
+        kv_full_v: &[f32],
+        kv_len: usize,
+        q_pos: usize,
+        lmhead_cs_sieve: Option<f32>,
+    ) -> Result<(u32, Vec<f32>, Vec<f32>, i64), String> {
+        if !self.cfg.has_lm_head {
+            return Err("forward_step_logits_cs requires assistant model.embed_tokens.weight".into());
+        }
+        let (h_final, next_backbone) = self.forward_backbone_step(
+            tok_embed, backbone_h, kv_slide_k, kv_slide_v, kv_full_k, kv_full_v, kv_len, q_pos,
+        )?;
+        let native = self.model.native.as_ref();
         let (logits, lm_skipped) = if let Some(sieve_frac) = lmhead_cs_sieve {
             self.model.mat("model.embed_tokens.weight")?.project_lmhead_cs(
                 &h_final,
@@ -407,8 +528,7 @@ impl AssistantRuntime {
     }
 
     /// Draft up to `draft_len` greedy candidate tokens with optional logit-margin cutoff
-    /// and CS LM-head pruning. Stops before appending any token whose top-1 vs top-2 margin
-    /// falls below `min_logit_margin`, returning `(drafts, margin_stopped, lmhead_skipped_blks)`.
+    /// and CS LM-head pruning (or Assistant-V7 `BHDR` trie-constrained byte beam search).
     #[allow(clippy::too_many_arguments)]
     pub fn draft_sequence_gated<F>(
         &self,
@@ -439,33 +559,53 @@ impl AssistantRuntime {
         for step in 0..draft_len {
             let tok_emb = embed_fn(cur_tok)?;
             let q_pos = if advance_pos { start_q_pos + step } else { start_q_pos };
-            let (raw_tok, next_h, mut logits, sk) = self.forward_step_logits_cs(
-                &tok_emb,
-                &cur_backbone,
-                kv_slide_k,
-                kv_slide_v,
-                kv_full_k,
-                kv_full_v,
-                kv_len,
-                q_pos,
-                lmhead_cs_sieve,
-            )?;
-            total_skipped += sk;
-            let (pred_tok, top1_v, top2_v) = if ban_tokens.is_empty() && min_logit_margin <= 0.0 {
-                (raw_tok, 0.0f32, 0.0f32)
+            let (pred_tok, next_h, top1_v, top2_v) = if let Some((ref bh, ref trie)) = self.byte_head {
+                let (h_final, next_h) = self.forward_backbone_step(
+                    &tok_emb,
+                    &cur_backbone,
+                    kv_slide_k,
+                    kv_slide_v,
+                    kv_full_k,
+                    kv_full_v,
+                    kv_len,
+                    q_pos,
+                )?;
+                let mut effective_bans = ban_tokens.to_vec();
+                if !ban_tokens.is_empty() && !(236770..=236820).contains(&cur_tok) && !effective_bans.contains(&cur_tok) {
+                    effective_bans.push(cur_tok);
+                }
+                let (tok, lp1, lp2, _) = bh.decode_token_beam(&h_final, trie, &effective_bans, 2)?;
+                (tok, next_h, lp1, lp2)
             } else {
-                if !ban_tokens.is_empty() {
-                    for &tid in ban_tokens {
-                        let u = tid as usize;
-                        if u < logits.len() {
-                            logits[u] = -1.0e9;
+                let (raw_tok, next_h, mut logits, sk) = self.forward_step_logits_cs(
+                    &tok_emb,
+                    &cur_backbone,
+                    kv_slide_k,
+                    kv_slide_v,
+                    kv_full_k,
+                    kv_full_v,
+                    kv_len,
+                    q_pos,
+                    lmhead_cs_sieve,
+                )?;
+                total_skipped += sk;
+                let (ptok, t1, t2) = if ban_tokens.is_empty() && min_logit_margin <= 0.0 {
+                    (raw_tok, 0.0f32, 0.0f32)
+                } else {
+                    if !ban_tokens.is_empty() {
+                        for &tid in ban_tokens {
+                            let u = tid as usize;
+                            if u < logits.len() {
+                                logits[u] = -1.0e9;
+                            }
+                        }
+                        if !(236770..=236820).contains(&cur_tok) && (cur_tok as usize) < logits.len() {
+                            logits[cur_tok as usize] = -1.0e9;
                         }
                     }
-                    if !(236770..=236820).contains(&cur_tok) && (cur_tok as usize) < logits.len() {
-                        logits[cur_tok as usize] = -1.0e9;
-                    }
-                }
-                argmax_with_top2(&logits)
+                    argmax_with_top2(&logits)
+                };
+                (ptok, next_h, t1, t2)
             };
             if min_logit_margin > 0.0 && (top1_v - top2_v) < min_logit_margin {
                 margin_stopped += 1;
@@ -842,5 +982,141 @@ mod tests {
             .unwrap();
         assert!(gated_stop.is_empty());
         assert_eq!(m_stops, 1);
+    }
+
+    #[test]
+    fn assistant_v7_byte_head_runs_without_embed_tokens_and_emits_valid_token() {
+        use crate::byte_head::{BHDR_VOCAB_SYM, SYM_EOT, SYM_SP};
+
+        let bh = 64usize;
+        let d = 64usize;
+        let ff = 64usize;
+        let bsize = 64usize;
+        let n_heads = 4usize;
+        let n_kv_slide = 2usize;
+        let n_kv_full = 1usize;
+        let hd_slide = 64usize;
+        let hd_full = 128usize;
+
+        let mut mats = vec![
+            pack_4bit_sym("pre_projection.weight", &det_mat(21, d, 2 * bh, 0.25), d, 2 * bh, bsize),
+            pack_4bit_sym("post_projection.weight", &det_mat(22, bh, d, 0.25), bh, d, bsize),
+        ];
+        let mut norms = vec![("model.norm.weight".to_string(), vec![1.0f32; d])];
+        for (l, &is_full) in [false, true].iter().enumerate() {
+            let hd = if is_full { hd_full } else { hd_slide };
+            let p = format!("model.layers.{l}.");
+            mats.push(pack_4bit_sym(&format!("{p}self_attn.q_proj.weight"), &det_mat(30 + l as u64 * 10, n_heads * hd, d, 0.2), n_heads * hd, d, bsize));
+            mats.push(pack_4bit_sym(&format!("{p}self_attn.o_proj.weight"), &det_mat(31 + l as u64 * 10, d, n_heads * hd, 0.2), d, n_heads * hd, bsize));
+            mats.push(pack_4bit_sym(&format!("{p}mlp.gate_proj.weight"), &det_mat(32 + l as u64 * 10, ff, d, 0.2), ff, d, bsize));
+            mats.push(pack_4bit_sym(&format!("{p}mlp.up_proj.weight"), &det_mat(33 + l as u64 * 10, ff, d, 0.2), ff, d, bsize));
+            mats.push(pack_4bit_sym(&format!("{p}mlp.down_proj.weight"), &det_mat(34 + l as u64 * 10, d, ff, 0.2), d, ff, bsize));
+            norms.push((format!("{p}self_attn.q_norm.weight"), vec![1.0f32; hd]));
+            norms.push((format!("{p}input_layernorm.weight"), vec![1.0f32; d]));
+            norms.push((format!("{p}post_attention_layernorm.weight"), vec![1.0f32; d]));
+            norms.push((format!("{p}pre_feedforward_layernorm.weight"), vec![1.0f32; d]));
+            norms.push((format!("{p}post_feedforward_layernorm.weight"), vec![1.0f32; d]));
+            norms.push((format!("{p}layer_scalar"), vec![0.8f32]));
+        }
+
+        let tmp_t16c = std::env::temp_dir().join(format!("assistant_v7_body_{}.t16c", std::process::id()));
+        let tmp_bhdr = std::env::temp_dir().join(format!("assistant_v7_head_{}.bhdr", std::process::id()));
+        T16CModel::write_file(&tmp_t16c, 1, &norms, &mats).unwrap();
+
+        // Fail closed when embed_tokens is missing and no byte head is provided
+        assert!(
+            AssistantRuntime::load_31b(&tmp_t16c, None, true, 2, n_kv_slide, n_kv_full, 1024).is_err()
+        );
+
+        let mut dec = ByteHeadDecoder {
+            d_in: d,
+            d_byte: 32,
+            vocab_sym: BHDR_VOCAB_SYM,
+            max_bytes: 16,
+            flags: 0,
+            w_init: vec![0i8; 32 * d],
+            s_init: vec![0.02f32; 32],
+            b_init: vec![0.0f32; 32],
+            w_ctx: vec![0i8; 96 * d],
+            s_ctx: vec![0.01f32; 96],
+            e_sym: vec![0i8; BHDR_VOCAB_SYM * 32],
+            s_sym: vec![0.02f32; BHDR_VOCAB_SYM],
+            w_ih: vec![0i8; 96 * 32],
+            s_ih: vec![0.02f32; 96],
+            b_ih: vec![0.0f32; 96],
+            w_hh: vec![0i8; 96 * 32],
+            s_hh: vec![0.02f32; 96],
+            b_hh: vec![0.0f32; 96],
+            w_out: vec![0i8; BHDR_VOCAB_SYM * 32],
+            s_out: vec![0.1f32; BHDR_VOCAB_SYM],
+            b_out: vec![-2.0f32; BHDR_VOCAB_SYM],
+        };
+        dec.b_out[SYM_SP as usize] = 4.0;
+        dec.b_out[b'y' as usize] = 4.0;
+        dec.b_out[b'a' as usize] = 3.5;
+        dec.b_out[SYM_EOT as usize] = 5.0;
+        for j in 0..32 {
+            dec.b_ih[32 + j] = -3.0;
+        }
+        dec.e_sym[(SYM_SP as usize) * 32] = 127;
+        dec.save(&tmp_bhdr).unwrap();
+
+        let mut id_to_tok = vec![String::new(); 120];
+        id_to_tok[1] = "<eos>".into();
+        id_to_tok[77] = "\u{2581}y".into();
+        id_to_tok[78] = "\u{2581}a".into();
+        id_to_tok[106] = "<turn|>".into();
+        let trie = Arc::new(BpePrefixTrie::from_id_to_token(&id_to_tok));
+
+        let rt = AssistantRuntime::load_31b_with_byte_head(
+            &tmp_t16c,
+            Some(&tmp_bhdr),
+            Some(trie),
+            None,
+            true,
+            2,
+            n_kv_slide,
+            n_kv_full,
+            1024,
+            120,
+        )
+        .unwrap();
+        assert!(!rt.cfg.has_lm_head);
+        assert!(rt.has_byte_head());
+        assert_eq!(rt.cfg.vocab, 120);
+        assert!(rt.resident_bytes() > 0);
+
+        let tok_emb = det_mat(90, 1, bh, 0.5);
+        let back_h = det_mat(91, 1, bh, 0.5);
+        let kv_sk = det_mat(92, 3, n_kv_slide * hd_slide, 0.4);
+        let kv_sv = det_mat(93, 3, n_kv_slide * hd_slide, 0.4);
+        let kv_fk = det_mat(94, 3, n_kv_full * hd_full, 0.4);
+        let kv_fv = det_mat(95, 3, n_kv_full * hd_full, 0.4);
+
+        let (drafts, m_stops, skipped) = rt
+            .draft_sequence_gated(
+                2,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                &kv_sk,
+                &kv_sv,
+                &kv_fk,
+                &kv_fv,
+                3,
+                3,
+                2,
+                true,
+                &[1, 106],
+                &[100, 101],
+                0.0,
+                Some(0.25),
+            )
+            .unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(m_stops, 0);
+        assert_eq!(drafts, vec![77, 78]);
+
+        let _ = std::fs::remove_file(&tmp_t16c);
+        let _ = std::fs::remove_file(&tmp_bhdr);
     }
 }

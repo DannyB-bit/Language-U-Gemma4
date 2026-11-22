@@ -1,0 +1,113 @@
+=== 1. HELDOUT EVAL-NLL DENSE + DUMP LGT1 ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 35.91s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(5420720), Some(4222788))
+[run31b] prompt 63 tokens ids=[2, 902, 26304, 236776, 13260, 199490, 23367, 236764, 4071, 236772, 16774, 15612, 236772, 1257, 19070, 847, 3553, 9743, 51534, 15501, 15298, 25843, 4024, 83213, 46247, 580, 506, 1638, 236743, 236825, 236812, 236772]
+[run31b] layer 00/60 done in 2.22s (pinned=true)
+[run31b] layer 05/60 done in 2.45s (pinned=true)
+[run31b] layer 14/60 done in 1.79s (pinned=true)
+[run31b] layer 29/60 done in 1.92s (pinned=true)
+[run31b] layer 44/60 done in 1.08s (pinned=true)
+[run31b] layer 59/60 done in 2.02s (pinned=true)
+EVAL_NLL tokens=63 eval_pos=62 mean_nll=13.34158 ppl=622551.722 top1_acc=0.0000 mean_entropy=2.3101 eval_s=94.50
+KV31B mode=Glyph raw_bytes=113541120 naive_bf16_bytes=56770560 compressed_bytes=60915200 glyph_tokens=1820 exact_tokens=1960 shrink=1.86x shrink_vs_bf16=0.93x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=94.50 decode_s=0.00 vm_hwm_kb=Some(6027732) vm_rss_kb=Some(5995600)
+=== 2. HELDOUT EVAL-NLL SELF-KL PARITY ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 14.42s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6469228), Some(6394140))
+[run31b] prompt 63 tokens ids=[2, 902, 26304, 236776, 13260, 199490, 23367, 236764, 4071, 236772, 16774, 15612, 236772, 1257, 19070, 847, 3553, 9743, 51534, 15501, 15298, 25843, 4024, 83213, 46247, 580, 506, 1638, 236743, 236825, 236812, 236772]
+[run31b] layer 00/60 done in 1.76s (pinned=true)
+[run31b] layer 05/60 done in 1.86s (pinned=true)
+[run31b] layer 14/60 done in 1.68s (pinned=true)
+[run31b] layer 29/60 done in 1.79s (pinned=true)
+[run31b] layer 44/60 done in 1.08s (pinned=true)
+[run31b] layer 59/60 done in 1.85s (pinned=true)
+EVAL_NLL tokens=63 eval_pos=62 mean_nll=13.34158 ppl=622551.722 top1_acc=0.0000 mean_entropy=2.3101 eval_s=88.27
+EVAL_TEACHER_KL pos=62 kl_t_to_s=0.00042 kl_s_to_t=0.00042 top1_agree=1.0000 top5_agree=1.0000 teacher_nll=13.34365 teacher_ppl=623841.074
+KV31B mode=Glyph raw_bytes=113541120 naive_bf16_bytes=56770560 compressed_bytes=60915200 glyph_tokens=1820 exact_tokens=1960 shrink=1.86x shrink_vs_bf16=0.93x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=88.27 decode_s=0.00 vm_hwm_kb=Some(6526164) vm_rss_kb=Some(6518136)
+=== 3. HELDOUT EVAL-NLL + SPARSE MLP 0.50 TEACHER-KL ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.500
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.43s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6595712), Some(6534012))
+[run31b] prompt 63 tokens ids=[2, 902, 26304, 236776, 13260, 199490, 23367, 236764, 4071, 236772, 16774, 15612, 236772, 1257, 19070, 847, 3553, 9743, 51534, 15501, 15298, 25843, 4024, 83213, 46247, 580, 506, 1638, 236743, 236825, 236812, 236772]
+[run31b] layer 00/60 done in 1.62s (pinned=true)
+[run31b] layer 05/60 done in 1.78s (pinned=true)
+[run31b] layer 14/60 done in 1.59s (pinned=true)
+[run31b] layer 29/60 done in 1.75s (pinned=true)
+[run31b] layer 44/60 done in 0.89s (pinned=true)
+[run31b] layer 59/60 done in 1.41s (pinned=true)
+EVAL_NLL tokens=63 eval_pos=62 mean_nll=15.42553 ppl=5002885.723 top1_acc=0.0000 mean_entropy=1.6480 eval_s=77.80
+EVAL_TEACHER_KL pos=62 kl_t_to_s=2.98829 kl_s_to_t=2.53050 top1_agree=0.3548 top5_agree=0.7097 teacher_nll=13.34365 teacher_ppl=623841.074
+KV31B mode=Glyph raw_bytes=113541120 naive_bf16_bytes=56770560 compressed_bytes=60915200 glyph_tokens=1820 exact_tokens=1960 shrink=1.86x shrink_vs_bf16=0.93x
+MLP_SPARSE top_p=0.500 skipped_blks=4177152 total_blks=33417216 dram_saved_pct=12.5%
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=77.80 decode_s=0.00 vm_hwm_kb=Some(6595712) vm_rss_kb=Some(6562228)
+=== 4. ASSISTANT-V7 REPACK BODY + PILOT BHDR + LIVE SPECULATIVE 2+2 ===
+REPACKED_BODY kept_mats=22 bytes=207426368 mb=197.82 path=/tmp/assistant_v7_body.t16c
+BHDR_PILOT_SAVED bytes=1595996 mb=1.52 kl=2.66461->1.26775 path=/tmp/assistant_v7_pilot.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /tmp/assistant_v7_body.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 13.85s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6737844), Some(6737844))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.55s (pinned=true)
+[run31b] layer 05/60 done in 0.61s (pinned=true)
+[run31b] layer 14/60 done in 0.54s (pinned=true)
+[run31b] layer 29/60 done in 0.61s (pinned=true)
+[run31b] layer 44/60 done in 0.36s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9482 read=0.885 hear=1.000 see=1.000 hf=1.02 cr=22.94 marg=1.405 prob=0.789 sieve=0.000 cs=0.00e0 k=3 c8db=false
+[run31b] prefill done in 27.38s ssd_read_mb=0.0 vm=(Some(6739768), Some(6739768))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=RESCUE score=0.6694 read=0.265 hear=1.000 see=1.000 hf=0.97 cr=9.58 marg=0.193 prob=0.520 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] spec fallback k=1 step=0 in 2.47s k_window=3 vm=(Some(6739768), Some(6739768))
+[STEP 1] id=3890 text=" answer"
+[TRIMODAL] step=2 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=0.98 cr=10.78 marg=12.715 prob=1.000 sieve=0.000 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=1 in 2.57s k_window=3 vm=(Some(6739768), Some(6739768))
+[STEP 2] id=563 text=" is"
+[TRIMODAL] step=3 mode=CAUTION score=0.8883 read=0.752 hear=1.000 see=1.000 hf=0.98 cr=18.06 marg=1.125 prob=0.755 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] spec fallback k=1 step=2 in 2.47s k_window=3 vm=(Some(6739768), Some(6739768))
+[STEP 3] id=236743 text=" "
+[TRIMODAL] step=4 mode=CLEAN score=0.9987 read=0.997 hear=1.000 see=1.000 hf=0.99 cr=21.52 marg=5.542 prob=0.992 sieve=0.000 cs=0.00e0 k=3 c8db=false
+[run31b] spec batch=1 drafted=1 accepted=0 next_k=3 ewma=0.80 in 3.43s vm=(Some(6739768), Some(6739768))
+[STEP 4] id=236812 text="4"
+[TRIMODAL] step=5 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=0.95 cr=14.26 marg=11.195 prob=1.000 sieve=0.000 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=4 in 2.48s k_window=3 vm=(Some(6739768), Some(6739768))
+[STEP 5] id=236761 text="."
+[TRIMODAL] step=6 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.05 cr=23.40 marg=9.718 prob=1.000 sieve=0.000 cs=0.00e0 k=3 c8db=false
+[run31b] spec fallback k=1 step=5 in 2.46s k_window=3 vm=(Some(6739768), Some(6739768))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.75 margin_stopped=5 ast_lm_skipped=0 drafted=1 accepted=0 batches=1 fallback_k1=5 accept_rate=0.000 generated=7 s_per_tok=2.709
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=14633 prefill_s=27.38 decode_s=16.26 vm_hwm_kb=Some(6739768) vm_rss_kb=Some(6739768)
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p2   58G   55G  1.5G  98% /
+/dev/sda2       239G  238G  1.2G 100% /mnt/SHE-VAULT
+PI4_V7_SILICON_PROOFS_OK
+=== 5. AFTER-TURN EVAL-NLL (CHAT28, FP32 KV + C8DB) ===
+EVAL_NLL tokens=28 eval_start=20 eval_pos=7 mean_nll=0.74518 ppl=2.107 top1_acc=0.8571 mean_entropy=0.3120 eval_s=34.68
+KV31B mode=Fp32 raw_bytes=50462720 compressed_bytes=50462720 shrink=1.00x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=34.68 decode_s=0.00 vm_hwm_kb=Some(6595472) vm_rss_kb=Some(6534780)
+=== 6. HELDOUT NUMA CHAT-TURN DENSE + LGT1 DUMP ===
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.92927 ppl=2777.391 top1_acc=0.2381 mean_entropy=1.6926 eval_s=119.52
+KV31B mode=Fp32 raw_bytes=165806080 compressed_bytes=165806080 shrink=1.00x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=119.52 decode_s=0.00 vm_hwm_kb=Some(6631484) vm_rss_kb=Some(6631484)
+=== 7. HELDOUT NUMA CHAT-TURN SPARSE TOP-P 0.50 + TEACHER KL ===
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=9.81910 ppl=18381.450 top1_acc=0.1429 mean_entropy=2.4234 eval_s=111.45
+EVAL_TEACHER_KL pos=63 kl_t_to_s=2.72687 kl_s_to_t=4.64555 top1_agree=0.3175 top5_agree=0.6825 teacher_nll=7.92934 teacher_ppl=2777.590
+KV31B mode=Fp32 raw_bytes=165806080 compressed_bytes=165806080 shrink=1.00x
+MLP_SPARSE top_p=0.500 skipped_blks=6265728 total_blks=48037248 dram_saved_pct=13.0%
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=111.45 decode_s=0.00 vm_hwm_kb=Some(6632976) vm_rss_kb=Some(6632976)

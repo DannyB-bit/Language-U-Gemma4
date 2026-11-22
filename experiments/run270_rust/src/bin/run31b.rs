@@ -7,7 +7,9 @@
 //!   - Configurable embedding/LM-head residency (`stream` ~44 MB scratch, `bf16` 2.82 GB, or
 //!     `q4`/`q6`/`q8` sub-byte packed via `run270_rust::packed::PackedMatrix`).
 
-use run270_rust::codec::bf16_to_f32;
+use run270_rust::assistant::AssistantRuntime;
+use run270_rust::byte_head::BpePrefixTrie;
+use run270_rust::codec::{bf16_to_f32, f32_to_bf16};
 use run270_rust::cortical_router::CorticalRouterBank;
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
@@ -16,19 +18,20 @@ use run270_rust::math::{
     rmsn_raw, rmsn_raw_into, rope_cos_sin_for_pos, rope_head_with_cos_sin, rope_inv_freqs,
 };
 use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
-use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
-use run270_rust::assistant::AssistantRuntime;
 use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDraftController, FastNGramProposalEngine};
 use run270_rust::tokenizer::Tokenizer;
 use run270_rust::tri_modal::{
     analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, render_tri_modal_rescue_canvas,
     ConsensusConfig, ConsensusMode, TriModalConsensusGate,
 };
+use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
@@ -644,6 +647,298 @@ fn parse_mod_thresh(s: &str) -> Result<f32, String> {
         return Err(format!("--mod-thresh must be finite in [0.0, 1.0), got {v}"));
     }
     Ok(v)
+}
+
+const LGT1_MAGIC: &[u8; 4] = b"LGT1";
+const LGT1_VERSION: u32 = 1;
+const LGT1_HEADER_BYTES: usize = 24;
+
+fn fnv1a64_ids(ids: &[u32]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &id in ids {
+        h ^= id as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3u64);
+    }
+    h
+}
+
+fn write_lgt1_header(w: &mut BufWriter<fs::File>, n_pos: usize, vocab: usize, ids_hash: u64) -> Result<(), String> {
+    w.write_all(LGT1_MAGIC).map_err(|e| format!("LGT1 write magic: {e}"))?;
+    w.write_all(&LGT1_VERSION.to_le_bytes()).map_err(|e| format!("LGT1 write ver: {e}"))?;
+    w.write_all(&(n_pos as u32).to_le_bytes()).map_err(|e| format!("LGT1 write n_pos: {e}"))?;
+    w.write_all(&(vocab as u32).to_le_bytes()).map_err(|e| format!("LGT1 write vocab: {e}"))?;
+    w.write_all(&ids_hash.to_le_bytes()).map_err(|e| format!("LGT1 write hash: {e}"))?;
+    Ok(())
+}
+
+fn write_lgt1_bf16_row(w: &mut BufWriter<fs::File>, logits: &[f32]) -> Result<(), String> {
+    let mut row_bytes = Vec::with_capacity(logits.len() * 2);
+    for &v in logits {
+        row_bytes.extend_from_slice(&f32_to_bf16(v).to_le_bytes());
+    }
+    w.write_all(&row_bytes).map_err(|e| format!("LGT1 write row: {e}"))
+}
+
+fn resolve_eval_nll_start_pos(
+    ids: &[u32],
+    explicit_start: Option<usize>,
+    after_turn: bool,
+) -> Result<usize, String> {
+    if ids.len() < 2 {
+        return Err("--eval-nll requires at least 2 tokens in sequence".into());
+    }
+    if explicit_start.is_some() && after_turn {
+        return Err("--eval-nll-start-pos and --eval-nll-after-turn are mutually exclusive".into());
+    }
+    let max_pos = ids.len() - 1;
+    let start = if let Some(s) = explicit_start {
+        if s >= max_pos {
+            return Err(format!(
+                "--eval-nll-start-pos {s} out of range for {}-token sequence (must be < {max_pos})",
+                ids.len()
+            ));
+        }
+        s
+    } else if after_turn {
+        if let Some(pos) = ids[..max_pos].iter().rposition(|&t| t == 101) {
+            pos
+        } else if let Some(pos) = ids[..max_pos]
+            .windows(3)
+            .rposition(|w| w == [105, 4368, 107])
+            .map(|i| i + 2)
+            .filter(|&p| p < max_pos)
+        {
+            pos
+        } else {
+            return Err(
+                "--eval-nll-after-turn could not locate `<channel|>` (101) or `<|turn>model\\n` ([105, 4368, 107]) before final token"
+                    .into(),
+            );
+        }
+    } else {
+        0
+    };
+    Ok(start)
+}
+
+struct Lgt1Reader {
+    reader: BufReader<fs::File>,
+    vocab: usize,
+    raw_row: Vec<u8>,
+}
+
+impl Lgt1Reader {
+    fn open(path: &Path, expected_n_pos: usize, expected_vocab: usize, expected_ids_hash: u64) -> Result<Self, String> {
+        let f = fs::File::open(path).map_err(|e| format!("LGT1 open {}: {e}", path.display()))?;
+        let file_len = f.metadata().map_err(|e| format!("LGT1 stat {}: {e}", path.display()))?.len() as usize;
+        let expected_len = LGT1_HEADER_BYTES
+            + expected_n_pos
+                .checked_mul(expected_vocab)
+                .and_then(|n| n.checked_mul(2))
+                .ok_or("LGT1 size overflow")?;
+        if file_len < LGT1_HEADER_BYTES {
+            return Err(format!("LGT1 {} truncated: {file_len} < {LGT1_HEADER_BYTES}", path.display()));
+        }
+        let mut r = BufReader::new(f);
+        let mut hdr = [0u8; LGT1_HEADER_BYTES];
+        r.read_exact(&mut hdr).map_err(|e| format!("LGT1 read hdr {}: {e}", path.display()))?;
+        if &hdr[0..4] != LGT1_MAGIC {
+            return Err(format!("LGT1 invalid magic in {}", path.display()));
+        }
+        let ver = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
+        let n_pos = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+        let vocab = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
+        let ids_hash = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
+        if ver != LGT1_VERSION || n_pos != expected_n_pos || vocab != expected_vocab || ids_hash != expected_ids_hash {
+            return Err(format!(
+                "LGT1 header mismatch {}: ver={ver}/{LGT1_VERSION} n_pos={n_pos}/{expected_n_pos} vocab={vocab}/{expected_vocab} hash=0x{ids_hash:016x}/0x{expected_ids_hash:016x}",
+                path.display()
+            ));
+        }
+        if file_len != expected_len {
+            return Err(format!("LGT1 file len {file_len} != expected {expected_len}"));
+        }
+        Ok(Self {
+            reader: r,
+            vocab,
+            raw_row: vec![0u8; vocab * 2],
+        })
+    }
+
+    fn read_next_row(&mut self, out: &mut Vec<f32>) -> Result<(), String> {
+        self.reader
+            .read_exact(&mut self.raw_row)
+            .map_err(|e| format!("LGT1 read row: {e}"))?;
+        out.clear();
+        out.reserve(self.vocab);
+        for ch in self.raw_row.chunks_exact(2) {
+            out.push(bf16_to_f32(u16::from_le_bytes([ch[0], ch[1]])));
+        }
+        Ok(())
+    }
+}
+
+fn eval_student_logits_stats(student_logits: &[f32], gold_next_id: u32) -> Result<(f64, bool, f64, usize), String> {
+    let vocab = student_logits.len();
+    let gi = gold_next_id as usize;
+    if vocab == 0 || gi >= vocab {
+        return Err(format!("eval_student_logits_stats invalid gold={gi} vocab={vocab}"));
+    }
+    let mut max_v = f64::NEG_INFINITY;
+    let mut argmax_s = 0usize;
+    for (i, &x) in student_logits.iter().enumerate() {
+        let xd = x as f64;
+        if xd > max_v {
+            max_v = xd;
+            argmax_s = i;
+        }
+    }
+    let mut sum_exp = 0.0f64;
+    let mut sum_x_exp = 0.0f64;
+    for &x in student_logits {
+        let d = (x as f64) - max_v;
+        let e = d.exp();
+        sum_exp += e;
+        sum_x_exp += d * e;
+    }
+    let log_z = sum_exp.ln();
+    let nll = -(((student_logits[gi] as f64) - max_v) - log_z);
+    let entropy = log_z - (sum_x_exp / sum_exp);
+    Ok((nll, argmax_s == gi, entropy.max(0.0), argmax_s))
+}
+
+fn compute_seq_kl_metrics(
+    teacher_logits: &[f32],
+    student_logits: &[f32],
+    gold_next_id: u32,
+) -> Result<(f64, f64, bool, bool, f64, f64), String> {
+    let vocab = teacher_logits.len();
+    let gi = gold_next_id as usize;
+    if vocab == 0 || student_logits.len() != vocab || gi >= vocab {
+        return Err(format!(
+            "compute_seq_kl_metrics dim mismatch t={} s={} gold={gi}",
+            vocab,
+            student_logits.len()
+        ));
+    }
+    let mut max_t = f64::NEG_INFINITY;
+    let mut max_s = f64::NEG_INFINITY;
+    let mut argmax_t = 0usize;
+    let mut argmax_s = 0usize;
+    for i in 0..vocab {
+        let tv = teacher_logits[i] as f64;
+        let sv = student_logits[i] as f64;
+        if tv > max_t {
+            max_t = tv;
+            argmax_t = i;
+        }
+        if sv > max_s {
+            max_s = sv;
+            argmax_s = i;
+        }
+    }
+    let mut sum_t = 0.0f64;
+    let mut sum_s = 0.0f64;
+    for i in 0..vocab {
+        sum_t += ((teacher_logits[i] as f64) - max_t).exp();
+        sum_s += ((student_logits[i] as f64) - max_s).exp();
+    }
+    let log_zt = max_t + sum_t.ln();
+    let log_zs = max_s + sum_s.ln();
+    let mut kl_ts = 0.0f64;
+    let mut kl_st = 0.0f64;
+    for i in 0..vocab {
+        let lp_t = (teacher_logits[i] as f64) - log_zt;
+        let lp_s = (student_logits[i] as f64) - log_zs;
+        let pt = lp_t.exp();
+        let ps = lp_s.exp();
+        kl_ts += pt * (lp_t - lp_s);
+        kl_st += ps * (lp_s - lp_t);
+    }
+    let s_at_t = student_logits[argmax_t];
+    let better_cnt = student_logits.iter().filter(|&&v| v > s_at_t).count();
+    let t_nll = -((teacher_logits[gi] as f64) - log_zt);
+    let s_nll = -((student_logits[gi] as f64) - log_zs);
+    Ok((
+        kl_ts.max(0.0),
+        kl_st.max(0.0),
+        argmax_t == argmax_s,
+        better_cnt < 5,
+        t_nll,
+        s_nll,
+    ))
+}
+
+fn print_runtime_telemetry(rt: &Runtime31B, pinned_bytes: usize, embed_bytes: usize, prefill_s: f64, decode_s: f64) {
+    let (vm_hwm, vm_rss) = proc_status_kb();
+    if rt.kv_quant.is_glyph() {
+        let st = rt.glyph_kv_total_stats();
+        println!(
+            "KV31B mode={:?} raw_bytes={} naive_bf16_bytes={} compressed_bytes={} glyph_tokens={} exact_tokens={} shrink={:.2}x shrink_vs_bf16={:.2}x",
+            rt.kv_quant,
+            st.fp32_bytes,
+            st.naive_bf16_bytes,
+            st.resident_bytes,
+            st.glyph_tokens,
+            st.exact_tokens,
+            st.shrink_vs_fp32(),
+            st.shrink_vs_naive_bf16(),
+        );
+    } else if rt.kv_raw_bytes > 0 {
+        let ratio = rt.kv_raw_bytes as f64 / rt.kv_compressed_bytes.max(1) as f64;
+        println!(
+            "KV31B mode={:?} raw_bytes={} compressed_bytes={} shrink={ratio:.2}x",
+            rt.kv_quant, rt.kv_raw_bytes, rt.kv_compressed_bytes
+        );
+    }
+    if rt.mlp_top_p < 0.9999 {
+        let pct = if rt.mlp_sparse_total_blks > 0 {
+            100.0 * (rt.mlp_sparse_skipped_blks as f64) / (rt.mlp_sparse_total_blks as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "MLP_SPARSE top_p={:.3} skipped_blks={} total_blks={} dram_saved_pct={:.1}%",
+            rt.mlp_top_p, rt.mlp_sparse_skipped_blks, rt.mlp_sparse_total_blks, pct
+        );
+    }
+    if rt.cortical_router.is_some() && rt.cortical_gate_total_blks > 0 {
+        let pct = 100.0 * (rt.cortical_gate_skipped_blks as f64) / (rt.cortical_gate_total_blks as f64);
+        println!(
+            "CORTICAL_ROUTER gate_skipped_blks={} gate_total_blks={} gate_saved_pct={:.1}%",
+            rt.cortical_gate_skipped_blks, rt.cortical_gate_total_blks, pct
+        );
+    }
+    if rt.mod_thresh > 0.0 {
+        let pct = if rt.mod_total_layers > 0 {
+            100.0 * (rt.mod_skipped_layers as f64) / (rt.mod_total_layers as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "MOD31B thresh={:.3} skipped_layers={} eligible_layers={} skipped_pct={:.1}%",
+            rt.mod_thresh, rt.mod_skipped_layers, rt.mod_total_layers, pct
+        );
+    }
+    if rt.profile_components && rt.prof_steps > 0 {
+        let n = rt.prof_steps as f64;
+        println!(
+            "PROFILE31B steps={} attn_s={:.3} gate_s={:.3} up_s={:.3} down_s={:.3} norm_kv_s={:.3} lmhead_s={:.3} avg_step_s={:.3} router_s={:.3}",
+            rt.prof_steps,
+            rt.prof_attn_s,
+            rt.prof_gate_s,
+            rt.prof_up_s,
+            rt.prof_down_s,
+            rt.prof_norm_kv_s,
+            rt.prof_lmhead_s,
+            (rt.prof_attn_s + rt.prof_gate_s + rt.prof_up_s + rt.prof_down_s + rt.prof_norm_kv_s + rt.prof_lmhead_s + rt.prof_router_s) / n,
+            rt.prof_router_s
+        );
+    }
+    println!(
+        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} lmhead_cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
+        rt.ssd_bytes_read, rt.cs_skipped_blocks, rt.lmhead_cs_skipped_blocks
+    );
 }
 
 struct Runtime31B {
@@ -2723,6 +3018,15 @@ fn run() -> Result<(), String> {
     };
     let spec_seed_arg = get("--spec-seed");
     let spec_assistant_arg = get("--spec-assistant");
+    let spec_byte_head_arg = get("--spec-byte-head");
+    let eval_nll = args.iter().any(|a| a == "--eval-nll");
+    let eval_nll_after_turn = args.iter().any(|a| a == "--eval-nll-after-turn");
+    let eval_nll_start_pos: Option<usize> = match get("--eval-nll-start-pos") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --eval-nll-start-pos '{s}'"))?),
+        None => None,
+    };
+    let dump_seq_logits = get("--dump-seq-logits");
+    let eval_teacher_logits = get("--eval-teacher-logits");
     let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos");
     let assistant_min_margin: f32 = match get("--assistant-min-margin") {
         Some(s) => s.parse().map_err(|_| format!("invalid --assistant-min-margin '{s}'"))?,
@@ -2768,6 +3072,21 @@ fn run() -> Result<(), String> {
     };
     if (spec_seed_arg.is_some() || spec_assistant_arg.is_some()) && !speculative {
         return Err("--spec-seed and --spec-assistant require --speculative".into());
+    }
+    if spec_byte_head_arg.is_some() && (!speculative || spec_assistant_arg.is_none()) {
+        return Err("--spec-byte-head requires --speculative and --spec-assistant".into());
+    }
+    if (dump_seq_logits.is_some() || eval_teacher_logits.is_some()) && !eval_nll {
+        return Err("--dump-seq-logits and --eval-teacher-logits require --eval-nll".into());
+    }
+    if (eval_nll_start_pos.is_some() || eval_nll_after_turn) && !eval_nll {
+        return Err("--eval-nll-start-pos and --eval-nll-after-turn require --eval-nll".into());
+    }
+    if eval_nll_start_pos.is_some() && eval_nll_after_turn {
+        return Err("--eval-nll-start-pos and --eval-nll-after-turn are mutually exclusive".into());
+    }
+    if dump_seq_logits.is_some() && eval_teacher_logits.is_some() {
+        return Err("--dump-seq-logits and --eval-teacher-logits are mutually exclusive".into());
     }
     let cfgp = get("--config").ok_or("missing --config")?;
     let tkp = get("--tokenizer").ok_or("missing --tokenizer")?;
@@ -2902,18 +3221,27 @@ fn run() -> Result<(), String> {
             "[run31b] enabled LM-head CS pruning: sieve_frac={sf_cs:.3} norms_bytes={lmhead_cs_bytes}"
         );
     }
+    let tk = Tokenizer::load(Path::new(&tkp))?;
     let assistant_state: Option<(AssistantRuntime, usize, usize)> = if let Some(ap) = spec_assistant_arg.as_deref() {
         let native_hint = so_arg
             .as_deref()
             .or_else(|| rt.native_t16c.as_ref().map(|n| n.path.as_str()));
-        let ast = AssistantRuntime::load_31b(
+        let trie_opt = if spec_byte_head_arg.is_some() {
+            Some(Arc::new(BpePrefixTrie::from_tokenizer(&tk)))
+        } else {
+            None
+        };
+        let ast = AssistantRuntime::load_31b_with_byte_head(
             std::path::Path::new(ap),
+            spec_byte_head_arg.as_deref().map(std::path::Path::new),
+            trie_opt,
             native_hint.map(std::path::Path::new),
             disable_native,
             threads,
             rt.cfg.n_kv,
             rt.cfg.n_global_kv,
             rt.cfg.window,
+            rt.cfg.vocab,
         )?;
         if ast.cfg.backbone_hidden != rt.cfg.d || ast.cfg.vocab != rt.cfg.vocab {
             return Err(format!(
@@ -2923,11 +3251,12 @@ fn run() -> Result<(), String> {
         }
         let (sl_l, fl_l) = rt.assistant_kv_layers()?;
         eprintln!(
-            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
+            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} byte_head={} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
             ap,
             ast.cfg.n_layers,
             ast.cfg.d,
-            ast.resident_bytes() as f64 / (1024.0 * 1024.0)
+            ast.resident_bytes() as f64 / (1024.0 * 1024.0),
+            ast.has_byte_head(),
         );
         Some((ast, sl_l, fl_l))
     } else {
@@ -2944,7 +3273,6 @@ fn run() -> Result<(), String> {
         proc_status_kb()
     );
 
-    let tk = Tokenizer::load(Path::new(&tkp))?;
     let mut vision_soft: Option<(usize, Vec<f32>)> = None;
     if image_arg.is_some() || optical_self_analyze {
         let vw = rt
@@ -3021,19 +3349,30 @@ fn run() -> Result<(), String> {
         vec![prompt_text.clone()]
     };
     let is_multi_prompt = batch_prompts.len() > 1;
+    if is_multi_prompt && (dump_seq_logits.is_some() || eval_teacher_logits.is_some()) {
+        return Err("--dump-seq-logits and --eval-teacher-logits require a single prompt sequence".into());
+    }
 
     for (prompt_idx, raw_line) in batch_prompts.iter().enumerate() {
         if prompt_idx > 0 {
             rt.truncate_kv(0)?;
+            rt.cs_skipped_blocks = 0;
+            rt.lmhead_cs_skipped_blocks = 0;
             rt.mlp_sparse_skipped_blks = 0;
             rt.mlp_sparse_total_blks = 0;
+            rt.cortical_gate_skipped_blks = 0;
+            rt.cortical_gate_total_blks = 0;
+            rt.mod_skipped_layers = 0;
+            rt.mod_total_layers = 0;
             rt.prof_attn_s = 0.0;
             rt.prof_gate_s = 0.0;
             rt.prof_up_s = 0.0;
             rt.prof_down_s = 0.0;
             rt.prof_norm_kv_s = 0.0;
             rt.prof_lmhead_s = 0.0;
+            rt.prof_router_s = 0.0;
             rt.prof_steps = 0;
+            rt.ssd_bytes_read = 0;
         }
         let (cur_prompt_text, cur_vision_override): (String, Option<(usize, Vec<f32>)>) =
             if let Some(rest) = raw_line.strip_prefix("IMAGE:") {
@@ -3146,6 +3485,111 @@ fn run() -> Result<(), String> {
         }
     }
     let vis_kv_ends = compute_vision_kv_ends(&ids);
+    if eval_nll {
+        let eval_start = resolve_eval_nll_start_pos(&ids, eval_nll_start_pos, eval_nll_after_turn)?;
+        let n_pos = (ids.len() - 1) - eval_start;
+        let ids_hash = if eval_start == 0 {
+            fnv1a64_ids(&ids)
+        } else {
+            fnv1a64_ids(&ids) ^ (eval_start as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        };
+        let vocab = rt.cfg.vocab;
+        let d_h = rt.cfg.d;
+
+        let mut lgt1_writer = if let Some(ref dp) = dump_seq_logits {
+            let f = fs::File::create(dp).map_err(|e| format!("LGT1 create {dp}: {e}"))?;
+            let mut bw = BufWriter::new(f);
+            write_lgt1_header(&mut bw, n_pos, vocab, ids_hash)?;
+            Some(bw)
+        } else {
+            None
+        };
+        let mut lgt1_reader = if let Some(ref tp_lgt) = eval_teacher_logits {
+            Some(Lgt1Reader::open(Path::new(tp_lgt), n_pos, vocab, ids_hash)?)
+        } else {
+            None
+        };
+
+        let all_h = rt.forward_batch_with_embeds(
+            prefill_states,
+            ids.len(),
+            0,
+            true,
+            true,
+            Some(&vis_kv_ends),
+        )?;
+        let mut sum_nll = 0.0f64;
+        let mut sum_ent = 0.0f64;
+        let mut hits1 = 0usize;
+        let mut sum_kl_ts = 0.0f64;
+        let mut sum_kl_st = 0.0f64;
+        let mut agree1 = 0usize;
+        let mut agree5 = 0usize;
+        let mut sum_t_nll = 0.0f64;
+        let mut teacher_row = Vec::new();
+        let chunk_t = 16usize;
+        let end_pos = ids.len() - 1;
+        let mut p0 = eval_start;
+        while p0 < end_pos {
+            let cnt = (end_pos - p0).min(chunk_t);
+            let h_slice = &all_h[p0 * d_h..(p0 + cnt) * d_h];
+            let logits_c = rt.compute_logits_batch_mode(h_slice, cnt, false)?;
+            for c in 0..cnt {
+                let pos = p0 + c;
+                let s_logits = &logits_c[c * vocab..(c + 1) * vocab];
+                let gold_next = ids[pos + 1];
+                let (nll, h1, ent, _) = eval_student_logits_stats(s_logits, gold_next)?;
+                sum_nll += nll;
+                sum_ent += ent;
+                if h1 {
+                    hits1 += 1;
+                }
+                if let Some(ref mut wr) = lgt1_writer {
+                    write_lgt1_bf16_row(wr, s_logits)?;
+                }
+                if let Some(ref mut rd) = lgt1_reader {
+                    rd.read_next_row(&mut teacher_row)?;
+                    let (kts, kst, a1, a5, tnll, _) = compute_seq_kl_metrics(&teacher_row, s_logits, gold_next)?;
+                    sum_kl_ts += kts;
+                    sum_kl_st += kst;
+                    if a1 {
+                        agree1 += 1;
+                    }
+                    if a5 {
+                        agree5 += 1;
+                    }
+                    sum_t_nll += tnll;
+                }
+            }
+            p0 += cnt;
+        }
+        if let Some(ref mut wr) = lgt1_writer {
+            wr.flush().map_err(|e| format!("LGT1 flush: {e}"))?;
+        }
+        let eval_s = t_pf.elapsed().as_secs_f64();
+        let mean_nll = sum_nll / n_pos as f64;
+        let mean_ent = sum_ent / n_pos as f64;
+        println!(
+            "EVAL_NLL tokens={} eval_start={eval_start} eval_pos={n_pos} mean_nll={mean_nll:.5} ppl={:.3} top1_acc={:.4} mean_entropy={mean_ent:.4} eval_s={eval_s:.2}",
+            ids.len(),
+            mean_nll.exp(),
+            hits1 as f64 / n_pos as f64,
+        );
+        if lgt1_reader.is_some() {
+            let n_f = n_pos as f64;
+            let t_nll = sum_t_nll / n_f;
+            println!(
+                "EVAL_TEACHER_KL pos={n_pos} kl_t_to_s={:.5} kl_s_to_t={:.5} top1_agree={:.4} top5_agree={:.4} teacher_nll={t_nll:.5} teacher_ppl={:.3}",
+                sum_kl_ts / n_f,
+                sum_kl_st / n_f,
+                agree1 as f64 / n_f,
+                agree5 as f64 / n_f,
+                t_nll.exp(),
+            );
+        }
+        print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, eval_s, 0.0);
+        continue;
+    }
     let mut last_backbone_h = rt.forward_batch_with_embeds(
         prefill_states,
         ids.len(),
@@ -3430,8 +3874,11 @@ fn run() -> Result<(), String> {
         let ast_mb = assistant_state
             .as_ref()
             .map_or(0.0, |(a, _, _)| a.resident_bytes() as f64 / (1024.0 * 1024.0));
+        let ast_bh = assistant_state
+            .as_ref()
+            .is_some_and(|(a, _, _)| a.has_byte_head());
         println!(
-            "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} step_pos={assistant_step_pos} min_margin={assistant_min_margin:.2} margin_stopped={spec_margin_stopped} ast_lm_skipped={ast_lm_skipped_blocks} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
+            "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} byte_head={ast_bh} step_pos={assistant_step_pos} min_margin={assistant_min_margin:.2} margin_stopped={spec_margin_stopped} ast_lm_skipped={ast_lm_skipped_blocks} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
             generated.len()
         );
     } else {
@@ -3493,77 +3940,9 @@ fn run() -> Result<(), String> {
             1000.0 * tb_head / batch_k as f64
         );
     }
-    let (vm_hwm, vm_rss) = proc_status_kb();
     println!("GEN31B ids={generated:?}");
     println!("GEN31B text={:?}", tk.decode(&generated));
-    if rt.kv_quant.is_glyph() {
-        let st = rt.glyph_kv_total_stats();
-        println!(
-            "KV31B mode={:?} raw_bytes={} naive_bf16_bytes={} compressed_bytes={} glyph_tokens={} exact_tokens={} shrink={:.2}x shrink_vs_bf16={:.2}x",
-            rt.kv_quant,
-            st.fp32_bytes,
-            st.naive_bf16_bytes,
-            st.resident_bytes,
-            st.glyph_tokens,
-            st.exact_tokens,
-            st.shrink_vs_fp32(),
-            st.shrink_vs_naive_bf16(),
-        );
-    } else if rt.kv_raw_bytes > 0 {
-        let ratio = rt.kv_raw_bytes as f64 / rt.kv_compressed_bytes.max(1) as f64;
-        println!(
-            "KV31B mode={:?} raw_bytes={} compressed_bytes={} shrink={ratio:.2}x",
-            rt.kv_quant, rt.kv_raw_bytes, rt.kv_compressed_bytes
-        );
-    }
-    if rt.mlp_top_p < 0.9999 {
-        let pct = if rt.mlp_sparse_total_blks > 0 {
-            100.0 * (rt.mlp_sparse_skipped_blks as f64) / (rt.mlp_sparse_total_blks as f64)
-        } else {
-            0.0
-        };
-        println!(
-            "MLP_SPARSE top_p={:.3} skipped_blks={} total_blks={} dram_saved_pct={:.1}%",
-            rt.mlp_top_p, rt.mlp_sparse_skipped_blks, rt.mlp_sparse_total_blks, pct
-        );
-    }
-    if rt.cortical_router.is_some() && rt.cortical_gate_total_blks > 0 {
-        let pct = 100.0 * (rt.cortical_gate_skipped_blks as f64) / (rt.cortical_gate_total_blks as f64);
-        println!(
-            "CORTICAL_ROUTER gate_skipped_blks={} gate_total_blks={} gate_saved_pct={:.1}%",
-            rt.cortical_gate_skipped_blks, rt.cortical_gate_total_blks, pct
-        );
-    }
-    if rt.mod_thresh > 0.0 {
-        let pct = if rt.mod_total_layers > 0 {
-            100.0 * (rt.mod_skipped_layers as f64) / (rt.mod_total_layers as f64)
-        } else {
-            0.0
-        };
-        println!(
-            "MOD31B thresh={:.3} skipped_layers={} eligible_layers={} skipped_pct={:.1}%",
-            rt.mod_thresh, rt.mod_skipped_layers, rt.mod_total_layers, pct
-        );
-    }
-    if rt.profile_components && rt.prof_steps > 0 {
-        let n = rt.prof_steps as f64;
-        println!(
-            "PROFILE31B steps={} attn_s={:.3} gate_s={:.3} up_s={:.3} down_s={:.3} norm_kv_s={:.3} lmhead_s={:.3} avg_step_s={:.3} router_s={:.3}",
-            rt.prof_steps,
-            rt.prof_attn_s,
-            rt.prof_gate_s,
-            rt.prof_up_s,
-            rt.prof_down_s,
-            rt.prof_norm_kv_s,
-            rt.prof_lmhead_s,
-            (rt.prof_attn_s + rt.prof_gate_s + rt.prof_up_s + rt.prof_down_s + rt.prof_norm_kv_s + rt.prof_lmhead_s + rt.prof_router_s) / n,
-            rt.prof_router_s
-        );
-    }
-    println!(
-        "MEM31B pinned_bytes={pinned_bytes} embed_bytes={embed_bytes} ssd_read_bytes={} cs_skipped_blocks={} lmhead_cs_skipped_blocks={} prefill_s={prefill_s:.2} decode_s={decode_s:.2} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
-        rt.ssd_bytes_read, rt.cs_skipped_blocks, rt.lmhead_cs_skipped_blocks
-    );
+    print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, prefill_s, decode_s);
     }
     Ok(())
 }
@@ -4002,5 +4381,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn lgt1_bf16_roundtrip_and_hash_mismatch_fails_closed() {
+        let ids = vec![2u32, 105, 818, 1354, 563];
+        let hash = fnv1a64_ids(&ids);
+        assert_ne!(hash, fnv1a64_ids(&[2u32, 105, 818, 1355, 563]));
+        let n_pos = 2usize;
+        let vocab = 8usize;
+        let row0 = vec![-2.5f32, 0.0, 1.25, 3.5, -0.5, 4.0, -1.0, 0.75];
+        let row1 = vec![0.125f32, -3.0, 2.5, -0.25, 1.0, 0.0, 5.25, -4.5];
+        let path = std::env::temp_dir().join(format!("test_lgt1_{}.lgt1", std::process::id()));
+        {
+            let f = fs::File::create(&path).unwrap();
+            let mut bw = BufWriter::new(f);
+            write_lgt1_header(&mut bw, n_pos, vocab, hash).unwrap();
+            write_lgt1_bf16_row(&mut bw, &row0).unwrap();
+            write_lgt1_bf16_row(&mut bw, &row1).unwrap();
+            bw.flush().unwrap();
+        }
+        assert!(Lgt1Reader::open(&path, n_pos, vocab, hash ^ 1).is_err());
+        assert!(Lgt1Reader::open(&path, n_pos + 1, vocab, hash).is_err());
+        let mut rd = Lgt1Reader::open(&path, n_pos, vocab, hash).unwrap();
+        let mut buf = Vec::new();
+        rd.read_next_row(&mut buf).unwrap();
+        for (a, b) in buf.iter().zip(&row0) {
+            assert!((a - b).abs() < 0.05);
+        }
+        rd.read_next_row(&mut buf).unwrap();
+        for (a, b) in buf.iter().zip(&row1) {
+            assert!((a - b).abs() < 0.05);
+        }
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn exact_teacher_kl_metrics_zero_self_and_positive_shifted() {
+        let t = vec![0.5f32, 3.2, -1.0, 1.8, 0.0, 2.4, -0.3];
+        let (kts_self, kst_self, a1_s, a5_s, tnll_s, snll_s) =
+            compute_seq_kl_metrics(&t, &t, 1).unwrap();
+        assert!(kts_self < 1e-10 && kst_self < 1e-10);
+        assert!(a1_s && a5_s);
+        assert!((tnll_s - snll_s).abs() < 1e-10);
+        let (nll_only, hit1, ent, argmax_s) = eval_student_logits_stats(&t, 1).unwrap();
+        assert!(hit1 && argmax_s == 1);
+        assert!((nll_only - tnll_s).abs() < 1e-10);
+        assert!(ent > 0.5);
+
+        let s_shift = vec![3.5f32, 2.0, -1.0, 1.8, 0.0, 2.4, -0.3];
+        let (kts, kst, a1, a5, _, _) = compute_seq_kl_metrics(&t, &s_shift, 1).unwrap();
+        assert!(kts > 0.05 && kst > 0.05);
+        assert!(!a1 && a5);
+    }
+
+    #[test]
+    fn resolve_eval_nll_start_pos_handles_chat_turn_and_bounds() {
+        let chat_ids = vec![
+            2u32, 105, 2364, 107, 3689, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 818, 3890, 106,
+        ];
+        assert_eq!(resolve_eval_nll_start_pos(&chat_ids, None, false).unwrap(), 0);
+        assert_eq!(resolve_eval_nll_start_pos(&chat_ids, None, true).unwrap(), 13);
+        assert_eq!(resolve_eval_nll_start_pos(&chat_ids, Some(5), false).unwrap(), 5);
+
+        let no_thought_chat = vec![2u32, 105, 2364, 107, 3689, 106, 107, 105, 4368, 107, 818, 106];
+        assert_eq!(resolve_eval_nll_start_pos(&no_thought_chat, None, true).unwrap(), 9);
+
+        assert!(resolve_eval_nll_start_pos(&[2], None, false).is_err());
+        assert!(resolve_eval_nll_start_pos(&chat_ids, Some(1), true).is_err());
+        assert!(resolve_eval_nll_start_pos(&chat_ids, Some(chat_ids.len() - 1), false).is_err());
+        assert!(resolve_eval_nll_start_pos(&[2, 818, 5279, 529], None, true).is_err());
     }
 }

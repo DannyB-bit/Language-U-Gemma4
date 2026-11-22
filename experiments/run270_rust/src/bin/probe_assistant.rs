@@ -1,6 +1,9 @@
 //! Minimal binary probe for `AssistantRuntime` golden-parity verification against PyTorch HF.
 
 use run270_rust::assistant::AssistantRuntime;
+use run270_rust::byte_head::{BpePrefixTrie, ByteHeadDecoder};
+use run270_rust::json;
+use run270_rust::tokenizer::Tokenizer;
 use std::path::Path;
 
 fn read_u32_le(buf: &[u8], off: usize) -> Result<u32, String> {
@@ -100,11 +103,87 @@ fn encode_probe_output(bh: usize, top1: u32, post_h: &[f32], logits: &[f32]) -> 
     Ok(out)
 }
 
+fn run_parity_bhdr(fixture_dir: &Path) -> Result<(), String> {
+    let dec = ByteHeadDecoder::load(&fixture_dir.join("test.bhdr"))?;
+    let tk = Tokenizer::load(&fixture_dir.join("tokenizer.json"))?;
+    let trie = BpePrefixTrie::from_tokenizer(&tk);
+
+    let h_raw = std::fs::read(fixture_dir.join("h_final.f32"))
+        .map_err(|e| format!("read h_final.f32: {e}"))?;
+    if h_raw.len() != dec.d_in * 4 {
+        return Err(format!(
+            "h_final.f32 len {} != expected {}",
+            h_raw.len(),
+            dec.d_in * 4
+        ));
+    }
+    let h_final: Vec<f32> = h_raw
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+
+    let exp_raw = std::fs::read(fixture_dir.join("expected.json"))
+        .map_err(|e| format!("read expected.json: {e}"))?;
+    let exp = json::parse(&exp_raw)?;
+    let exp_tok = exp.get("best_tok").and_then(|v| v.as_u64()).ok_or("missing best_tok")? as u32;
+    let exp_depth = exp.get("bytes_unrolled").and_then(|v| v.as_u64()).ok_or("missing bytes_unrolled")? as usize;
+    let exp_lp1 = exp.get("top1_logp").and_then(|v| v.as_f64()).ok_or("missing top1_logp")? as f32;
+    let exp_lp2 = exp.get("top2_logp").and_then(|v| v.as_f64()).ok_or("missing top2_logp")? as f32;
+    let exp_syms = exp.get("step0_syms").and_then(|v| v.as_arr()).ok_or("missing step0_syms")?;
+    let exp_lps = exp.get("step0_log_probs").and_then(|v| v.as_arr()).ok_or("missing step0_log_probs")?;
+    if exp_syms.len() != exp_lps.len() || exp_syms.is_empty() {
+        return Err("expected step0_syms/step0_log_probs length mismatch or empty".into());
+    }
+
+    let (s0, _ctx) = dec.init_state_and_ctx(&h_final)?;
+    let got_lps = dec.node_log_probs(&s0, &trie, 0, &[]);
+    if got_lps.len() != exp_syms.len() {
+        return Err(format!(
+            "step0 valid len {} != expected {}",
+            got_lps.len(),
+            exp_syms.len()
+        ));
+    }
+    let mut max_lp_diff = 0.0f32;
+    for (idx, &(gsym, glp)) in got_lps.iter().enumerate() {
+        let esym = exp_syms[idx].as_u64().ok_or("bad exp_sym")? as u16;
+        let elp = exp_lps[idx].as_f64().ok_or("bad exp_lp")? as f32;
+        if gsym != esym {
+            return Err(format!("step0 sym[{idx}] {gsym} != expected {esym}"));
+        }
+        max_lp_diff = max_lp_diff.max((glp - elp).abs());
+    }
+    if max_lp_diff >= 1e-5 {
+        return Err(format!("step0 max_log_prob_diff {max_lp_diff:.3e} >= 1e-5"));
+    }
+
+    let (got_tok, got_lp1, got_lp2, got_depth) = dec.decode_token_beam(&h_final, &trie, &[], 2)?;
+    if got_tok != exp_tok || got_depth != exp_depth {
+        return Err(format!(
+            "beam mismatch got=(tok={got_tok}, depth={got_depth}) != exp=(tok={exp_tok}, depth={exp_depth})"
+        ));
+    }
+    let lp1_diff = (got_lp1 - exp_lp1).abs();
+    let lp2_diff = (got_lp2 - exp_lp2).abs();
+    if lp1_diff >= 1e-5 || lp2_diff >= 1e-5 {
+        return Err(format!("beam logp diff lp1={lp1_diff:.3e} lp2={lp2_diff:.3e} >= 1e-5"));
+    }
+    println!(
+        "BHDR_PARITY_OK best_tok={got_tok} depth={got_depth} max_step0_logp_diff={max_lp_diff:.3e} lp1_diff={lp1_diff:.3e} lp2_diff={lp2_diff:.3e} bhdr_bytes={} trie_bytes={}",
+        dec.byte_len(),
+        trie.byte_len()
+    );
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let get = |flag: &str| -> Option<String> {
         args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
     };
+    if let Some(fdir) = get("--parity-bhdr") {
+        return run_parity_bhdr(Path::new(&fdir));
+    }
     let ast_p = get("--assistant").ok_or("missing --assistant <model.t16c>")?;
     let in_p = get("--in").ok_or("missing --in <probe_in.bin>")?;
     let out_p = get("--out").ok_or("missing --out <probe_out.bin>")?;

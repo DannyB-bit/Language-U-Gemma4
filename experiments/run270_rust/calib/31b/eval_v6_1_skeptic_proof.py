@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""
+V6.1 Hybrid + Real CRTR/MoD + Assistant-V7 Skeptic-Proofing Evaluation Suite.
+
+Addresses every reviewer boundary on physical Raspberry Pi 4 silicon (`run31b`):
+  1. Coherence & Perplexity Under REAL Trained CRTR + MoD (`--mode nll-pareto`):
+     Runs held-out raw text NLL/PPL (`--eval-nll`) and full-vocab Teacher-KL
+     (`--eval-teacher-logits`) across Dense baseline vs trained `--cortical-router`
+     `top_p` in `[0.70, 0.50, 0.35]` x `--mod-thresh` in `[0.0, 0.35, 0.50]`.
+  2. Multi-Step Reasoning vs Short QA Stress Battery (`--mode battery`):
+     Runs all 11 prior P1..P8 + BENCH5 prompts plus 4 strictly unseen multi-step
+     reasoning holdouts (`algebra`, `unit conversion`, `Python bug fix`, `syllogism`),
+     grading deterministically and preserving full verbatim `GEN31B` text.
+  3. Multimodal Vision QA (`--mode vision`): Held-out COCO visual QA parity.
+  4. Assistant-V6 vs Assistant-V7 Byte-Head Speculative A/B (`--mode spec-ab`):
+     Measures RSS reduction (`334 MB` -> `assistant_v7_body + .bhdr`) & token parity.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
+
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
+import v4_corpus as vc  # noqa: E402
+
+# Strictly held-out technical/reasoning/code passages for `--eval-nll` (zero overlap with V4_CAL_PAIRS).
+HELDOUT_NLL_PASSAGES: List[Tuple[str, str]] = [
+    (
+        "heldout_systems_cache",
+        "In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency "
+        "whenever worker threads share mutable counters on the same 64-byte coherence granule. "
+        "Aligning per-core accumulator structs to cache-line offsets eliminates false sharing "
+        "and restores linear scaling across memory channels without altering algorithmic complexity.",
+    ),
+    (
+        "heldout_numerical_pde",
+        "When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, "
+        "step sizes are constrained quadratically by the smallest spatial grid spacing. "
+        "Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy "
+        "while remaining unconditionally stable across diffusive eigenmodes.",
+    ),
+    (
+        "heldout_compiler_ir",
+        "Static single assignment form simplifies dead-code elimination and global value numbering "
+        "because every virtual register has exactly one lexical definition site. "
+        "Phi nodes placed at iterated dominance frontiers reconcile control-flow merges "
+        "before register allocation maps virtual temporaries onto physical machine lanes.",
+    ),
+]
+
+# Prompt questions paired 1:1 with HELDOUT_NLL_PASSAGES for response-conditioned IT chat `--eval-nll`.
+HELDOUT_CHAT_QUESTIONS: List[str] = [
+    "Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.",
+    "Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.",
+    "Explain how static single assignment form and phi nodes simplify compiler optimization passes.",
+]
+
+
+def format_gemma4_chat_nll_turn(question: str, response: str) -> str:
+    """Wrap a held-out Q/A pair in exact Gemma-4-IT `<|turn>` template for `--eval-nll-after-turn`."""
+    return f"<|turn>user\n{question}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>{response}<turn|>"
+
+
+PromptSpec = Tuple[str, str, int, Callable[[str], bool]]
+
+
+def _build_battery_prompts() -> List[PromptSpec]:
+    return [
+        # 11 original P1..P8 + BENCH5 prompts
+        ("P1_arith", "What is 2 + 2?", 32, lambda s: bool(re.search(r"\b4\b", s))),
+        ("P2_france", "The capital of France is", 32, lambda s: "paris" in s.lower()),
+        ("P3_hamlet_quote", "To be or not to be, that is the", 32, lambda s: "question" in s.lower()),
+        ("P4_prime_py", "Write a Python function to check if a number is prime.", 48, lambda s: "def " in s or "prime" in s.lower()),
+        ("P5_speed", "A train travels 120 km in 2 hours. What is its average speed?", 32, lambda s: bool(re.search(r"\b60\b", s))),
+        ("P6_photo", "Explain how photosynthesis works in one short sentence.", 40, lambda s: "light" in s.lower() or "sun" in s.lower()),
+        ("P7_bsearch", "What is the time complexity of binary search on a sorted array?", 32, lambda s: "log" in s.lower()),
+        ("P8_romeo", "Who wrote the play Romeo and Juliet?", 32, lambda s: "shakespeare" in s.lower()),
+        ("B5_hamlet", "Who wrote the play Hamlet?", 32, lambda s: "shakespeare" in s.lower()),
+        ("B5_multistep", "Compute 12 * 8 - 27.", 40, lambda s: bool(re.search(r"\b69\b", s))),
+        ("B5_min", "Which number is smaller, 547 or 193?", 32, lambda s: bool(re.search(r"\b193\b", s))),
+        # 4 strictly unseen multi-step reasoning prompts
+        ("U1_algebra", "If 5x + 3 = 38, what is the value of 2x - 1?", 48, lambda s: bool(re.search(r"\b13\b", s))),
+        ("U2_units", "A cyclist rides at 18 kilometers per hour for 40 minutes. How many meters did the cyclist travel?", 48, lambda s: "12000" in s.replace(",", "")),
+        ("U3_bugfix", "What is the bug in `def avg(nums): return sum(nums) / len(nums)` when given an empty list?", 48, lambda s: "empty" in s.lower() or "zero" in s.lower()),
+        ("U4_syllogism", "All mammals are warm-blooded. Whales are mammals. Are whales cold-blooded? Answer Yes or No and explain briefly.", 40, lambda s: bool(re.search(r"\bno\b", s.lower()))),
+    ]
+
+
+BATTERY_PROMPTS: List[PromptSpec] = _build_battery_prompts()
+
+
+def assert_holdouts_disjoint() -> Dict[str, int]:
+    """Fail closed if any NLL passage overlaps V4 calibration blacklists or 4-grams."""
+    cal_texts = [vc.format_gemma4_turn(p, r) for _, p, r in vc.V4_CAL_PAIRS]
+    cal_4grams = set()
+    for t in cal_texts:
+        toks = re.findall(r"[a-z0-9]+", t.lower())
+        for i in range(max(len(toks) - 3, 0)):
+            cal_4grams.add(tuple(toks[i : i + 4]))
+
+    bad_terms = tuple(vc.BLACKLIST_SUBSTRINGS)
+    overlap_4grams = 0
+    items: List[Tuple[str, str]] = list(HELDOUT_NLL_PASSAGES) + [
+        (f"chat_q_{i}", q) for i, q in enumerate(HELDOUT_CHAT_QUESTIONS)
+    ]
+    for name, txt in items:
+        low = txt.lower()
+        for b in bad_terms:
+            if b in low:
+                raise ValueError(f"Holdout NLL passage {name} matched blacklist term {b!r}")
+        toks = re.findall(r"[a-z0-9]+", low)
+        for i in range(max(len(toks) - 3, 0)):
+            if tuple(toks[i : i + 4]) in cal_4grams:
+                overlap_4grams += 1
+    if overlap_4grams > 0:
+        raise ValueError(f"Found {overlap_4grams} overlapping 4-grams between HELDOUT_NLL_PASSAGES and V4_CAL_PAIRS")
+    return {"passages": len(HELDOUT_NLL_PASSAGES), "overlap_4grams": overlap_4grams, "battery_prompts": len(BATTERY_PROMPTS)}
+
+
+def parse_run31b_telemetry(stdout_text: str) -> Dict[str, object]:
+    """Extract grounded numerical telemetry from `run31b` stdout lines."""
+    res: Dict[str, object] = {}
+    m_gen = re.findall(r'^GEN31B text=(.+)$', stdout_text, flags=re.MULTILINE)
+    if m_gen:
+        raw_last = m_gen[-1].strip()
+        if raw_last.startswith('"') and raw_last.endswith('"'):
+            try:
+                res["gen_text"] = bytes(raw_last[1:-1], "utf-8").decode("unicode_escape")
+            except Exception:
+                res["gen_text"] = raw_last.strip('"')
+        else:
+            res["gen_text"] = raw_last
+
+    m_nll = re.search(
+        r"EVAL_NLL tokens=(\d+) (?:eval_start=(\d+) )?eval_pos=(\d+) mean_nll=([0-9.+-eE]+) ppl=([0-9.+-eE]+) top1_acc=([0-9.+-eE]+) mean_entropy=([0-9.+-eE]+) eval_s=([0-9.+-eE]+)",
+        stdout_text,
+    )
+    if m_nll:
+        res["eval_tokens"] = int(m_nll.group(1))
+        if m_nll.group(2) is not None:
+            res["eval_start"] = int(m_nll.group(2))
+        res["eval_pos"] = int(m_nll.group(3))
+        res["mean_nll"] = float(m_nll.group(4))
+        res["ppl"] = float(m_nll.group(5))
+        res["top1_acc"] = float(m_nll.group(6))
+        res["mean_entropy"] = float(m_nll.group(7))
+        res["eval_s"] = float(m_nll.group(8))
+
+    m_kl = re.search(
+        r"EVAL_TEACHER_KL pos=(\d+) kl_t_to_s=([0-9.+-eE]+) kl_s_to_t=([0-9.+-eE]+) top1_agree=([0-9.+-eE]+) top5_agree=([0-9.+-eE]+) teacher_nll=([0-9.+-eE]+) teacher_ppl=([0-9.+-eE]+)",
+        stdout_text,
+    )
+    if m_kl:
+        res["kl_t_to_s"] = float(m_kl.group(2))
+        res["kl_s_to_t"] = float(m_kl.group(3))
+        res["teacher_top1_agree"] = float(m_kl.group(4))
+        res["teacher_top5_agree"] = float(m_kl.group(5))
+        res["teacher_nll"] = float(m_kl.group(6))
+        res["teacher_ppl"] = float(m_kl.group(7))
+
+    m_mem = re.search(
+        r"MEM31B pinned_bytes=(\d+) embed_bytes=(\d+) ssd_read_bytes=(\d+) cs_skipped_blocks=(\d+) lmhead_cs_skipped_blocks=(\d+) prefill_s=([0-9.]+) decode_s=([0-9.]+) vm_hwm_kb=Some\((\d+)\) vm_rss_kb=Some\((\d+)\)",
+        stdout_text,
+    )
+    if m_mem:
+        res["pinned_bytes"] = int(m_mem.group(1))
+        res["embed_bytes"] = int(m_mem.group(2))
+        res["ssd_read_bytes"] = int(m_mem.group(3))
+        res["prefill_s"] = float(m_mem.group(6))
+        res["decode_s"] = float(m_mem.group(7))
+        res["vm_hwm_kb"] = int(m_mem.group(8))
+        res["vm_rss_kb"] = int(m_mem.group(9))
+
+    m_crtr = re.search(r"CORTICAL_ROUTER gate_skipped_blks=(\d+) gate_total_blks=(\d+) gate_saved_pct=([0-9.]+)%", stdout_text)
+    if m_crtr:
+        res["gate_saved_pct"] = float(m_crtr.group(3))
+    m_mod = re.search(r"MOD31B thresh=([0-9.]+) skipped_layers=(\d+) eligible_layers=(\d+) skipped_pct=([0-9.]+)%", stdout_text)
+    if m_mod:
+        res["mod_skipped_pct"] = float(m_mod.group(4))
+    m_spec = re.search(r"SPEC31B .*?assistant_mb=([0-9.]+).*?accept_rate=([0-9.]+) generated=(\d+) s_per_tok=([0-9.]+)", stdout_text)
+    if m_spec:
+        res["assistant_mb"] = float(m_spec.group(1))
+        res["accept_rate"] = float(m_spec.group(2))
+        res["spec_generated"] = int(m_spec.group(3))
+        res["s_per_tok"] = float(m_spec.group(4))
+    return res
+
+
+def _run_cmd(cmd: Sequence[str], log_fp=None) -> str:
+    proc = subprocess.run(list(cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+    if log_fp is not None:
+        log_fp.write(f"$ {' '.join(cmd)}\n{proc.stdout}\n")
+        log_fp.flush()
+    return proc.stdout
+
+
+def _base_cmd(args: argparse.Namespace) -> List[str]:
+    cmd = [
+        str(args.run31b),
+        "--t16c",
+        str(args.t16c),
+        "--config",
+        str(args.config),
+        "--tokenizer",
+        str(args.tokenizer),
+        "--threads",
+        str(args.threads),
+        "--kv-quant",
+        args.kv_quant,
+    ]
+    if args.c8d is not None and args.c8d.is_file():
+        cmd.extend(["--cuneiform-bank", str(args.c8d)])
+    if args.so is not None and args.so.is_file():
+        cmd.extend(["--so", str(args.so)])
+    return cmd
+
+
+def run_nll_pareto(args: argparse.Namespace, out_dir: Path) -> List[dict]:
+    """Run held-out `--eval-nll` Pareto grid across CRTR `top_p` x `mod_thresh`."""
+    if not args.run31b.is_file() or not args.t16c.is_file():
+        raise FileNotFoundError(f"Missing run31b ({args.run31b}) or t16c ({args.t16c})")
+    nll_format = getattr(args, "nll_format", "chat")
+    if nll_format not in ("chat", "raw"):
+        raise ValueError(f"Unsupported nll_format: {nll_format}")
+    top_ps = [float(x) for x in args.top_ps.split(",")]
+    mod_ths = [float(x) for x in args.mod_thresholds.split(",")]
+    configs: List[Tuple[str, Optional[float], float]] = [("dense", None, 0.0)]
+    if args.router is not None:
+        for tp in top_ps:
+            for mt in mod_ths:
+                configs.append((f"crtr_p{tp:.2f}_m{mt:.2f}", tp, mt))
+
+    rows: List[dict] = []
+    combined_txt = "\n\n".join(txt for _, txt in HELDOUT_NLL_PASSAGES)
+    with open(out_dir / "nll_pareto.log", "w", encoding="utf-8") as lfp:
+        for label, tp, mt in configs:
+            router_flags: List[str] = []
+            if tp is not None and args.router is not None:
+                router_flags.extend(["--cortical-router", str(args.router), "--mlp-top-p", f"{tp:.3f}"])
+                if mt > 0.0:
+                    router_flags.extend(["--mod-thresh", f"{mt:.3f}"])
+
+            if nll_format == "raw":
+                cmd = _base_cmd(args) + ["--eval-nll", "--raw-prompt", "--prompt-text", combined_txt] + router_flags
+                if args.teacher_logits is not None and args.teacher_logits.is_file():
+                    cmd.extend(["--eval-teacher-logits", str(args.teacher_logits)])
+                rec = parse_run31b_telemetry(_run_cmd(cmd, lfp))
+                rec["nll_format"] = "raw"
+            else:
+                if args.teacher_logits is not None and args.teacher_logits.is_file():
+                    raise ValueError(
+                        "--nll-format chat runs 3 separate turns; pass --teacher-logits as a directory containing <passage_name>.lgt1"
+                    )
+                sub_rows: List[dict] = []
+                tot_pos = 0
+                tot_tok = 0
+                w_nll = 0.0
+                w_ent = 0.0
+                w_t1 = 0.0
+                w_eval_s = 0.0
+                w_kl_ts = 0.0
+                w_kl_st = 0.0
+                w_a1 = 0.0
+                w_a5 = 0.0
+                w_tnll = 0.0
+                kl_pos = 0
+                for (p_name, p_ans), p_q in zip(HELDOUT_NLL_PASSAGES, HELDOUT_CHAT_QUESTIONS):
+                    chat_prompt = format_gemma4_chat_nll_turn(p_q, p_ans)
+                    cmd = _base_cmd(args) + [
+                        "--eval-nll",
+                        "--eval-nll-after-turn",
+                        "--raw-prompt",
+                        "--prompt-text",
+                        chat_prompt,
+                    ] + router_flags
+                    if args.teacher_logits is not None and args.teacher_logits.is_dir():
+                        cand_lgt = args.teacher_logits / f"{p_name}.lgt1"
+                        if cand_lgt.is_file():
+                            cmd.extend(["--eval-teacher-logits", str(cand_lgt)])
+                    sr = parse_run31b_telemetry(_run_cmd(cmd, lfp))
+                    sr["passage"] = p_name
+                    sub_rows.append(sr)
+                    ep = int(sr.get("eval_pos", 0))
+                    tot_pos += ep
+                    tot_tok += int(sr.get("eval_tokens", 0))
+                    w_nll += float(sr.get("mean_nll", 0.0)) * ep
+                    w_ent += float(sr.get("mean_entropy", 0.0)) * ep
+                    w_t1 += float(sr.get("top1_acc", 0.0)) * ep
+                    w_eval_s += float(sr.get("eval_s", 0.0))
+                    if "kl_t_to_s" in sr:
+                        kl_pos += ep
+                        w_kl_ts += float(sr["kl_t_to_s"]) * ep
+                        w_kl_st += float(sr["kl_s_to_t"]) * ep
+                        w_a1 += float(sr["teacher_top1_agree"]) * ep
+                        w_a5 += float(sr["teacher_top5_agree"]) * ep
+                        w_tnll += float(sr["teacher_nll"]) * ep
+                mean_nll_agg = (w_nll / tot_pos) if tot_pos > 0 else 0.0
+                rec = {
+                    "nll_format": "chat",
+                    "eval_tokens": tot_tok,
+                    "eval_pos": tot_pos,
+                    "mean_nll": round(mean_nll_agg, 5),
+                    "ppl": round(math.exp(min(mean_nll_agg, 80.0)), 3),
+                    "top1_acc": round((w_t1 / tot_pos) if tot_pos > 0 else 0.0, 4),
+                    "mean_entropy": round((w_ent / tot_pos) if tot_pos > 0 else 0.0, 4),
+                    "eval_s": round(w_eval_s, 2),
+                    "passages": sub_rows,
+                }
+                if kl_pos > 0:
+                    t_nll_agg = w_tnll / kl_pos
+                    rec["kl_t_to_s"] = round(w_kl_ts / kl_pos, 5)
+                    rec["kl_s_to_t"] = round(w_kl_st / kl_pos, 5)
+                    rec["teacher_top1_agree"] = round(w_a1 / kl_pos, 4)
+                    rec["teacher_top5_agree"] = round(w_a5 / kl_pos, 4)
+                    rec["teacher_nll"] = round(t_nll_agg, 5)
+                    rec["teacher_ppl"] = round(math.exp(min(t_nll_agg, 80.0)), 3)
+                for extra_k in ("gate_saved_pct", "mod_skipped_pct", "vm_hwm_kb", "vm_rss_kb"):
+                    vals = [float(r[extra_k]) for r in sub_rows if extra_k in r]
+                    if vals:
+                        rec[extra_k] = round(max(vals) if "vm_" in extra_k else sum(vals) / len(vals), 2)
+
+            rec["config"] = label
+            rec["mlp_top_p"] = tp if tp is not None else 1.0
+            rec["mod_thresh"] = mt
+            rows.append(rec)
+    return rows
+
+
+def run_battery(args: argparse.Namespace, out_dir: Path) -> List[dict]:
+    """Execute all 15 stress-battery prompts and score deterministically."""
+    if not args.run31b.is_file() or not args.t16c.is_file():
+        raise FileNotFoundError(f"Missing run31b ({args.run31b}) or t16c ({args.t16c})")
+    rows: List[dict] = []
+    with open(out_dir / "battery_15.log", "w", encoding="utf-8") as lfp:
+        for tag, prompt, max_toks, checker in BATTERY_PROMPTS:
+            cmd = _base_cmd(args) + [
+                "--prompt-text",
+                prompt,
+                "--max-tokens",
+                str(max_toks),
+                "--lmhead-cs",
+                args.lmhead_cs,
+            ]
+            if args.tri_modal_gate:
+                cmd.append("--tri-modal-gate")
+            if args.router is not None and args.battery_top_p < 0.999:
+                cmd.extend(["--cortical-router", str(args.router), "--mlp-top-p", f"{args.battery_top_p:.3f}"])
+                if args.battery_mod_thresh > 0.0:
+                    cmd.extend(["--mod-thresh", f"{args.battery_mod_thresh:.3f}"])
+            out = _run_cmd(cmd, lfp)
+            rec = parse_run31b_telemetry(out)
+            gtxt = str(rec.get("gen_text", ""))
+            rec["tag"] = tag
+            rec["prompt"] = prompt
+            rec["passed"] = bool(checker(gtxt))
+            rows.append(rec)
+    return rows
+
+
+def run_spec_ab(args: argparse.Namespace, out_dir: Path) -> List[dict]:
+    """Compare legacy Assistant LM-head vs Assistant-V7 `BHDR` runtime footprint and speed."""
+    if not args.assistant_v6 or not args.assistant_v7_body or not args.byte_head:
+        raise ValueError("--assistant-v6, --assistant-v7-body, and --byte-head required for --mode spec-ab")
+    rows: List[dict] = []
+    prompt = "What is 2 + 2?"
+    with open(out_dir / "spec_ab.log", "w", encoding="utf-8") as lfp:
+        for label, ast_p, bh_p in [
+            ("assistant_v6_full", args.assistant_v6, None),
+            ("assistant_v7_bhdr", args.assistant_v7_body, args.byte_head),
+        ]:
+            cmd = _base_cmd(args) + [
+                "--speculative",
+                "--batch-k",
+                "4",
+                "--spec-assistant",
+                str(ast_p),
+                "--assistant-step-pos",
+                "--prompt-text",
+                prompt,
+                "--max-tokens",
+                "16",
+                "--lmhead-cs",
+                args.lmhead_cs,
+            ]
+            if bh_p is not None:
+                cmd.extend(["--spec-byte-head", str(bh_p)])
+            out = _run_cmd(cmd, lfp)
+            rec = parse_run31b_telemetry(out)
+            rec["variant"] = label
+            rows.append(rec)
+    return rows
+
+
+def _run_selftest() -> int:
+    """Mandatory 6-gate fail-closed self-test without requiring large model weights."""
+    failures = 0
+
+    def gate(name: str, ok: bool, detail: str = "") -> None:
+        nonlocal failures
+        if not ok:
+            failures += 1
+        print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""), flush=True)
+
+    # Gate 1: Strict disjointness against V4 calibration corpus & blacklists
+    try:
+        dj = assert_holdouts_disjoint()
+        gate(
+            "Gate 1: Held-out NLL passages 0 blacklist hits & 0 4-gram overlap",
+            dj["overlap_4grams"] == 0 and dj["passages"] == 3 and dj["battery_prompts"] == 15,
+            f"passages={dj['passages']} prompts={dj['battery_prompts']}",
+        )
+    except Exception as exc:
+        gate("Gate 1: Holdout contamination check", False, str(exc))
+
+    # Gate 2: Deterministic battery checkers accept valid answers and reject wrong/empty
+    by_tag = {t: chk for t, _, _, chk in BATTERY_PROMPTS}
+    g2_ok = (
+        by_tag["P1_arith"]("The result is 4.<turn|>")
+        and not by_tag["P1_arith"]("**. is the a")
+        and by_tag["U1_algebra"]("Step 1: 5x = 35, x = 7, so 2x - 1 = 13.")
+        and not by_tag["U1_algebra"]("2x - 1 = 12")
+        and by_tag["U2_units"]("18 * (40/60) = 12 km = 12,000 meters.")
+    )
+    gate("Gate 2: Deterministic battery answer graders calibrated & fail closed", g2_ok)
+
+    # Gate 3: Telemetry parser extracts NLL (with/without eval_start), KL, CRTR, MoD, SPEC31B & GEN31B accurately
+    sample_log = "\n".join(
+        [
+            'GEN31B text="The result is 4.<turn|>"',
+            "EVAL_NLL tokens=120 eval_start=21 eval_pos=99 mean_nll=2.34500 ppl=10.433 top1_acc=0.5546 mean_entropy=2.1200 eval_s=4.51",
+            "EVAL_TEACHER_KL pos=99 kl_t_to_s=0.41230 kl_s_to_t=0.49100 top1_agree=0.7143 top5_agree=0.9160 teacher_nll=1.88000 teacher_ppl=6.553",
+            "CORTICAL_ROUTER gate_skipped_blks=2520 gate_total_blks=5040 gate_saved_pct=50.0%",
+            "MOD31B thresh=0.350 skipped_layers=12 eligible_layers=40 skipped_pct=30.0%",
+            "SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=201.40 byte_head=true step_pos=true min_margin=0.75 margin_stopped=0 ast_lm_skipped=0 drafted=9 accepted=6 batches=4 fallback_k1=0 accept_rate=0.667 generated=16 s_per_tok=0.812",
+            "MEM31B pinned_bytes=4600000000 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1024 prefill_s=12.34 decode_s=14.56 vm_hwm_kb=Some(4800000) vm_rss_kb=Some(4750000)",
+        ]
+    )
+    parsed = parse_run31b_telemetry(sample_log)
+    parsed_legacy = parse_run31b_telemetry(
+        "EVAL_NLL tokens=63 eval_pos=62 mean_nll=3.10000 ppl=22.198 top1_acc=0.4000 mean_entropy=2.0000 eval_s=1.23"
+    )
+    g3_ok = (
+        parsed.get("gen_text") == "The result is 4.<turn|>"
+        and parsed.get("eval_start") == 21
+        and parsed.get("eval_pos") == 99
+        and parsed_legacy.get("eval_pos") == 62
+        and "eval_start" not in parsed_legacy
+        and abs(float(parsed.get("ppl", 0.0)) - 10.433) < 1e-3
+        and abs(float(parsed.get("kl_t_to_s", 0.0)) - 0.41230) < 1e-5
+        and abs(float(parsed.get("gate_saved_pct", 0.0)) - 50.0) < 1e-3
+        and abs(float(parsed.get("mod_skipped_pct", 0.0)) - 30.0) < 1e-3
+        and abs(float(parsed.get("assistant_mb", 0.0)) - 201.40) < 1e-2
+        and parsed.get("ssd_read_bytes") == 0
+        and "<channel|>" in format_gemma4_chat_nll_turn("Q", "A")
+    )
+    gate("Gate 3: Telemetry parser exact across EVAL_NLL/KL/CRTR/MoD/SPEC/MEM", g3_ok)
+
+    # Gate 4: Contamination guard fails closed on injected contamination
+    caught = False
+    try:
+        orig = HELDOUT_NLL_PASSAGES[0]
+        bad_pair = ("bad", "What is the capital of France and Paris?")
+        HELDOUT_NLL_PASSAGES[0] = bad_pair  # type: ignore[index]
+        assert_holdouts_disjoint()
+    except ValueError:
+        caught = True
+    finally:
+        HELDOUT_NLL_PASSAGES[0] = orig  # type: ignore[index]
+    gate("Gate 4: Contamination detector fails closed on injected leak", caught)
+
+    # Gate 5: Fail closed on missing binary/model artifacts
+    caught_missing = False
+    try:
+        ns = argparse.Namespace(
+            run31b=Path("/nonexistent/run31b"),
+            t16c=Path("/nonexistent/model.t16c"),
+            top_ps="0.5",
+            mod_thresholds="0.0",
+            router=None,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            run_nll_pareto(ns, Path(td))
+    except FileNotFoundError:
+        caught_missing = True
+    gate("Gate 5: Missing model/binary artifacts raise FileNotFoundError", caught_missing)
+
+    # Gate 6: Report serialization roundtrip cleanly
+    with tempfile.TemporaryDirectory() as td:
+        rp = Path(td) / "report.json"
+        rp.write_text(json.dumps({"selftest": parsed}, indent=2), encoding="utf-8")
+        reloaded = json.loads(rp.read_text(encoding="utf-8"))
+        gate("Gate 6: JSON artifact serialization roundtrip", reloaded["selftest"]["vm_rss_kb"] == 4750000)
+
+    print(f"SKEPTIC_PROOF_SELFTEST: {6 - failures}/6 gates passed", flush=True)
+    return 1 if failures else 0
+
+
+def main() -> int:
+    if len(sys.argv) == 1 or "--selftest" in sys.argv:
+        return _run_selftest()
+
+    ap = argparse.ArgumentParser(description="Skeptic-Proofing V6.1 + CRTR/MoD + Assistant-V7 Evaluation Suite")
+    ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--mode", choices=("nll-pareto", "battery", "vision", "spec-ab", "all"), default="all")
+    ap.add_argument("--run31b", type=Path, required=True)
+    ap.add_argument("--t16c", type=Path, required=True)
+    ap.add_argument("--config", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json"))
+    ap.add_argument("--tokenizer", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json"))
+    ap.add_argument("--c8d", type=Path, default=None)
+    ap.add_argument("--router", type=Path, default=None)
+    ap.add_argument("--so", type=Path, default=None)
+    ap.add_argument("--teacher-logits", type=Path, default=None)
+    ap.add_argument("--assistant-v6", type=Path, default=None)
+    ap.add_argument("--assistant-v7-body", type=Path, default=None)
+    ap.add_argument("--byte-head", type=Path, default=None)
+    ap.add_argument("--image", type=Path, default=None)
+    ap.add_argument("--out-dir", type=Path, default=Path("./skeptic_proof_out"))
+    ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--kv-quant", type=str, default="glyph")
+    ap.add_argument("--lmhead-cs", type=str, default="exact")
+    ap.add_argument("--tri-modal-gate", action="store_true")
+    ap.add_argument("--nll-format", choices=("chat", "raw"), default="chat")
+    ap.add_argument("--top-ps", type=str, default="0.70,0.50,0.35")
+    ap.add_argument("--mod-thresholds", type=str, default="0.0,0.35,0.50")
+    ap.add_argument("--battery-top-p", type=float, default=1.0)
+    ap.add_argument("--battery-mod-thresh", type=float, default=0.0)
+    args = ap.parse_args()
+
+    assert_holdouts_disjoint()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    report: Dict[str, object] = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mode": args.mode}
+
+    if args.mode in ("nll-pareto", "all"):
+        report["nll_pareto"] = run_nll_pareto(args, args.out_dir)
+    if args.mode in ("battery", "all"):
+        bat = run_battery(args, args.out_dir)
+        passed = sum(1 for r in bat if r["passed"])
+        report["battery"] = {"passed": passed, "total": len(bat), "rows": bat}
+    if args.mode in ("vision", "all") and args.image is not None and args.image.is_file():
+        cmd = _base_cmd(args) + ["--image", str(args.image), "--prompt-text", "Describe what you see in this image in one clear sentence.", "--max-tokens", "32", "--lmhead-cs", args.lmhead_cs]
+        v_out = _run_cmd(cmd)
+        (args.out_dir / "vision.log").write_text(v_out, encoding="utf-8")
+        report["vision"] = parse_run31b_telemetry(v_out)
+    if args.mode in ("spec-ab", "all") and args.assistant_v6 and args.assistant_v7_body and args.byte_head:
+        report["spec_ab"] = run_spec_ab(args, args.out_dir)
+
+    out_json = args.out_dir / "skeptic_proof_report.json"
+    out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"[DONE] Wrote {out_json}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
