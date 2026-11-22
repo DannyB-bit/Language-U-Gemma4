@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-11-22T18:44:45Z",
+  "mode": "spec-ab",
+  "spec_ab": [
+    {
+      "gen_text": "To find the two numbers of a total number of **1.2 = ",
+      "pinned_bytes": 4146219888,
+      "embed_bytes": 539492352,
+      "ssd_read_bytes": 0,
+      "prefill_s": 20.8,
+      "decode_s": 34.54,
+      "vm_hwm_kb": 5257444,
+      "vm_rss_kb": 5257444,
+      "assistant_mb": 334.31,
+      "accept_rate": 0.267,
+      "spec_generated": 16,
+      "s_per_tok": 2.302,
+      "variant": "assistant_v6_full"
+    },
+    {
+      "gen_text": "To find the two numbers of a total number of **1.2 = ",
+      "pinned_bytes": 4146219888,
+      "embed_bytes": 539492352,
+      "ssd_read_bytes": 0,
+      "prefill_s": 19.17,
+      "decode_s": 28.29,
+      "vm_hwm_kb": 4971812,
+      "vm_rss_kb": 4971812,
+      "assistant_mb": 66.98,
+      "accept_rate": 0.0,
+      "spec_generated": 16,
+      "s_per_tok": 1.886,
+      "variant": "assistant_v7_bhdr"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 35.13s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(5522288), Some(4483084))
+[run31b] vision encoded 640x480 -> n_soft=266 in 920.70s
+[run31b] prompt 293 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 8.06s (pinned=true)
+[run31b] layer 05/60 done in 9.64s (pinned=true)
+[run31b] layer 14/60 done in 7.90s (pinned=true)
+[run31b] layer 29/60 done in 9.38s (pinned=true)
+[run31b] layer 44/60 done in 5.43s (pinned=true)
+[run31b] layer 59/60 done in 9.73s (pinned=true)
+[run31b] prefill done in 410.87s ssd_read_mb=0.0 vm=(Some(6360620), Some(6299276))
+PREFILL_TOP5 [818:"The"(25.331), 1018:"**"(18.258), 236776:"A"(15.859), 22550:"Despite"(14.581), 2094:"This"(14.197)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 5.43s vm=(Some(6567864), Some(6567864))
+[STEP 1] id=2471 text=" image"
+[run31b] decode step 1 in 2.68s vm=(Some(6568108), Some(6568108))
+[STEP 2] id=56385 text=" depicts"
+[run31b] decode step 2 in 2.64s vm=(Some(6568116), Some(6568116))
+[STEP 3] id=496 text=" a"
+[run31b] decode step 3 in 2.65s vm=(Some(6568176), Some(6568176))
+[STEP 4] id=20147 text=" singular"
+[run31b] decode step 4 in 2.68s vm=(Some(6568176), Some(6568176))
+[STEP 5] id=7501 text=" sequence"
+[run31b] decode step 5 in 2.70s vm=(Some(6568996), Some(6568996))
+[STEP 6] id=529 text=" of"
+[run31b] decode step 6 in 2.88s vm=(Some(6568628), Some(6568628))
+[STEP 7] id=506 text=" the"
+[run31b] decode step 7 in 2.72s vm=(Some(6568628), Some(6568628))
+[STEP 8] id=1638 text=" same"
+[run31b] decode step 8 in 2.77s vm=(Some(6568628), Some(6568628))
+[STEP 9] id=18560 text=" movements"
+[run31b] decode step 9 in 2.68s vm=(Some(6568628), Some(6568628))
+[STEP 10] id=5459 text=" throughout"
+[run31b] decode step 10 in 2.67s vm=(Some(6568628), Some(6568628))
+[STEP 11] id=506 text=" the"
+[run31b] decode step 11 in 2.68s vm=(Some(6568628), Some(6568628))
+[STEP 12] id=4251 text=" entire"
+[run31b] decode step 12 in 2.72s vm=(Some(6568628), Some(6568628))
+[STEP 13] id=1638 text=" same"
+[run31b] decode step 13 in 2.72s vm=(Some(6568628), Some(6568628))
+[STEP 14] id=2978 text=" room"
+[run31b] decode step 14 in 2.70s vm=(Some(6568628), Some(6568628))
+[STEP 15] id=236761 text="."
+[run31b] decode step 15 in 2.70s vm=(Some(6568628), Some(6568628))
+[STEP 16] id=106 text="<turn|>"
+GEN31B ids=[818, 2471, 56385, 496, 20147, 7501, 529, 506, 1638, 18560, 5459, 506, 4251, 1638, 2978, 236761, 106]
+GEN31B text="The image depicts a singular sequence of the same movements throughout the entire same room.<turn|>"
+KV31B mode=Glyph raw_bytes=556892160 naive_bf16_bytes=278446080 compressed_bytes=81697280 glyph_tokens=16580 exact_tokens=1960 shrink=6.82x shrink_vs_bf16=3.41x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=27861 prefill_s=410.87 decode_s=46.02 vm_hwm_kb=Some(6568628) vm_rss_kb=Some(6568628)

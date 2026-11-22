@@ -1,0 +1,50 @@
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.97s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969736), Some(4907976))
+[run31b] vision encoded 672x672 -> n_soft=256 in 841.67s
+[run31b] prompt 283 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 4.03s (pinned=true)
+[run31b] layer 05/60 done in 3.57s (pinned=true)
+[run31b] layer 14/60 done in 3.04s (pinned=true)
+[run31b] layer 29/60 done in 3.55s (pinned=true)
+[run31b] layer 44/60 done in 5.55s (pinned=true)
+[run31b] layer 59/60 done in 9.31s (pinned=true)
+[run31b] prefill done in 283.25s ssd_read_mb=0.0 vm=(Some(5105808), Some(4958928))
+PREFILL_TOP5 [236776:"A"(25.986), 818:"The"(23.977), 2267:"An"(23.516), 2094:"This"(21.093), 902:"In"(20.454)]
+[STEP 0] id=236776 text="A"
+[run31b] decode step 0 in 1.81s vm=(Some(5105808), Some(4958952))
+[STEP 1] id=1589 text=" person"
+[run31b] decode step 1 in 1.79s vm=(Some(5105808), Some(4958952))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 1.81s vm=(Some(5105808), Some(4958952))
+[STEP 3] id=496 text=" a"
+[run31b] decode step 3 in 1.80s vm=(Some(5105808), Some(4958952))
+[STEP 4] id=3875 text=" woman"
+[run31b] decode step 4 in 1.81s vm=(Some(5105808), Some(4959752))
+[STEP 5] id=563 text=" is"
+[run31b] decode step 5 in 1.81s vm=(Some(5105808), Some(4959752))
+[STEP 6] id=614 text=" an"
+[run31b] decode step 6 in 1.84s vm=(Some(5105808), Some(4959752))
+[STEP 7] id=2471 text=" image"
+[run31b] decode step 7 in 1.79s vm=(Some(5105808), Some(4959752))
+[STEP 8] id=529 text=" of"
+[run31b] decode step 8 in 1.79s vm=(Some(5105808), Some(4959752))
+[STEP 9] id=506 text=" the"
+[run31b] decode step 9 in 1.83s vm=(Some(5105808), Some(4959752))
+[STEP 10] id=2604 text=" red"
+[run31b] decode step 10 in 1.80s vm=(Some(5105808), Some(4959752))
+[STEP 11] id=236772 text="-"
+[run31b] decode step 11 in 1.81s vm=(Some(5105808), Some(4959752))
+[STEP 12] id=5140 text="based"
+[run31b] decode step 12 in 1.80s vm=(Some(5105808), Some(4959752))
+[STEP 13] id=1695 text=" background"
+[run31b] decode step 13 in 1.82s vm=(Some(5105808), Some(4959752))
+[STEP 14] id=236761 text="."
+[run31b] decode step 14 in 1.83s vm=(Some(5105808), Some(4959752))
+[STEP 15] id=106 text="<turn|>"
+GEN31B ids=[236776, 1589, 529, 496, 3875, 563, 614, 2471, 529, 506, 2604, 236772, 5140, 1695, 236761, 106]
+GEN31B text="A person of a woman is an image of the red-based background.<turn|>"
+KV31B mode=Glyph raw_bytes=537067520 naive_bf16_bytes=268533760 compressed_bytes=80768000 glyph_tokens=15920 exact_tokens=1960 shrink=6.65x shrink_vs_bf16=3.32x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=77913 prefill_s=283.25 decode_s=27.15 vm_hwm_kb=Some(5105808) vm_rss_kb=Some(4959752)

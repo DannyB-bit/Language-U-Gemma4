@@ -1,0 +1,74 @@
+{
+  "version": "ASSISTANT-V7-BHDR-LGT1-V1",
+  "elapsed_s": 427.62,
+  "bhdr_metrics": {
+    "val_kl_before": 2.7435,
+    "val_kl_after": 1.08514,
+    "val_tok_acc_before": 0.0,
+    "val_tok_acc_after": 0.2691,
+    "heldout_beam_top1_acc": 0.2422,
+    "heldout_beam_samples": 256
+  },
+  "lgt1_teacher": {
+    "heldout_systems_cache": {
+      "eval_pos": 63,
+      "mean_nll": 5.41178,
+      "ppl": 224.029,
+      "top1_acc": 0.4444,
+      "tokens": 92,
+      "eval_start": 28,
+      "ids_hash": "0xb1c391deb2b977ce",
+      "bytes": 33030168
+    },
+    "heldout_numerical_pde": {
+      "eval_pos": 54,
+      "mean_nll": 4.7687,
+      "ppl": 117.766,
+      "top1_acc": 0.6111,
+      "tokens": 91,
+      "eval_start": 36,
+      "ids_hash": "0x1091cdcfd8a0b630",
+      "bytes": 28311576
+    },
+    "heldout_compiler_ir": {
+      "eval_pos": 49,
+      "mean_nll": 5.62532,
+      "ppl": 277.36,
+      "top1_acc": 0.3878,
+      "tokens": 76,
+      "eval_start": 26,
+      "ids_hash": "0x9a93d39d0c5d33ef",
+      "bytes": 25690136
+    }
+  },
+  "artifacts": {
+    "gemma4_31b_assistant_v7.bhdr": {
+      "bytes": 1595996,
+      "sha256": "45a5fcd4af6ad7c0efd3ff87580d23d13ebbdff9510bbb8d3550cd6b1817ffd5"
+    },
+    "gemma4_31b_assistant_v7_body_q2.t16c": {
+      "bytes": 56628032,
+      "sha256": "16fef43db8ec90802af95790ea64439e10b7f00dc04f8e54cd04602bb2b97b4f"
+    },
+    "gemma4_31b_assistant_v7_body_q4.t16c": {
+      "bytes": 106894144,
+      "sha256": "6fb0f2ce7b982de498bbe0f9ca523eb8d0072a7f29cdf8eaa0f2a0344861bd43"
+    },
+    "gemma4_31b_assistant_v7_body_q8.t16c": {
+      "bytes": 207426368,
+      "sha256": "d4ee9ff5eb295bcc2e15284d0a7e391bae99d7f12d5cd225aa0c281274b004fb"
+    },
+    "heldout_systems_cache.lgt1": {
+      "bytes": 33030168,
+      "sha256": "a533bd4c29f384c2bd74c650d36be77422ece058059fd59871f20dd1c306d9eb"
+    },
+    "heldout_numerical_pde.lgt1": {
+      "bytes": 28311576,
+      "sha256": "4394f2190f4798aa43020674643a7b79a0955ac8a8f11ff1b02a35bb5f8b646a"
+    },
+    "heldout_compiler_ir.lgt1": {
+      "bytes": 25690136,
+      "sha256": "26b4c042c7e815bc3e5a3fb9ca524182beb36ff46960236f277c4ca400e1bad4"
+    }
+  }
+}

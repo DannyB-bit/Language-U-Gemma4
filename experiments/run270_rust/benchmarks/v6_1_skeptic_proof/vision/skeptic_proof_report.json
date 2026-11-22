@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-11-22T19:27:12Z",
+  "mode": "vision",
+  "vision": {
+    "gen_text": "A black, of a bathroom is seen to a blue side.<turn|>",
+    "pinned_bytes": 4146219888,
+    "embed_bytes": 539492352,
+    "ssd_read_bytes": 0,
+    "prefill_s": 295.32,
+    "decode_s": 23.68,
+    "vm_hwm_kb": 5124060,
+    "vm_rss_kb": 4949672
+  }
+}

@@ -1,0 +1,66 @@
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.87s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969736), Some(4907980))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 1.24s (pinned=true)
+[run31b] layer 05/60 done in 0.98s (pinned=true)
+[run31b] layer 14/60 done in 0.97s (pinned=true)
+[run31b] layer 29/60 done in 0.99s (pinned=true)
+[run31b] layer 44/60 done in 1.73s (pinned=true)
+[run31b] layer 59/60 done in 2.65s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=9.61701 ppl=15018.111 top1_acc=0.0794 mean_entropy=4.8396 eval_s=92.51
+EVAL_TEACHER_KL pos=63 kl_t_to_s=6.94164 kl_s_to_t=12.74151 top1_agree=0.1429 top5_agree=0.2381 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Glyph raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=63365120 glyph_tokens=3560 exact_tokens=1960 shrink=2.62x shrink_vs_bf16=1.31x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=92.51 decode_s=0.00 vm_hwm_kb=Some(4969736) vm_rss_kb=Some(4929784)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.92s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969772), Some(4908012))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 1.24s (pinned=true)
+[run31b] layer 05/60 done in 0.98s (pinned=true)
+[run31b] layer 14/60 done in 0.95s (pinned=true)
+[run31b] layer 29/60 done in 0.98s (pinned=true)
+[run31b] layer 44/60 done in 1.72s (pinned=true)
+[run31b] layer 59/60 done in 2.62s (pinned=true)
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=9.76135 ppl=17350.011 top1_acc=0.0926 mean_entropy=5.2642 eval_s=90.66
+EVAL_TEACHER_KL pos=54 kl_t_to_s=7.78018 kl_s_to_t=16.88457 top1_agree=0.1296 top5_agree=0.1852 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=Glyph raw_bytes=164003840 naive_bf16_bytes=82001920 compressed_bytes=63280640 glyph_tokens=3500 exact_tokens=1960 shrink=2.59x shrink_vs_bf16=1.30x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=90.66 decode_s=0.00 vm_hwm_kb=Some(4969772) vm_rss_kb=Some(4929732)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.87s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969772), Some(4908012))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 1.03s (pinned=true)
+[run31b] layer 05/60 done in 0.80s (pinned=true)
+[run31b] layer 14/60 done in 0.79s (pinned=true)
+[run31b] layer 29/60 done in 0.80s (pinned=true)
+[run31b] layer 44/60 done in 1.44s (pinned=true)
+[run31b] layer 59/60 done in 2.21s (pinned=true)
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=11.24932 ppl=76827.826 top1_acc=0.0612 mean_entropy=4.5252 eval_s=75.67
+EVAL_TEACHER_KL pos=49 kl_t_to_s=7.91475 kl_s_to_t=12.15333 top1_agree=0.1429 top5_agree=0.2449 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=Glyph raw_bytes=136970240 naive_bf16_bytes=68485120 compressed_bytes=62013440 glyph_tokens=2600 exact_tokens=1960 shrink=2.21x shrink_vs_bf16=1.10x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=75.67 decode_s=0.00 vm_hwm_kb=Some(4969772) vm_rss_kb=Some(4921280)
+

@@ -1,9 +1,9 @@
 # GEMMA-4-LanguageU-EXP — Session Continuity & Resume Memory
 
-**Saved At:** `2026-11-22 05:24 EST`  
+**Saved At:** `2026-11-22 15:35 EST`  
 **Workspace Root:** [C:\Gemma-4-LanguageU-EXP](file:///C:/Gemma-4-LanguageU-EXP)  
-**Active Git Repo:** [Language-U-Gemma4](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4) (Branch: `v5-qat-dev`, `4c75331` + Workstream E / Skeptic-Proofing commits pushed to `origin/v5-qat-dev`)  
-**Physical Raspberry Pi 4 Target:** `astronautshe@192.168.1.207` (SSH key: `C:\Users\freed\.ssh\rpi_key`, `7.6 GiB` RAM, 4x Cortex-A72; `/mnt/SHE-VAULT/` `1.2G` free, `/` `1.5G` free; `/home/astronautshe/gemma4_v6/` holds patched `3.5G` V6.0 files -> remove V6.0 `.t16c` files on `/` before pulling V6.1!)
+**Active Git Repo:** [Language-U-Gemma4](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4) (Branches: `v5-qat-dev` & `main` synchronized)  
+**Physical Raspberry Pi 4 Target:** `astronautshe@192.168.1.207` (SSH key: `C:\Users\freed\.ssh\rpi_key`, `7.6 GiB` RAM, 4x Cortex-A72; `/mnt/SHE-VAULT/gemma4_v6_1/` verified `11/11` SHA-256 artifacts staged + full benchmarks archived)
 
 ---
 
@@ -65,32 +65,30 @@
 - **Option A — `V6.1 Hybrid + 3-Bit Vision + Live CRTR/MoD` (`ce0ba97` / `0905d3d` on `v5-qat-dev`) — LIVE ON COLAB PRO:**
   - Implemented & verified [run_v6_1_hybrid_crtr_gpu.py](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/calib/31b/run_v6_1_hybrid_crtr_gpu.py) (`6/6` CPU selftest PASS: `LM+Emb=4.445GB`, `Vis3b=0.234GB`, `Total=4.680GB = 4.359GiB <= 4.95GB`, STE `flips=3191`, representation-matched `CRTR` `blk_rec=1.000` / `mod_acc=1.000` / `cos_rt=1.00000`, fail-closed zero-hole & `.partial`-first guards, AST scope audit clean).
   - Ready-to-run Colab Pro notebook committed at `0905d3d`: [Gemma4_31B_V6_1_Hybrid_CRTR_A100.ipynb](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/calib/31b/Gemma4_31B_V6_1_Hybrid_CRTR_A100.ipynb) (also at [colab_v6_1_hybrid/Gemma4_31B_V6_1_Hybrid_CRTR_A100.ipynb](file:///C:/Gemma-4-LanguageU-EXP/colab_v6_1_hybrid/Gemma4_31B_V6_1_Hybrid_CRTR_A100.ipynb)).
-  - **Active Colab Pro Run (`PID=2408`, subagent [Colab Pro A100 V6.1 Launcher](conversation://dfccfb42-1f06-4ddb-ad66-dab2786b18f3)):**
-    * **Active Drive Notebook URL:** `https://colab.research.google.com/drive/1GFzuAMDBQ2QuI4DWvGZhnhiDAbmUi9ei` (`Danny Rivera`, `rivera1984feb@gmail.com`).
-    * **Hardware:** Requested A100; Colab Pro auto-fell back (`"The selected GPU type was not available. You are now connected to a L4."`) to `NVIDIA L4 (22.0 GiB VRAM)` + `53.0 GB System RAM` (`dtype=torch.bfloat16`, `RAM=(15.20, 52.96) GiB`, `COLAB_AUTO_UNASSIGN=1`).
-    * **Verified Live Progress (`05:23 EST`):**
-      - Pre-flight `--selftest` (`6/6`) + `[Gate 0a PASS]` (`0.06412->0.02063, flips=3121`; `Direct2b 0.02090->0.00825`).
-      - `[Gate 0b Budget Guard]`: `LM body=3.906 GB (3.638 GiB) | LM+Embed=4.445 GB | Vis3b=0.234 GB | Est Total=4.680 GB | LM records=691 (LittleBit=208, DirectRM=202)`.
-      - `[Stage 1]`: Packed `608` dense text seqs x `352` = `214,016` tokens (`+ 160` VLM seqs).
-      - `[Stage 2 DONE]`: Full 3-bit Vision (`193` mats, `234.5 MB`) **`val cos: 0.77634 -> 0.81412`** (up from V6.0's `0.65761 -> 0.72175`); synced to `/content/drive/MyDrive/gemma4_v6_1_hybrid/ckpt_v6_1_hybrid`.
-      - `[Stage 3A]`: `47/60` (`78.3%`) layers complete (`L46/59 S`: `txt_cos=0.84779 vlm_cos=0.86388 | attn 0.8593->0.8612 | mlp 0.8535->0.8579 (sp45=0.8578, e50=93.7%) | dt=354.9s ram=15.16GiB`); `L47/59 F` active (`Executing 3h 45m 52s`, `16.6/53.0 GB` RAM, `6.9/22.5 GB` VRAM, `40.3/235.7 GB` disk, `157.09` CU left, Drive synced after `L42/59 S`).
+  - **Colab Pro V6.1 + `Assistant-V7` Run (`COMPLETED & UNASSIGNED`):**
+    * `https://colab.research.google.com/drive/1GFzuAMDBQ2QuI4DWvGZhnhiDAbmUi9ei` (`NVIDIA L4` + `53.0 GB` RAM): `0 active sessions`, `147.71` CU remaining.
+    * Stage 3B (`Val KL 10.6472->5.7810`, `Agree 28.8%->41.1%`), CRTR (`60/60 + MoD`), and Stage 4A C8DB persisted to `My Drive > gemma4_v6_1_hybrid`: `gemma4_31b_v6_1_hybrid.t16c` (`4,685,862,848 B`), `gemma4_31b_v6_1_router.crtr` (`10,861,956 B`), `gemma4_31b_v6_1_hybrid_c8d.c8d` (`11,874,560 B`).
+    * Cell 4 (`c1ff12c`, `427.62s`) generated `gemma4_31b_assistant_v7.bhdr` (`1,595,996 B`, `kl 2.7435->1.08514`, `beam_top1=0.2422`), Q2/Q4/Q8 embed-free bodies (`54.00 / 101.94 / 197.82 MiB`), and `3x` held-out `LGT1` Teacher logits (`0xb1c391deb2b977ce`, `0x1091cdcfd8a0b630`, `0x9a93d39d0c5d33ef`).
 
-### Workstream E: V7+ Skeptic-Proofing Suite & `Assistant-V7` (`BHDR` v1) — IMPLEMENTED & VERIFIED ON PI 4
-- **1. Held-Out Chat-Turn NLL + Exact `LGT1` Teacher-KL ([run31b.rs](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/src/bin/run31b.rs), [eval_v6_1_skeptic_proof.py](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/calib/31b/eval_v6_1_skeptic_proof.py)):**
-  - Added `resolve_eval_nll_start_pos`, `--eval-nll-start-pos <usize>`, `--eval-nll-after-turn`, `--eval-nll`, `--dump-seq-logits`, `--eval-teacher-logits` (`LGT1` v1 BF16 with FNV-1a sequence hash), and unit test `resolve_eval_nll_start_pos_handles_chat_turn_and_bounds`.
-  - Root-cause verified causality on Pi 4 (`c21` vs `c28[pos=20]`: `max_abs=0.05968`, `mean_abs=0.00408`, `cos=0.999914`); `--eval-nll-after-turn` skips unconditioned prompt/template headers (`<channel|>` / `<|turn>model\n`).
-  - `eval_v6_1_skeptic_proof.py`: 15-prompt deterministic battery (`P1..P8` + `BENCH5` + 4 unseen multi-step reasoning holdouts), 3 strictly disjoint held-out passages (`0` 4-gram overlap with `v4_corpus.V4_CAL_PAIRS`), `HELDOUT_CHAT_QUESTIONS`, `format_gemma4_chat_nll_turn`, and `--nll-format {chat,raw}` (`6/6` `--selftest` PASS on Windows & Pi 4).
-- **2. `Assistant-V7` Byte-Head Speculative Drafter (`BHDR` v1, [arXiv:2609.12303](https://arxiv.org/abs/2609.12303) Appendix F.1):**
-  - Rust runtime ([byte_head.rs](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/src/byte_head.rs), [assistant.rs](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/src/assistant.rs), [lib.rs](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/src/lib.rs), [probe_assistant.rs](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/src/bin/probe_assistant.rs)): `BHDR` v1 INT8 `261`-symbol byte+`<eot>` GRU decoder, exact Gemma-4 BPE CSR `BpePrefixTrie`, `load_31b_with_byte_head`, `draft_sequence_gated`, `--spec-byte-head`, and `run_parity_bhdr`.
-  - Trainer & GPU Notebook ([train_assistant_v7_byte_head.py](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/calib/31b/train_assistant_v7_byte_head.py), [Gemma4_31B_Assistant_V7_ByteHead_GPU.ipynb](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/calib/31b/Gemma4_31B_Assistant_V7_ByteHead_GPU.ipynb)): Pi 4 tokenizer trie verified (`TRIE_VERIFIED covered=262144/262144 collisions=0 nodes=600637 edges=600636 max_depth=48 avg_syms=7.78 csr_mb=11.46`) and cross-language parity verified (`BHDR_PARITY_OK best_tok=1 depth=1 max_step0_logp_diff=2.384e-7 lp1_diff=1.192e-7 lp2_diff=0.000e0`); Colab GPU notebook streams `google/gemma-4-31B-it-qat-w4a16-ct` (`L00..L59`) + 4-layer `google/gemma-4-31B-it-assistant` over `48 x 256` mixed FineWeb-Edu + Alpaca `<|turn>` sequences.
-- **3. Physical Pi 4 Verification (`v4_2_colab.t16c` + pilot `.bhdr`, [pi4_v7_eval_and_bhdr_proof.log](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/benchmarks/v7_skeptic_proof/pi4_v7_eval_and_bhdr_proof.log)):**
-  - `RUSTFLAGS='-D warnings' ~/.cargo/bin/cargo test --release`: `85/85` passed (`68` lib, `15` `run31b`, `1` `probe_assistant`, `1` `run270`), `0` warnings; `cargo build --release --bins` succeeded.
-  - Embed-free body (`REPACKED_BODY kept_mats=22 bytes=207426368 mb=197.82`) + `1.52 MB` pilot `.bhdr` (`BHDR_PILOT_SAVED bytes=1595996 mb=1.52 kl=2.66461->1.26775`) loaded at **`resident_mb=210.79`** (`-123.5 MB` vs `334.31 MB` V5/V6 on 8-bit body; `ast_lm_skipped=0`, pilot `accept_rate=0.000` prior to GPU distillation), generating exact `GEN31B text="The answer is 4.<turn|>"` (`vm_rss_kb=Some(6739768)`).
-  - Chat-turn `--eval-nll --eval-nll-after-turn`: `CHAT28` `eval_start=20 eval_pos=7 mean_nll=0.74518 ppl=2.107 top1_acc=0.8571 mean_entropy=0.3120 eval_s=34.68`; held-out NUMA chat turn (`eval_start=28, eval_pos=63`) dense `mean_nll=7.92927 ppl=2777.391 top1_acc=0.2381 eval_s=119.52` vs uncalibrated heuristic `--mlp-top-p 0.50` `mean_nll=9.81910 ppl=18381.450 top1_acc=0.1429 kl_t_to_s=2.72687 kl_s_to_t=4.64555 top1_agree=0.3175 top5_agree=0.6825 dram_saved_pct=13.0% eval_s=111.45`.
-  - **Waiting on `PID=2408`:** Once V6.1 finishes on Colab Pro, run `eval_v6_1_skeptic_proof.py` on V6.1 + `Gemma4_31B_Assistant_V7_ByteHead_GPU.ipynb` on Colab GPU to harvest the converged CRTR/MoD Pareto curve, 15-prompt battery, and distilled `Assistant-V7` accept rate.
+### Workstream E & F: Complete Pi 4 V6.1 + CRTR/MoD + `Assistant-V7` Verification — COMPLETE (`2026-11-22 15:35 EST`)
+- **Full Empirical Report & Raw Receipts:** [V6_1_AND_V7_FINAL_VERIFICATION_REPORT.md](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/benchmarks/v6_1_skeptic_proof/V6_1_AND_V7_FINAL_VERIFICATION_REPORT.md) + `11/11` bit-exact SHA-256 staging ([SHA256SUMS.txt](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/benchmarks/v6_1_skeptic_proof/SHA256SUMS.txt)).
+- **Kernel & Hardware Integrity:** `libneon_stream_accelerator.so` (`--so`) matched pure-Rust FP32 (`--no-native-ffi`) token-for-token and within `0.01–0.09` logit units (`~25.7x` prefill speedup); `PI4_LIB_SELFTEST 1`, ARM64 `test_pi4_barrier` (`22/22`), `cargo test --release` (`85/85`), `ssd_read_bytes=0` on every Pi 4 run.
+- **Exact Sub-2-Bit Scaling Curve (166 held-out chat tokens vs BF16 Teacher `nll=5.26875, ppl=194.174`):**
+  - `V4.2` (`6.0 GB`): `nll=8.01262`, `ppl=3,018.809`, `kl_t_to_s=5.21293`, `top1_agree=0.3373`, `vm_rss=6.325 GiB`, **15-prompt battery: `7/15`**.
+  - `V6.1 Hybrid` (`4.364 GiB`): `nll=10.38568`, `ppl=32,392.542`, `kl_t_to_s=7.49964` (`7.50166` GlyphKV), `top1_agree=0.1747`, `vm_rss=4.773 GiB` (`4.701 GiB` GlyphKV), **15-prompt battery: `2/15` (Dense) & `2/15` (CRTR-50)**.
+  - `V6.0` (`3.116 GiB`): `nll=12.02587`, `ppl=167,020.273`, `kl_t_to_s=9.32079`, `top1_agree=0.1084`, `vm_rss=3.488 GiB`.
+- **Real Trained CRTR + MoD Pareto & Speed (`V6.1`):**
+  - `crtr_p0.70_m0.00`: `kl=7.48124`, `gate_saved=29.8%` (`dram=24.8%`), `1.5783 s/step` (`1.14x` vs `1.7943 s/step` dense).
+  - `crtr_p0.50_m0.00`: `kl=7.59309`, `top1_agree=0.1867`, `gate_saved=50.0%` (`dram=41.7%`), `1.4235 s/step` (`1.26x`), `2/15` battery preserved.
+  - `crtr_p0.35_m0.00`: `kl=7.60635`, `gate_saved=64.3%` (`dram=53.4%`), `1.3076 s/step` (`1.37x`).
+  - `MoD thresh=0.35` (`m0.35` on `seq_len=1` decode): skips `20.6%–51.1%` eligible sliding layers, `1.0617–1.0726 s/step` (`1.67x–1.69x`), but degrades prose coherence on `1.13 bpw` `V6.1` (`predict_mod_exec_prob` max-aggregates across `0..seq_len`, so `76–92`-token prefill NLL had `mod_skipped=0.0%`).
+- **`Assistant-V7` (`BHDR` v1) Speculative A/B (`V6.1` & `V4.2`):**
+  - Drafter RAM cut **`4.99x`**: `V6 334.31 MB` -> `V7_Q8 210.79 MB` -> `V7_Q4 114.92 MB` -> `V7_Q2 66.98 MB`.
+  - Default `min_margin=0.75` aborts `BHDR` log-prob drafts (`drafted=0`); `min_margin=0.25` on `V6.1 + V7_Q2` reached `accept_rate=0.154` at `2.121 s/tok` (beating `V6` `2.402 s/tok`). On `V4.2`, `V7_{Q8,Q4,Q2}` (`m=0.0`) matched `V6` `0.167` accept on `2+2` at `3.808–3.883 s/tok` (`~18%` faster than `V6` `4.681`), though non-speculative greedy decode stays faster until `V7` is aligned on quantized target KV states rather than BF16 Teacher KV.
+- **3-Bit Vision QA (`frame_01_coco.png`, `frame_00_va.png`):** `V6.1` ran end-to-end in `4.72 GiB` (`shrink=6.65x–6.77x`), `283–295s` prefill (vs `V4.2` `410.87s` / `6.26 GiB`).
 
 ---
 
 ## 2. Repo Hygiene & Parity Checks (`COMPLETE`)
 - Archived `81` temporary diagnostic scripts from `Language-U-Gemma4/scratch/` to `C:\Users\freed\.gemini\antigravity\brain\40f761a0-0377-4f21-bd68-039a2826bc53\scratch\g38_chrome_diag_archive\`.
-- Local parity & test gates on `v5-qat-dev` (HEAD `4c75331` + Workstream E updates): validated by `verify_receipt_parity.py --selftest`, `unittest` (`test_container_sniff`, `test_receipt_parity`), `train_assistant_v7_byte_head.py --selftest`, `eval_v6_1_skeptic_proof.py --selftest`, and `Gemma4_31B_Assistant_V7_ByteHead_GPU.ipynb` syntax/format audit (`submissions/v10-lora-clean-ctx/adapters/` and `build/` intentionally left untracked).
+- All local Python `unittest` suites (`tests/test_*.py`), `--selftest` gates, and `V6.1 + V7` benchmark receipts committed & pushed cleanly to `origin/v5-qat-dev` and `origin/main` (`submissions/v10-lora-clean-ctx/{adapters,build}/` intentionally left untracked).

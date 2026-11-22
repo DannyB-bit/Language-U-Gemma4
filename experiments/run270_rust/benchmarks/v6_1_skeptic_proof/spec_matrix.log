@@ -1,0 +1,1290 @@
+
+=== V6.1 | V6_334MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 13.31s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5249844), Some(5249844))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.22s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 19.37s ssd_read_mb=0.0 vm=(Some(5250892), Some(5250892))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.28s vm=(Some(5251188), Some(5251188))
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 4.35s vm=(Some(5251324), Some(5251324))
+[STEP 3] id=1156 text=" two"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 4.25s vm=(Some(5251324), Some(5251324))
+[STEP 4] id=4945 text=" numbers"
+[STEP 5] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.52 in 4.44s vm=(Some(5251324), Some(5251324))
+[STEP 6] id=496 text=" a"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.42 in 4.28s vm=(Some(5251324), Some(5251324))
+[STEP 7] id=2558 text=" total"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.32s vm=(Some(5251324), Some(5251324))
+[STEP 8] id=1548 text=" number"
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.47 in 2.38s vm=(Some(5251324), Some(5251324))
+[STEP 10] id=5213 text=" **"
+[STEP 11] id=236770 text="1"
+[run31b] spec batch=8 drafted=1 accepted=1 next_k=1 ewma=0.57 in 2.56s vm=(Some(5257952), Some(5257952))
+[STEP 12] id=236761 text="."
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.46 in 2.54s vm=(Some(5257952), Some(5257952))
+[STEP 13] id=236778 text="2"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.37 in 2.50s vm=(Some(5257952), Some(5257952))
+[STEP 14] id=578 text=" ="
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=11 drafted=1 accepted=1 next_k=1 ewma=0.49 in 2.52s vm=(Some(5259340), Some(5259340))
+[STEP 16] id=236825 text="6"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.39 in 2.54s vm=(Some(5259348), Some(5259348))
+[STEP 17] id=107 text="\n"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.32 in 2.55s vm=(Some(5259348), Some(5259348))
+[STEP 18] id=1018 text="**"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.25 in 2.59s vm=(Some(5259348), Some(5259348))
+[STEP 19] id=236780 text="C"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.58s vm=(Some(5259348), Some(5259348))
+[STEP 20] id=236784 text="="
+[STEP 21] id=236743 text=" "
+[run31b] spec batch=16 drafted=1 accepted=1 next_k=1 ewma=0.36 in 2.62s vm=(Some(5260148), Some(5260148))
+[STEP 22] id=236800 text="3"
+[run31b] spec fallback k=1 step=22 in 1.77s k_window=1 vm=(Some(5260160), Some(5260160))
+[STEP 23] id=236786 text="/"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=937729 drafted=27 accepted=6 batches=16 fallback_k1=1 accept_rate=0.222 generated=24 s_per_tok=2.413
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236825, 107, 1018, 236780, 236784, 236743, 236800, 236786]
+GEN31B text="To find the two numbers of a total number of **1.2 = 6\n**C= 3/"
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=126768 prefill_s=19.37 decode_s=55.49 vm_hwm_kb=Some(5260160) vm_rss_kb=Some(5260160)
+
+
+=== V6.1 | V6_334MB | margin=0.00 | france_capital ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text The capital of France is --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 13.35s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5249844), Some(5249844))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.23s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.18s (pinned=true)
+[run31b] layer 29/60 done in 0.18s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.52s (pinned=true)
+[run31b] prefill done in 16.67s ssd_read_mb=0.0 vm=(Some(5250900), Some(5250900))
+PREFILL_TOP5 [79629:"Depending"(22.605), 818:"The"(22.498), 10081:"Since"(22.057), 4906:"One"(21.702), 36161:"Building"(20.797)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.33s vm=(Some(5251036), Some(5251036))
+[STEP 1] id=531 text=" to"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 4.20s vm=(Some(5251260), Some(5251260))
+[STEP 3] id=8379 text=" internet"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.63 in 4.23s vm=(Some(5251260), Some(5251260))
+[STEP 5] id=3879 text=" Europe"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.22s vm=(Some(5251460), Some(5251460))
+[STEP 6] id=563 text=" is"
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=5 drafted=3 accepted=1 next_k=3 ewma=0.47 in 4.23s vm=(Some(5251460), Some(5251460))
+[STEP 8] id=5368 text=" software"
+[run31b] spec batch=6 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.30s vm=(Some(5251460), Some(5251460))
+[STEP 9] id=1458 text=" system"
+[run31b] spec batch=7 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.27s vm=(Some(5251460), Some(5251460))
+[STEP 10] id=600 text=" that"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.34s vm=(Some(5251460), Some(5251460))
+[STEP 11] id=14736 text=" serves"
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=9 drafted=1 accepted=1 next_k=1 ewma=0.39 in 2.37s vm=(Some(5251460), Some(5251460))
+[STEP 13] id=5177 text=" digital"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.31 in 2.47s vm=(Some(5258088), Some(5258088))
+[STEP 14] id=3707 text=" network"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.25 in 2.54s vm=(Some(5258088), Some(5258088))
+[STEP 15] id=573 text=" for"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.54s vm=(Some(5258088), Some(5258088))
+[STEP 16] id=2591 text=" example"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.51s vm=(Some(5258088), Some(5258088))
+[STEP 17] id=528 text=" in"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.13 in 2.54s vm=(Some(5259476), Some(5259476))
+[STEP 18] id=4181 text=" technology"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.58s vm=(Some(5259484), Some(5259484))
+[STEP 19] id=236761 text="."
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.56s vm=(Some(5259484), Some(5259484))
+[STEP 20] id=669 text=" The"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.07 in 2.54s vm=(Some(5259484), Some(5259484))
+[STEP 21] id=1657 text=" process"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.53s vm=(Some(5259484), Some(5259484))
+[STEP 22] id=740 text=" can"
+[run31b] spec fallback k=1 step=22 in 1.84s k_window=1 vm=(Some(5259496), Some(5259496))
+[STEP 23] id=577 text=" be"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=996704 drafted=31 accepted=4 batches=18 fallback_k1=1 accept_rate=0.129 generated=24 s_per_tok=2.701
+GEN31B ids=[79629, 531, 506, 8379, 529, 3879, 563, 496, 5368, 1458, 600, 14736, 496, 5177, 3707, 573, 2591, 528, 4181, 236761, 669, 1657, 740, 577]
+GEN31B text="Depending to the internet of Europe is a software system that serves a digital network for example in technology. The process can be"
+KV31B mode=Glyph raw_bytes=73891840 naive_bf16_bytes=36945920 compressed_bytes=59056640 glyph_tokens=500 exact_tokens=1960 shrink=1.25x shrink_vs_bf16=0.63x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=47586 prefill_s=16.67 decode_s=62.12 vm_hwm_kb=Some(5259496) vm_rss_kb=Some(5259496)
+
+
+=== V6.1 | V6_334MB | margin=0.00 | photosynthesis ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 13.21s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5249844), Some(5249844))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.29s (pinned=true)
+[run31b] layer 05/60 done in 0.22s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.22s (pinned=true)
+[run31b] layer 44/60 done in 0.40s (pinned=true)
+[run31b] layer 59/60 done in 0.63s (pinned=true)
+[run31b] prefill done in 20.19s ssd_read_mb=0.0 vm=(Some(5250892), Some(5250892))
+PREFILL_TOP5 [79629:"Depending"(23.290), 818:"The"(22.301), 2021:"To"(22.198), 10081:"Since"(22.144), 4906:"One"(21.767)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.28s vm=(Some(5251460), Some(5251460))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.43s vm=(Some(5251460), Some(5251460))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.34s vm=(Some(5251460), Some(5251460))
+[STEP 3] id=13315 text=" sentence"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=2 ewma=0.41 in 4.28s vm=(Some(5251460), Some(5251460))
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=5 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.32s vm=(Some(5251460), Some(5251460))
+[STEP 5] id=496 text=" a"
+[STEP 6] id=5213 text=" **"
+[run31b] spec batch=6 drafted=1 accepted=1 next_k=1 ewma=0.46 in 2.44s vm=(Some(5251460), Some(5251460))
+[STEP 7] id=26462 text="Love"
+[STEP 8] id=236772 text="-"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.57 in 2.35s vm=(Some(5251460), Some(5251460))
+[STEP 9] id=25351 text="commerce"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.46 in 2.54s vm=(Some(5258088), Some(5258088))
+[STEP 10] id=13401 text=" planet"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.36 in 2.51s vm=(Some(5258088), Some(5258088))
+[STEP 11] id=563 text=" is"
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=10 drafted=1 accepted=1 next_k=1 ewma=0.49 in 2.49s vm=(Some(5258088), Some(5258088))
+[STEP 13] id=1589 text=" person"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.39 in 2.54s vm=(Some(5259476), Some(5259476))
+[STEP 14] id=236789 text="'"
+[STEP 15] id=236751 text="s"
+[run31b] spec batch=12 drafted=1 accepted=1 next_k=1 ewma=0.51 in 2.53s vm=(Some(5259484), Some(5259484))
+[STEP 16] id=9834 text=" identity"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.41 in 2.59s vm=(Some(5259484), Some(5259484))
+[STEP 17] id=600 text=" that"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.33 in 2.57s vm=(Some(5259484), Some(5259484))
+[STEP 18] id=21132 text=" focuses"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.26 in 2.61s vm=(Some(5259484), Some(5259484))
+[STEP 19] id=528 text=" in"
+[STEP 20] id=506 text=" the"
+[run31b] spec batch=16 drafted=1 accepted=1 next_k=1 ewma=0.41 in 2.55s vm=(Some(5260284), Some(5260284))
+[STEP 21] id=1595 text=" way"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.33 in 2.55s vm=(Some(5260284), Some(5260284))
+[STEP 22] id=573 text=" for"
+[run31b] spec fallback k=1 step=22 in 1.78s k_window=1 vm=(Some(5260296), Some(5260296))
+[STEP 23] id=910 text=" their"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=851666 drafted=26 accepted=5 batches=17 fallback_k1=1 accept_rate=0.192 generated=24 s_per_tok=2.437
+GEN31B ids=[79629, 531, 506, 13315, 529, 496, 5213, 26462, 236772, 25351, 13401, 563, 496, 1589, 236789, 236751, 9834, 600, 21132, 528, 506, 1595, 573, 910]
+GEN31B text="Depending to the sentence of a **Love-commerce planet is a person's identity that focuses in the way for their"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=55422 prefill_s=20.19 decode_s=56.05 vm_hwm_kb=Some(5260296) vm_rss_kb=Some(5260296)
+
+
+=== V6.1 | V7_Q8_209MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 12.07s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5098324), Some(5098324))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.21s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.39s (pinned=true)
+[run31b] layer 59/60 done in 0.61s (pinned=true)
+[run31b] prefill done in 19.38s ssd_read_mb=0.0 vm=(Some(5099452), Some(5099452))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.30s vm=(Some(5111980), Some(5111980))
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 4.22s vm=(Some(5111980), Some(5111980))
+[STEP 3] id=1156 text=" two"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 4.25s vm=(Some(5111980), Some(5111980))
+[STEP 4] id=4945 text=" numbers"
+[STEP 5] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.52 in 4.24s vm=(Some(5112252), Some(5112252))
+[STEP 6] id=496 text=" a"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.42 in 4.36s vm=(Some(5112252), Some(5112252))
+[STEP 7] id=2558 text=" total"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.29s vm=(Some(5112252), Some(5112252))
+[STEP 8] id=1548 text=" number"
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.47 in 2.35s vm=(Some(5112252), Some(5112252))
+[STEP 10] id=5213 text=" **"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.37 in 2.47s vm=(Some(5118880), Some(5118880))
+[STEP 11] id=236770 text="1"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.30 in 2.52s vm=(Some(5118880), Some(5118880))
+[STEP 12] id=236761 text="."
+[STEP 13] id=236778 text="2"
+[run31b] spec batch=10 drafted=1 accepted=1 next_k=1 ewma=0.44 in 2.60s vm=(Some(5118880), Some(5118880))
+[STEP 14] id=578 text=" ="
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.35 in 2.55s vm=(Some(5120268), Some(5120268))
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.28 in 2.55s vm=(Some(5120268), Some(5120268))
+[STEP 16] id=236825 text="6"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.22 in 2.57s vm=(Some(5120268), Some(5120268))
+[STEP 17] id=107 text="\n"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.18 in 2.55s vm=(Some(5120268), Some(5120268))
+[STEP 18] id=140 text="    "
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.60s vm=(Some(5120268), Some(5120268))
+[STEP 19] id=236784 text="="
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.11 in 2.56s vm=(Some(5120268), Some(5120268))
+[STEP 20] id=236743 text=" "
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.09 in 2.58s vm=(Some(5121068), Some(5121068))
+[STEP 21] id=236770 text="1"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.07 in 2.57s vm=(Some(5121068), Some(5121068))
+[STEP 22] id=236771 text="0"
+[run31b] spec fallback k=1 step=22 in 1.77s k_window=1 vm=(Some(5121080), Some(5121080))
+[STEP 23] id=965 text=" /"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=29 accepted=4 batches=18 fallback_k1=1 accept_rate=0.138 generated=24 s_per_tok=2.567
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236825, 107, 140, 236784, 236743, 236770, 236771, 965]
+GEN31B text="To find the two numbers of a total number of **1.2 = 6\n    = 10 /"
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=154524 prefill_s=19.38 decode_s=59.05 vm_hwm_kb=Some(5121080) vm_rss_kb=Some(5121080)
+
+
+=== V6.1 | V7_Q8_209MB | margin=0.00 | france_capital ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text The capital of France is --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.60s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5110580), Some(5110580))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.24s (pinned=true)
+[run31b] layer 05/60 done in 0.19s (pinned=true)
+[run31b] layer 14/60 done in 0.18s (pinned=true)
+[run31b] layer 29/60 done in 0.18s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.52s (pinned=true)
+[run31b] prefill done in 16.88s ssd_read_mb=0.0 vm=(Some(5111620), Some(5111620))
+PREFILL_TOP5 [79629:"Depending"(22.605), 818:"The"(22.498), 10081:"Since"(22.057), 4906:"One"(21.702), 36161:"Building"(20.797)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.21s vm=(Some(5111836), Some(5111836))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.34s vm=(Some(5111844), Some(5111844))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.24s vm=(Some(5111844), Some(5111844))
+[STEP 3] id=8379 text=" internet"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.48 in 4.24s vm=(Some(5111844), Some(5111844))
+[STEP 5] id=3879 text=" Europe"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.27s vm=(Some(5112124), Some(5112124))
+[STEP 6] id=563 text=" is"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.28s vm=(Some(5112124), Some(5112124))
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.42s vm=(Some(5112124), Some(5112124))
+[STEP 8] id=5368 text=" software"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.42s vm=(Some(5112124), Some(5112124))
+[STEP 9] id=1458 text=" system"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.32s vm=(Some(5112124), Some(5112124))
+[STEP 10] id=600 text=" that"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.34s vm=(Some(5112124), Some(5112124))
+[STEP 11] id=14736 text=" serves"
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=11 drafted=1 accepted=1 next_k=1 ewma=0.30 in 2.33s vm=(Some(5112124), Some(5112124))
+[STEP 13] id=5177 text=" digital"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.48s vm=(Some(5118752), Some(5118752))
+[STEP 14] id=3707 text=" network"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.19 in 2.49s vm=(Some(5118752), Some(5118752))
+[STEP 15] id=573 text=" for"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.15 in 2.53s vm=(Some(5118752), Some(5118752))
+[STEP 16] id=2591 text=" example"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.56s vm=(Some(5118752), Some(5118752))
+[STEP 17] id=528 text=" in"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.59s vm=(Some(5120140), Some(5120140))
+[STEP 18] id=4181 text=" technology"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.60s vm=(Some(5120140), Some(5120140))
+[STEP 19] id=236761 text="."
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.06 in 2.55s vm=(Some(5120140), Some(5120140))
+[STEP 20] id=669 text=" The"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.54s vm=(Some(5120140), Some(5120140))
+[STEP 21] id=1657 text=" process"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.56s vm=(Some(5120140), Some(5120140))
+[STEP 22] id=740 text=" can"
+[run31b] spec fallback k=1 step=22 in 1.79s k_window=1 vm=(Some(5120152), Some(5120152))
+[STEP 23] id=577 text=" be"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=31 accepted=2 batches=20 fallback_k1=1 accept_rate=0.065 generated=24 s_per_tok=2.762
+GEN31B ids=[79629, 531, 506, 8379, 529, 3879, 563, 496, 5368, 1458, 600, 14736, 496, 5177, 3707, 573, 2591, 528, 4181, 236761, 669, 1657, 740, 577]
+GEN31B text="Depending to the internet of Europe is a software system that serves a digital network for example in technology. The process can be"
+KV31B mode=Glyph raw_bytes=73891840 naive_bf16_bytes=36945920 compressed_bytes=59056640 glyph_tokens=500 exact_tokens=1960 shrink=1.25x shrink_vs_bf16=0.63x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=43598 prefill_s=16.88 decode_s=63.53 vm_hwm_kb=Some(5120152) vm_rss_kb=Some(5120152)
+
+
+=== V6.1 | V7_Q8_209MB | margin=0.00 | photosynthesis ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.55s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5110580), Some(5110580))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.28s (pinned=true)
+[run31b] layer 05/60 done in 0.23s (pinned=true)
+[run31b] layer 14/60 done in 0.22s (pinned=true)
+[run31b] layer 29/60 done in 0.22s (pinned=true)
+[run31b] layer 44/60 done in 0.40s (pinned=true)
+[run31b] layer 59/60 done in 0.63s (pinned=true)
+[run31b] prefill done in 20.38s ssd_read_mb=0.0 vm=(Some(5111780), Some(5111780))
+PREFILL_TOP5 [79629:"Depending"(23.290), 818:"The"(22.301), 2021:"To"(22.198), 10081:"Since"(22.144), 4906:"One"(21.767)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.30s vm=(Some(5111852), Some(5111852))
+[STEP 1] id=531 text=" to"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 4.27s vm=(Some(5112124), Some(5112124))
+[STEP 3] id=13315 text=" sentence"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.63 in 4.35s vm=(Some(5112124), Some(5112124))
+[STEP 5] id=496 text=" a"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.36s vm=(Some(5112124), Some(5112124))
+[STEP 6] id=5213 text=" **"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.40 in 4.32s vm=(Some(5112124), Some(5112124))
+[STEP 7] id=26462 text="Love"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.32 in 3.31s vm=(Some(5112124), Some(5112124))
+[STEP 8] id=236772 text="-"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.26 in 2.35s vm=(Some(5112124), Some(5112124))
+[STEP 9] id=25351 text="commerce"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.21 in 2.49s vm=(Some(5118752), Some(5118752))
+[STEP 10] id=13401 text=" planet"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.67s vm=(Some(5118752), Some(5118752))
+[STEP 11] id=563 text=" is"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.13 in 2.52s vm=(Some(5118752), Some(5118752))
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.11 in 2.53s vm=(Some(5118752), Some(5118752))
+[STEP 13] id=3188 text=" strong"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.56s vm=(Some(5120140), Some(5120140))
+[STEP 14] id=532 text=" and"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.07 in 2.56s vm=(Some(5120140), Some(5120140))
+[STEP 15] id=919 text=" more"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.60s vm=(Some(5120140), Some(5120140))
+[STEP 16] id=1082 text=" than"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.53s vm=(Some(5120140), Some(5120140))
+[STEP 17] id=699 text=" from"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.60s vm=(Some(5120140), Some(5120140))
+[STEP 18] id=886 text=" one"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.62s vm=(Some(5120140), Some(5120140))
+[STEP 19] id=529 text=" of"
+[STEP 20] id=506 text=" the"
+[run31b] spec batch=18 drafted=1 accepted=1 next_k=1 ewma=0.22 in 2.53s vm=(Some(5120940), Some(5120940))
+[STEP 21] id=1346 text=" most"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.18 in 2.56s vm=(Some(5120940), Some(5120940))
+[STEP 22] id=6749 text=" critical"
+[run31b] spec fallback k=1 step=22 in 1.80s k_window=1 vm=(Some(5120952), Some(5120952))
+[STEP 23] id=236789 text="'"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=30 accepted=3 batches=19 fallback_k1=1 accept_rate=0.100 generated=24 s_per_tok=2.704
+GEN31B ids=[79629, 531, 506, 13315, 529, 496, 5213, 26462, 236772, 25351, 13401, 563, 496, 3188, 532, 919, 1082, 699, 886, 529, 506, 1346, 6749, 236789]
+GEN31B text="Depending to the sentence of a **Love-commerce planet is a strong and more than from one of the most critical'"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=74398 prefill_s=20.38 decode_s=62.19 vm_hwm_kb=Some(5120952) vm_rss_kb=Some(5120952)
+
+
+=== V6.1 | V7_Q4_108MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c: layers=4 d=1024 resident_mb=114.92 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.82s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5012396), Some(5012396))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.21s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.39s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 19.43s ssd_read_mb=0.0 vm=(Some(5013444), Some(5013444))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.23s vm=(Some(5013652), Some(5013652))
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 4.22s vm=(Some(5013660), Some(5013660))
+[STEP 3] id=1156 text=" two"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 4.26s vm=(Some(5013660), Some(5013660))
+[STEP 4] id=4945 text=" numbers"
+[STEP 5] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.52 in 4.29s vm=(Some(5013932), Some(5013932))
+[STEP 6] id=496 text=" a"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.42 in 4.30s vm=(Some(5013940), Some(5013940))
+[STEP 7] id=2558 text=" total"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.28s vm=(Some(5013940), Some(5013940))
+[STEP 8] id=1548 text=" number"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.27 in 2.34s vm=(Some(5013940), Some(5013940))
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.21 in 2.44s vm=(Some(5013940), Some(5013940))
+[STEP 10] id=5213 text=" **"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.46s vm=(Some(5020568), Some(5020568))
+[STEP 11] id=236770 text="1"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.48s vm=(Some(5020568), Some(5020568))
+[STEP 12] id=236761 text="."
+[STEP 13] id=236778 text="2"
+[run31b] spec batch=11 drafted=1 accepted=1 next_k=1 ewma=0.31 in 2.49s vm=(Some(5020568), Some(5020568))
+[STEP 14] id=578 text=" ="
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.25 in 2.57s vm=(Some(5021956), Some(5021956))
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.60s vm=(Some(5021956), Some(5021956))
+[STEP 16] id=236825 text="6"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.55s vm=(Some(5021956), Some(5021956))
+[STEP 17] id=107 text="\n"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.13 in 2.53s vm=(Some(5021956), Some(5021956))
+[STEP 18] id=140 text="    "
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.58s vm=(Some(5021956), Some(5021956))
+[STEP 19] id=236784 text="="
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.53s vm=(Some(5021956), Some(5021956))
+[STEP 20] id=236743 text=" "
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.06 in 2.55s vm=(Some(5022756), Some(5022756))
+[STEP 21] id=236770 text="1"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.68s vm=(Some(5022756), Some(5022756))
+[STEP 22] id=236771 text="0"
+[run31b] spec fallback k=1 step=22 in 1.78s k_window=1 vm=(Some(5022768), Some(5022768))
+[STEP 23] id=965 text=" /"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=114.92 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=30 accepted=3 batches=19 fallback_k1=1 accept_rate=0.100 generated=24 s_per_tok=2.631
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236825, 107, 140, 236784, 236743, 236770, 236771, 965]
+GEN31B text="To find the two numbers of a total number of **1.2 = 6\n    = 10 /"
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=163417 prefill_s=19.43 decode_s=60.50 vm_hwm_kb=Some(5022768) vm_rss_kb=Some(5022768)
+
+
+=== V6.1 | V7_Q4_108MB | margin=0.00 | france_capital ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text The capital of France is --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c: layers=4 d=1024 resident_mb=114.92 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.49s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5012404), Some(5012404))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.24s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.18s (pinned=true)
+[run31b] layer 29/60 done in 0.18s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.52s (pinned=true)
+[run31b] prefill done in 16.76s ssd_read_mb=0.0 vm=(Some(5013452), Some(5013452))
+PREFILL_TOP5 [79629:"Depending"(22.605), 818:"The"(22.498), 10081:"Since"(22.057), 4906:"One"(21.702), 36161:"Building"(20.797)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.23s vm=(Some(5013884), Some(5013884))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.24s vm=(Some(5013948), Some(5013948))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.29s vm=(Some(5013948), Some(5013948))
+[STEP 3] id=8379 text=" internet"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.48 in 4.24s vm=(Some(5013948), Some(5013948))
+[STEP 5] id=3879 text=" Europe"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.27s vm=(Some(5013948), Some(5013948))
+[STEP 6] id=563 text=" is"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.32s vm=(Some(5013948), Some(5013948))
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.49s vm=(Some(5013948), Some(5013948))
+[STEP 8] id=5368 text=" software"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.35s vm=(Some(5013948), Some(5013948))
+[STEP 9] id=1458 text=" system"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.36s vm=(Some(5013948), Some(5013948))
+[STEP 10] id=600 text=" that"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.37s vm=(Some(5013948), Some(5013948))
+[STEP 11] id=14736 text=" serves"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.39s vm=(Some(5013948), Some(5013948))
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.41s vm=(Some(5013948), Some(5013948))
+[STEP 13] id=5177 text=" digital"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.06 in 2.52s vm=(Some(5020576), Some(5020576))
+[STEP 14] id=3707 text=" network"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.52s vm=(Some(5020576), Some(5020576))
+[STEP 15] id=573 text=" for"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.57s vm=(Some(5020576), Some(5020576))
+[STEP 16] id=2591 text=" example"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.58s vm=(Some(5020576), Some(5020576))
+[STEP 17] id=528 text=" in"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.59s vm=(Some(5021964), Some(5021964))
+[STEP 18] id=4181 text=" technology"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.55s vm=(Some(5021964), Some(5021964))
+[STEP 19] id=236761 text="."
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.55s vm=(Some(5021964), Some(5021964))
+[STEP 20] id=669 text=" The"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.01 in 2.55s vm=(Some(5021964), Some(5021964))
+[STEP 21] id=1657 text=" process"
+[run31b] spec batch=21 drafted=1 accepted=0 next_k=1 ewma=0.01 in 2.58s vm=(Some(5021964), Some(5021964))
+[STEP 22] id=740 text=" can"
+[run31b] spec fallback k=1 step=22 in 1.77s k_window=1 vm=(Some(5021976), Some(5021976))
+[STEP 23] id=577 text=" be"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=114.92 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=32 accepted=1 batches=21 fallback_k1=1 accept_rate=0.031 generated=24 s_per_tok=2.837
+GEN31B ids=[79629, 531, 506, 8379, 529, 3879, 563, 496, 5368, 1458, 600, 14736, 496, 5177, 3707, 573, 2591, 528, 4181, 236761, 669, 1657, 740, 577]
+GEN31B text="Depending to the internet of Europe is a software system that serves a digital network for example in technology. The process can be"
+KV31B mode=Glyph raw_bytes=73891840 naive_bf16_bytes=36945920 compressed_bytes=59056640 glyph_tokens=500 exact_tokens=1960 shrink=1.25x shrink_vs_bf16=0.63x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=47809 prefill_s=16.76 decode_s=65.26 vm_hwm_kb=Some(5021976) vm_rss_kb=Some(5021976)
+
+
+=== V6.1 | V7_Q4_108MB | margin=0.00 | photosynthesis ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c: layers=4 d=1024 resident_mb=114.92 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.53s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5012404), Some(5012404))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.28s (pinned=true)
+[run31b] layer 05/60 done in 0.23s (pinned=true)
+[run31b] layer 14/60 done in 0.22s (pinned=true)
+[run31b] layer 29/60 done in 0.22s (pinned=true)
+[run31b] layer 44/60 done in 0.41s (pinned=true)
+[run31b] layer 59/60 done in 0.65s (pinned=true)
+[run31b] prefill done in 20.30s ssd_read_mb=0.0 vm=(Some(5013452), Some(5013452))
+PREFILL_TOP5 [79629:"Depending"(23.290), 818:"The"(22.301), 2021:"To"(22.198), 10081:"Since"(22.144), 4906:"One"(21.767)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.22s vm=(Some(5013668), Some(5013668))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.28s vm=(Some(5013668), Some(5013668))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.32s vm=(Some(5013668), Some(5013668))
+[STEP 3] id=13315 text=" sentence"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.48 in 4.29s vm=(Some(5013956), Some(5013956))
+[STEP 5] id=496 text=" a"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.30s vm=(Some(5014020), Some(5014020))
+[STEP 6] id=5213 text=" **"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.31s vm=(Some(5014020), Some(5014020))
+[STEP 7] id=26462 text="Love"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.38s vm=(Some(5014020), Some(5014020))
+[STEP 8] id=236772 text="-"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.38s vm=(Some(5014020), Some(5014020))
+[STEP 9] id=25351 text="commerce"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.55s vm=(Some(5020648), Some(5020648))
+[STEP 10] id=13401 text=" planet"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.56s vm=(Some(5020648), Some(5020648))
+[STEP 11] id=563 text=" is"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.55s vm=(Some(5020648), Some(5020648))
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.55s vm=(Some(5020648), Some(5020648))
+[STEP 13] id=3188 text=" strong"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.06 in 2.55s vm=(Some(5022036), Some(5022036))
+[STEP 14] id=532 text=" and"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.53s vm=(Some(5022036), Some(5022036))
+[STEP 15] id=919 text=" more"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.71s vm=(Some(5022036), Some(5022036))
+[STEP 16] id=1082 text=" than"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.56s vm=(Some(5022036), Some(5022036))
+[STEP 17] id=699 text=" from"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.55s vm=(Some(5022036), Some(5022036))
+[STEP 18] id=886 text=" one"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.56s vm=(Some(5022036), Some(5022036))
+[STEP 19] id=529 text=" of"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.59s vm=(Some(5022836), Some(5022836))
+[STEP 20] id=506 text=" the"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.01 in 2.55s vm=(Some(5022836), Some(5022836))
+[STEP 21] id=1346 text=" most"
+[run31b] spec batch=21 drafted=1 accepted=0 next_k=1 ewma=0.01 in 2.55s vm=(Some(5022836), Some(5022836))
+[STEP 22] id=569 text=" de"
+[run31b] spec fallback k=1 step=22 in 1.77s k_window=1 vm=(Some(5022848), Some(5022848))
+[STEP 23] id=236761 text="."
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=114.92 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=32 accepted=1 batches=21 fallback_k1=1 accept_rate=0.031 generated=24 s_per_tok=2.875
+GEN31B ids=[79629, 531, 506, 13315, 529, 496, 5213, 26462, 236772, 25351, 13401, 563, 496, 3188, 532, 919, 1082, 699, 886, 529, 506, 1346, 569, 236761]
+GEN31B text="Depending to the sentence of a **Love-commerce planet is a strong and more than from one of the most de."
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=89133 prefill_s=20.30 decode_s=66.12 vm_hwm_kb=Some(5022848) vm_rss_kb=Some(5022848)
+
+
+=== V6.1 | V7_Q2_58MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.77s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969772), Some(4963316))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.21s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.61s (pinned=true)
+[run31b] prefill done in 19.28s ssd_read_mb=0.0 vm=(Some(4969772), Some(4964356))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.20s vm=(Some(4969772), Some(4964580))
+[STEP 1] id=1586 text=" find"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.20s vm=(Some(4969772), Some(4964860))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.40s vm=(Some(4969772), Some(4964860))
+[STEP 3] id=1156 text=" two"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=2 ewma=0.41 in 4.19s vm=(Some(4969772), Some(4964996))
+[STEP 4] id=4945 text=" numbers"
+[run31b] spec batch=5 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.28s vm=(Some(4969772), Some(4964996))
+[STEP 5] id=529 text=" of"
+[run31b] spec batch=6 drafted=1 accepted=0 next_k=1 ewma=0.26 in 2.36s vm=(Some(4969772), Some(4964996))
+[STEP 6] id=496 text=" a"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.21 in 2.35s vm=(Some(4969772), Some(4964996))
+[STEP 7] id=2558 text=" total"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.32s vm=(Some(4969772), Some(4964996))
+[STEP 8] id=1548 text=" number"
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=9 drafted=1 accepted=1 next_k=1 ewma=0.33 in 2.38s vm=(Some(4969772), Some(4964996))
+[STEP 10] id=5213 text=" **"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.27 in 2.46s vm=(Some(4971624), Some(4971624))
+[STEP 11] id=236770 text="1"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.21 in 2.56s vm=(Some(4971624), Some(4971624))
+[STEP 12] id=236761 text="."
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.52s vm=(Some(4971624), Some(4971624))
+[STEP 13] id=236778 text="2"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.52s vm=(Some(4971624), Some(4971624))
+[STEP 14] id=578 text=" ="
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.11 in 2.55s vm=(Some(4973012), Some(4973012))
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.09 in 2.52s vm=(Some(4973012), Some(4973012))
+[STEP 16] id=236770 text="1"
+[STEP 17] id=236771 text="0"
+[run31b] spec batch=16 drafted=1 accepted=1 next_k=1 ewma=0.27 in 2.51s vm=(Some(4973012), Some(4973012))
+[STEP 18] id=107 text="\n"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.22 in 2.54s vm=(Some(4973012), Some(4973012))
+[STEP 19] id=1018 text="**"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.57s vm=(Some(4973012), Some(4973012))
+[STEP 20] id=818 text="The"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.61s vm=(Some(4973812), Some(4973812))
+[STEP 21] id=1548 text=" number"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.11 in 2.52s vm=(Some(4973812), Some(4973812))
+[STEP 22] id=563 text=" is"
+[run31b] spec fallback k=1 step=22 in 1.78s k_window=1 vm=(Some(4973824), Some(4973824))
+[STEP 23] id=4745 text=" equal"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=29 accepted=2 batches=20 fallback_k1=1 accept_rate=0.069 generated=24 s_per_tok=2.632
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236770, 236771, 107, 1018, 818, 1548, 563, 4745]
+GEN31B text="To find the two numbers of a total number of **1.2 = 10\n**The number is equal"
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=140753 prefill_s=19.28 decode_s=60.53 vm_hwm_kb=Some(4973824) vm_rss_kb=Some(4973824)
+
+
+=== V6.1 | V7_Q2_58MB | margin=0.00 | france_capital ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text The capital of France is --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.47s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969756), Some(4963300))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.24s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.18s (pinned=true)
+[run31b] layer 29/60 done in 0.24s (pinned=true)
+[run31b] layer 44/60 done in 0.34s (pinned=true)
+[run31b] layer 59/60 done in 0.57s (pinned=true)
+[run31b] prefill done in 16.74s ssd_read_mb=0.0 vm=(Some(4969756), Some(4964492))
+PREFILL_TOP5 [79629:"Depending"(22.605), 818:"The"(22.498), 10081:"Since"(22.057), 4906:"One"(21.702), 36161:"Building"(20.797)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.31s vm=(Some(4969756), Some(4964708))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.24s vm=(Some(4969756), Some(4964844))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.23s vm=(Some(4969756), Some(4964844))
+[STEP 3] id=8379 text=" internet"
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.48 in 4.24s vm=(Some(4969756), Some(4964980))
+[STEP 5] id=3879 text=" Europe"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.29s vm=(Some(4969756), Some(4964980))
+[STEP 6] id=563 text=" is"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.38s vm=(Some(4969756), Some(4964980))
+[STEP 7] id=496 text=" a"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.34s vm=(Some(4969756), Some(4964980))
+[STEP 8] id=5368 text=" software"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.20 in 2.32s vm=(Some(4969756), Some(4964980))
+[STEP 9] id=1458 text=" system"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.16 in 2.33s vm=(Some(4969756), Some(4964980))
+[STEP 10] id=600 text=" that"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.36s vm=(Some(4969756), Some(4964980))
+[STEP 11] id=14736 text=" serves"
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=11 drafted=1 accepted=1 next_k=1 ewma=0.30 in 2.34s vm=(Some(4969756), Some(4964980))
+[STEP 13] id=5177 text=" digital"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.24 in 2.56s vm=(Some(4971608), Some(4971608))
+[STEP 14] id=3707 text=" network"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.19 in 2.51s vm=(Some(4971608), Some(4971608))
+[STEP 15] id=573 text=" for"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.15 in 2.53s vm=(Some(4971608), Some(4971608))
+[STEP 16] id=2591 text=" example"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.12 in 2.53s vm=(Some(4971608), Some(4971608))
+[STEP 17] id=528 text=" in"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.10 in 2.55s vm=(Some(4972996), Some(4972996))
+[STEP 18] id=4181 text=" technology"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.08 in 2.54s vm=(Some(4972996), Some(4972996))
+[STEP 19] id=236761 text="."
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.06 in 2.56s vm=(Some(4972996), Some(4972996))
+[STEP 20] id=669 text=" The"
+[run31b] spec batch=19 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.61s vm=(Some(4972996), Some(4972996))
+[STEP 21] id=1657 text=" process"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.58s vm=(Some(4972996), Some(4972996))
+[STEP 22] id=740 text=" can"
+[run31b] spec fallback k=1 step=22 in 1.77s k_window=1 vm=(Some(4973008), Some(4973008))
+[STEP 23] id=577 text=" be"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=31 accepted=2 batches=20 fallback_k1=1 accept_rate=0.065 generated=24 s_per_tok=2.714
+GEN31B ids=[79629, 531, 506, 8379, 529, 3879, 563, 496, 5368, 1458, 600, 14736, 496, 5177, 3707, 573, 2591, 528, 4181, 236761, 669, 1657, 740, 577]
+GEN31B text="Depending to the internet of Europe is a software system that serves a digital network for example in technology. The process can be"
+KV31B mode=Glyph raw_bytes=73891840 naive_bf16_bytes=36945920 compressed_bytes=59056640 glyph_tokens=500 exact_tokens=1960 shrink=1.25x shrink_vs_bf16=0.63x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=50412 prefill_s=16.74 decode_s=62.42 vm_hwm_kb=Some(4973008) vm_rss_kb=Some(4973008)
+
+
+=== V6.1 | V7_Q2_58MB | margin=0.00 | photosynthesis ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.45s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969772), Some(4963316))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.30s (pinned=true)
+[run31b] layer 05/60 done in 0.23s (pinned=true)
+[run31b] layer 14/60 done in 0.22s (pinned=true)
+[run31b] layer 29/60 done in 0.23s (pinned=true)
+[run31b] layer 44/60 done in 0.42s (pinned=true)
+[run31b] layer 59/60 done in 0.63s (pinned=true)
+[run31b] prefill done in 20.35s ssd_read_mb=0.0 vm=(Some(4969772), Some(4964508))
+PREFILL_TOP5 [79629:"Depending"(23.290), 818:"The"(22.301), 2021:"To"(22.198), 10081:"Since"(22.144), 4906:"One"(21.767)]
+[STEP 0] id=79629 text="Depending"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 4.27s vm=(Some(4969772), Some(4964996))
+[STEP 1] id=531 text=" to"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 4.37s vm=(Some(4969772), Some(4964996))
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 4.30s vm=(Some(4969772), Some(4964996))
+[STEP 3] id=13315 text=" sentence"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=2 ewma=0.41 in 4.30s vm=(Some(4969772), Some(4964996))
+[STEP 4] id=529 text=" of"
+[run31b] spec batch=5 drafted=2 accepted=0 next_k=1 ewma=0.33 in 3.33s vm=(Some(4969772), Some(4964996))
+[STEP 5] id=496 text=" a"
+[run31b] spec batch=6 drafted=1 accepted=0 next_k=1 ewma=0.26 in 2.40s vm=(Some(4969772), Some(4964996))
+[STEP 6] id=5213 text=" **"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.21 in 2.42s vm=(Some(4969772), Some(4964996))
+[STEP 7] id=26462 text="Love"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.35s vm=(Some(4969772), Some(4964996))
+[STEP 8] id=236772 text="-"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.13 in 2.41s vm=(Some(4969772), Some(4964996))
+[STEP 9] id=25351 text="commerce"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.11 in 2.51s vm=(Some(4971624), Some(4971624))
+[STEP 10] id=13401 text=" planet"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.09 in 2.52s vm=(Some(4971624), Some(4971624))
+[STEP 11] id=563 text=" is"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.07 in 2.52s vm=(Some(4971624), Some(4971624))
+[STEP 12] id=496 text=" a"
+[run31b] spec batch=13 drafted=1 accepted=0 next_k=1 ewma=0.05 in 2.52s vm=(Some(4971624), Some(4971624))
+[STEP 13] id=3188 text=" strong"
+[run31b] spec batch=14 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.56s vm=(Some(4973012), Some(4973012))
+[STEP 14] id=532 text=" and"
+[run31b] spec batch=15 drafted=1 accepted=0 next_k=1 ewma=0.04 in 2.55s vm=(Some(4973012), Some(4973012))
+[STEP 15] id=919 text=" more"
+[run31b] spec batch=16 drafted=1 accepted=0 next_k=1 ewma=0.03 in 2.56s vm=(Some(4973012), Some(4973012))
+[STEP 16] id=1082 text=" than"
+[run31b] spec batch=17 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.63s vm=(Some(4973012), Some(4973012))
+[STEP 17] id=699 text=" from"
+[run31b] spec batch=18 drafted=1 accepted=0 next_k=1 ewma=0.02 in 2.61s vm=(Some(4973012), Some(4973012))
+[STEP 18] id=886 text=" one"
+[STEP 19] id=529 text=" of"
+[run31b] spec batch=19 drafted=1 accepted=1 next_k=1 ewma=0.21 in 2.49s vm=(Some(4973012), Some(4973012))
+[STEP 20] id=1061 text=" its"
+[run31b] spec batch=20 drafted=1 accepted=0 next_k=1 ewma=0.17 in 2.57s vm=(Some(4973812), Some(4973812))
+[STEP 21] id=1595 text=" way"
+[run31b] spec batch=21 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.57s vm=(Some(4973812), Some(4973812))
+[STEP 22] id=236761 text="."
+[run31b] spec fallback k=1 step=22 in 1.79s k_window=1 vm=(Some(4973824), Some(4973824))
+[STEP 23] id=669 text=" The"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=30 accepted=1 batches=21 fallback_k1=1 accept_rate=0.033 generated=24 s_per_tok=2.774
+GEN31B ids=[79629, 531, 506, 13315, 529, 496, 5213, 26462, 236772, 25351, 13401, 563, 496, 3188, 532, 919, 1082, 699, 886, 529, 1061, 1595, 236761, 669]
+GEN31B text="Depending to the sentence of a **Love-commerce planet is a strong and more than from one of its way. The"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=98141 prefill_s=20.35 decode_s=63.79 vm_hwm_kb=Some(4973824) vm_rss_kb=Some(4973824)
+
+
+=== V6.1 | V6_334MB | margin=0.75 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.75 --prompt-text What is 2 + 2? --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 15.45s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(5249844), Some(5249844))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.25s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.23s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 19.35s ssd_read_mb=0.0 vm=(Some(5250892), Some(5250892))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec fallback k=1 step=0 in 1.69s k_window=3 vm=(Some(5250892), Some(5250892))
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[run31b] spec batch=1 drafted=3 accepted=1 next_k=3 ewma=0.87 in 4.19s vm=(Some(5251044), Some(5251044))
+[STEP 3] id=1156 text=" two"
+[run31b] spec fallback k=1 step=3 in 1.70s k_window=3 vm=(Some(5251044), Some(5251044))
+[STEP 4] id=4945 text=" numbers"
+[STEP 5] id=529 text=" of"
+[run31b] spec batch=2 drafted=2 accepted=1 next_k=3 ewma=0.79 in 3.36s vm=(Some(5251044), Some(5251044))
+[STEP 6] id=496 text=" a"
+[run31b] spec fallback k=1 step=6 in 1.73s k_window=3 vm=(Some(5251044), Some(5251044))
+[STEP 7] id=2558 text=" total"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.63 in 4.19s vm=(Some(5251188), Some(5251188))
+[STEP 8] id=1548 text=" number"
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.57 in 4.35s vm=(Some(5257804), Some(5257804))
+[STEP 10] id=5213 text=" **"
+[STEP 11] id=236770 text="1"
+[run31b] spec batch=5 drafted=3 accepted=1 next_k=3 ewma=0.53 in 4.64s vm=(Some(5258420), Some(5258420))
+[STEP 12] id=236761 text="."
+[run31b] spec fallback k=1 step=12 in 1.77s k_window=3 vm=(Some(5258432), Some(5258432))
+[STEP 13] id=236778 text="2"
+[run31b] spec batch=6 drafted=3 accepted=0 next_k=2 ewma=0.42 in 4.56s vm=(Some(5259960), Some(5259960))
+[STEP 14] id=578 text=" ="
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=2 ewma=0.54 in 2.51s vm=(Some(5260268), Some(5260268))
+[STEP 16] id=236825 text="6"
+[run31b] spec batch=8 drafted=2 accepted=0 next_k=1 ewma=0.43 in 3.50s vm=(Some(5260268), Some(5260268))
+[STEP 17] id=107 text="\n"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.34 in 2.52s vm=(Some(5260268), Some(5260268))
+[STEP 18] id=1018 text="**"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.27 in 2.60s vm=(Some(5260268), Some(5260268))
+[STEP 19] id=140 text="    "
+[run31b] spec fallback k=1 step=19 in 1.79s k_window=1 vm=(Some(5260268), Some(5260268))
+[STEP 20] id=818 text="The"
+[run31b] spec fallback k=1 step=20 in 1.83s k_window=1 vm=(Some(5260268), Some(5260268))
+[STEP 21] id=1548 text=" number"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.22 in 2.55s vm=(Some(5261068), Some(5261068))
+[STEP 22] id=563 text=" is"
+[run31b] spec fallback k=1 step=22 in 1.80s k_window=1 vm=(Some(5261068), Some(5261068))
+[STEP 23] id=4745 text=" equal"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.75 margin_stopped=8 ast_lm_skipped=1121028 drafted=23 accepted=5 batches=11 fallback_k1=7 accept_rate=0.217 generated=24 s_per_tok=2.402
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236825, 107, 1018, 140, 818, 1548, 563, 4745]
+GEN31B text="To find the two numbers of a total number of **1.2 = 6\n**    The number is equal"
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=112666 prefill_s=19.35 decode_s=55.25 vm_hwm_kb=Some(5261068) vm_rss_kb=Some(5261068)
+
+
+=== V6.1 | V7_Q2_58MB | margin=0.25 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.25 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.47s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969772), Some(4963316))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.21s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.39s (pinned=true)
+[run31b] layer 59/60 done in 0.61s (pinned=true)
+[run31b] prefill done in 19.53s ssd_read_mb=0.0 vm=(Some(4969772), Some(4964356))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] spec fallback k=1 step=0 in 1.75s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 1] id=1586 text=" find"
+[run31b] spec fallback k=1 step=1 in 1.67s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 2] id=506 text=" the"
+[run31b] spec fallback k=1 step=2 in 1.70s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 3] id=1156 text=" two"
+[run31b] spec fallback k=1 step=3 in 1.79s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 4] id=4945 text=" numbers"
+[run31b] spec fallback k=1 step=4 in 1.75s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 5] id=529 text=" of"
+[run31b] spec fallback k=1 step=5 in 1.71s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 6] id=496 text=" a"
+[run31b] spec fallback k=1 step=6 in 1.69s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 7] id=2558 text=" total"
+[run31b] spec fallback k=1 step=7 in 1.76s k_window=3 vm=(Some(4969772), Some(4964420))
+[STEP 8] id=1548 text=" number"
+[STEP 9] id=529 text=" of"
+[run31b] spec batch=1 drafted=1 accepted=1 next_k=3 ewma=1.00 in 2.33s vm=(Some(4969772), Some(4964420))
+[STEP 10] id=5213 text=" **"
+[run31b] spec batch=2 drafted=1 accepted=0 next_k=3 ewma=0.80 in 2.53s vm=(Some(4971048), Some(4971048))
+[STEP 11] id=236770 text="1"
+[run31b] spec fallback k=1 step=11 in 1.79s k_window=3 vm=(Some(4971072), Some(4971072))
+[STEP 12] id=236761 text="."
+[run31b] spec batch=3 drafted=1 accepted=0 next_k=3 ewma=0.64 in 2.56s vm=(Some(4971804), Some(4971804))
+[STEP 13] id=236778 text="2"
+[run31b] spec fallback k=1 step=13 in 1.75s k_window=3 vm=(Some(4971804), Some(4971804))
+[STEP 14] id=578 text=" ="
+[run31b] spec batch=4 drafted=2 accepted=0 next_k=3 ewma=0.51 in 3.57s vm=(Some(4973112), Some(4973112))
+[STEP 15] id=236743 text=" "
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.41 in 4.59s vm=(Some(4973676), Some(4973676))
+[STEP 16] id=236770 text="1"
+[STEP 17] id=236771 text="0"
+[run31b] spec batch=6 drafted=2 accepted=1 next_k=1 ewma=0.43 in 3.50s vm=(Some(4973676), Some(4973676))
+[STEP 18] id=107 text="\n"
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.34 in 2.58s vm=(Some(4973676), Some(4973676))
+[STEP 19] id=1018 text="**"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.27 in 2.53s vm=(Some(4973676), Some(4973676))
+[STEP 20] id=818 text="The"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.22 in 2.64s vm=(Some(4974476), Some(4974476))
+[STEP 21] id=1548 text=" number"
+[run31b] spec fallback k=1 step=21 in 1.77s k_window=1 vm=(Some(4974476), Some(4974476))
+[STEP 22] id=563 text=" is"
+[run31b] spec fallback k=1 step=22 in 1.79s k_window=1 vm=(Some(4974476), Some(4974476))
+[STEP 23] id=236743 text=" "
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.25 margin_stopped=15 ast_lm_skipped=0 drafted=13 accepted=2 batches=9 fallback_k1=12 accept_rate=0.154 generated=24 s_per_tok=2.121
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236770, 236761, 236778, 578, 236743, 236770, 236771, 107, 1018, 818, 1548, 563, 236743]
+GEN31B text="To find the two numbers of a total number of **1.2 = 10\n**The number is "
+KV31B mode=Glyph raw_bytes=79298560 naive_bf16_bytes=39649280 compressed_bytes=59310080 glyph_tokens=680 exact_tokens=1960 shrink=1.34x shrink_vs_bf16=0.67x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=184700 prefill_s=19.53 decode_s=48.79 vm_hwm_kb=Some(4974476) vm_rss_kb=Some(4974476)
+
+
+=== V4.2 | V6_334MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 52.68s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(5605356), Some(5127832))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.75s (pinned=true)
+[run31b] layer 05/60 done in 0.69s (pinned=true)
+[run31b] layer 14/60 done in 0.60s (pinned=true)
+[run31b] layer 29/60 done in 0.68s (pinned=true)
+[run31b] layer 44/60 done in 0.55s (pinned=true)
+[run31b] layer 59/60 done in 0.82s (pinned=true)
+[run31b] prefill done in 34.84s ssd_read_mb=0.0 vm=(Some(6427312), Some(6427312))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 9.00s vm=(Some(6724048), Some(6724048))
+[STEP 1] id=3890 text=" answer"
+[STEP 2] id=563 text=" is"
+[STEP 3] id=236743 text=" "
+[run31b] spec batch=2 drafted=3 accepted=2 next_k=3 ewma=0.77 in 5.73s vm=(Some(6749932), Some(6749932))
+[STEP 4] id=236812 text="4"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.62 in 5.59s vm=(Some(6751568), Some(6751568))
+[STEP 5] id=236761 text="."
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.49 in 6.16s vm=(Some(6751172), Some(6750896))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=406690 drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=4.681
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=10335 prefill_s=34.84 decode_s=28.09 vm_hwm_kb=Some(6751172) vm_rss_kb=Some(6750904)
+
+
+=== V4.2 | V6_334MB | margin=0.00 | france_capital_q ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is the capital of France? --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 25.61s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6861296), Some(6861296))
+[run31b] prompt 20 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 5279, 529, 7001, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.51s (pinned=true)
+[run31b] layer 05/60 done in 0.56s (pinned=true)
+[run31b] layer 14/60 done in 0.49s (pinned=true)
+[run31b] layer 29/60 done in 0.55s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.56s (pinned=true)
+[run31b] prefill done in 24.95s ssd_read_mb=0.0 vm=(Some(6862960), Some(6862960))
+PREFILL_TOP5 [818:"The"(19.110), 236777:"I"(18.574), 4906:"One"(16.521), 1018:"**"(16.473), 79629:"Depending"(16.398)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.73s vm=(Some(6862968), Some(6862968))
+[STEP 1] id=5279 text=" capital"
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 5.41s vm=(Some(6862968), Some(6862968))
+[STEP 3] id=7001 text=" France"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 5.43s vm=(Some(6862968), Some(6862968))
+[STEP 4] id=563 text=" is"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.45 in 5.60s vm=(Some(6862968), Some(6862968))
+[STEP 5] id=5213 text=" **"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.36 in 5.47s vm=(Some(6862968), Some(6862968))
+[STEP 6] id=50429 text="Paris"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.29 in 4.63s vm=(Some(6862968), Some(6862968))
+[STEP 7] id=84750 text="**."
+[STEP 8] id=106 text="<turn|>"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.43 in 3.49s vm=(Some(6862968), Some(6862968))
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=413376 drafted=18 accepted=2 batches=7 fallback_k1=0 accept_rate=0.111 generated=9 s_per_tok=4.718
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=52264960 naive_bf16_bytes=26132480 compressed_bytes=52264960 glyph_tokens=0 exact_tokens=1740 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=6815 prefill_s=24.95 decode_s=37.75 vm_hwm_kb=Some(6862968) vm_rss_kb=Some(6862968)
+
+
+=== V4.2 | V7_Q8_209MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 12.46s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6705536), Some(6705536))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.61s (pinned=true)
+[run31b] layer 05/60 done in 0.62s (pinned=true)
+[run31b] layer 14/60 done in 0.54s (pinned=true)
+[run31b] layer 29/60 done in 0.66s (pinned=true)
+[run31b] layer 44/60 done in 0.34s (pinned=true)
+[run31b] layer 59/60 done in 0.59s (pinned=true)
+[run31b] prefill done in 27.31s ssd_read_mb=0.0 vm=(Some(6707008), Some(6707008))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.62s vm=(Some(6707216), Some(6707216))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 5.48s vm=(Some(6707216), Some(6707216))
+[STEP 2] id=563 text=" is"
+[STEP 3] id=236743 text=" "
+[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.58 in 5.63s vm=(Some(6707216), Some(6707216))
+[STEP 4] id=236812 text="4"
+[STEP 5] id=236761 text="."
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.53 in 5.65s vm=(Some(6707216), Some(6707216))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=3.883
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4562 prefill_s=27.31 decode_s=23.30 vm_hwm_kb=Some(6707216) vm_rss_kb=Some(6707216)
+
+
+=== V4.2 | V7_Q8_209MB | margin=0.00 | france_capital_q ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is the capital of France? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q8.t16c: layers=4 d=1024 resident_mb=210.79 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 12.26s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6738572), Some(6738572))
+[run31b] prompt 20 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 5279, 529, 7001, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.53s (pinned=true)
+[run31b] layer 05/60 done in 0.56s (pinned=true)
+[run31b] layer 14/60 done in 0.52s (pinned=true)
+[run31b] layer 29/60 done in 0.55s (pinned=true)
+[run31b] layer 44/60 done in 0.35s (pinned=true)
+[run31b] layer 59/60 done in 0.58s (pinned=true)
+[run31b] prefill done in 25.77s ssd_read_mb=0.0 vm=(Some(6740188), Some(6740188))
+PREFILL_TOP5 [818:"The"(19.110), 236777:"I"(18.574), 4906:"One"(16.521), 1018:"**"(16.473), 79629:"Depending"(16.398)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.54s vm=(Some(6740252), Some(6740252))
+[STEP 1] id=5279 text=" capital"
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 5.61s vm=(Some(6740252), Some(6740252))
+[STEP 3] id=7001 text=" France"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 5.60s vm=(Some(6740252), Some(6740252))
+[STEP 4] id=563 text=" is"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.45 in 5.66s vm=(Some(6740252), Some(6740252))
+[STEP 5] id=5213 text=" **"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.36 in 5.57s vm=(Some(6740252), Some(6740252))
+[STEP 6] id=50429 text="Paris"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.29 in 4.57s vm=(Some(6740252), Some(6740252))
+[STEP 7] id=84750 text="**."
+[STEP 8] id=106 text="<turn|>"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.43 in 3.50s vm=(Some(6740252), Some(6740252))
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=210.79 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=18 accepted=2 batches=7 fallback_k1=0 accept_rate=0.111 generated=9 s_per_tok=4.650
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=52264960 naive_bf16_bytes=26132480 compressed_bytes=52264960 glyph_tokens=0 exact_tokens=1740 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=6802 prefill_s=25.77 decode_s=37.20 vm_hwm_kb=Some(6740252) vm_rss_kb=Some(6740252)
+
+
+=== V4.2 | V7_Q4_108MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c: layers=4 d=1024 resident_mb=114.92 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 12.17s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6640412), Some(6640412))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.64s (pinned=true)
+[run31b] layer 05/60 done in 0.62s (pinned=true)
+[run31b] layer 14/60 done in 0.64s (pinned=true)
+[run31b] layer 29/60 done in 0.61s (pinned=true)
+[run31b] layer 44/60 done in 0.35s (pinned=true)
+[run31b] layer 59/60 done in 0.64s (pinned=true)
+[run31b] prefill done in 27.27s ssd_read_mb=0.0 vm=(Some(6640576), Some(6640364))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.61s vm=(Some(6642088), Some(6642088))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 5.54s vm=(Some(6642088), Some(6642088))
+[STEP 2] id=563 text=" is"
+[STEP 3] id=236743 text=" "
+[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.58 in 5.56s vm=(Some(6642088), Some(6642088))
+[STEP 4] id=236812 text="4"
+[STEP 5] id=236761 text="."
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.53 in 5.56s vm=(Some(6642088), Some(6642088))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=114.92 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=3.808
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4291 prefill_s=27.27 decode_s=22.85 vm_hwm_kb=Some(6642088) vm_rss_kb=Some(6642088)
+
+
+=== V4.2 | V7_Q4_108MB | margin=0.00 | france_capital_q ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is the capital of France? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q4.t16c: layers=4 d=1024 resident_mb=114.92 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.90s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6640412), Some(6640412))
+[run31b] prompt 20 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 5279, 529, 7001, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.53s (pinned=true)
+[run31b] layer 05/60 done in 0.56s (pinned=true)
+[run31b] layer 14/60 done in 0.49s (pinned=true)
+[run31b] layer 29/60 done in 0.54s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.55s (pinned=true)
+[run31b] prefill done in 25.03s ssd_read_mb=0.0 vm=(Some(6642028), Some(6642028))
+PREFILL_TOP5 [818:"The"(19.110), 236777:"I"(18.574), 4906:"One"(16.521), 1018:"**"(16.473), 79629:"Depending"(16.398)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.52s vm=(Some(6642092), Some(6642092))
+[STEP 1] id=5279 text=" capital"
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 5.60s vm=(Some(6642092), Some(6642092))
+[STEP 3] id=7001 text=" France"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 5.57s vm=(Some(6642092), Some(6642092))
+[STEP 4] id=563 text=" is"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.45 in 5.57s vm=(Some(6642092), Some(6642092))
+[STEP 5] id=5213 text=" **"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.36 in 5.74s vm=(Some(6642092), Some(6642092))
+[STEP 6] id=50429 text="Paris"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.29 in 4.55s vm=(Some(6642092), Some(6642092))
+[STEP 7] id=84750 text="**."
+[STEP 8] id=106 text="<turn|>"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.43 in 3.60s vm=(Some(6642092), Some(6642092))
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=114.92 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=18 accepted=2 batches=7 fallback_k1=0 accept_rate=0.111 generated=9 s_per_tok=4.610
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=52264960 naive_bf16_bytes=26132480 compressed_bytes=52264960 glyph_tokens=0 exact_tokens=1740 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=7139 prefill_s=25.03 decode_s=36.88 vm_hwm_kb=Some(6642092) vm_rss_kb=Some(6642092)
+
+
+=== V4.2 | V7_Q2_58MB | margin=0.00 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is 2 + 2? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.84s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6597752), Some(6591324))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.54s (pinned=true)
+[run31b] layer 05/60 done in 0.61s (pinned=true)
+[run31b] layer 14/60 done in 0.53s (pinned=true)
+[run31b] layer 29/60 done in 0.60s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.64s (pinned=true)
+[run31b] prefill done in 26.87s ssd_read_mb=0.0 vm=(Some(6597752), Some(6592796))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.58s vm=(Some(6597752), Some(6593004))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 5.70s vm=(Some(6597752), Some(6593004))
+[STEP 2] id=563 text=" is"
+[STEP 3] id=236743 text=" "
+[run31b] spec batch=3 drafted=3 accepted=1 next_k=3 ewma=0.58 in 5.58s vm=(Some(6597752), Some(6593004))
+[STEP 4] id=236812 text="4"
+[STEP 5] id=236761 text="."
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.53 in 5.77s vm=(Some(6597752), Some(6593004))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=12 accepted=2 batches=4 fallback_k1=0 accept_rate=0.167 generated=7 s_per_tok=3.853
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=5285 prefill_s=26.87 decode_s=23.12 vm_hwm_kb=Some(6597752) vm_rss_kb=Some(6593004)
+
+
+=== V4.2 | V7_Q2_58MB | margin=0.00 | france_capital_q ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c --assistant-step-pos --assistant-min-margin 0.00 --prompt-text What is the capital of France? --max-tokens 24 --spec-byte-head /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.74s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6597752), Some(6591324))
+[run31b] prompt 20 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 5279, 529, 7001, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.51s (pinned=true)
+[run31b] layer 05/60 done in 0.57s (pinned=true)
+[run31b] layer 14/60 done in 0.49s (pinned=true)
+[run31b] layer 29/60 done in 0.57s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.56s (pinned=true)
+[run31b] prefill done in 25.08s ssd_read_mb=0.0 vm=(Some(6597752), Some(6592660))
+PREFILL_TOP5 [818:"The"(19.110), 236777:"I"(18.574), 4906:"One"(16.521), 1018:"**"(16.473), 79629:"Depending"(16.398)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.56s vm=(Some(6597752), Some(6593004))
+[STEP 1] id=5279 text=" capital"
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 5.70s vm=(Some(6597752), Some(6593004))
+[STEP 3] id=7001 text=" France"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 5.56s vm=(Some(6597752), Some(6593004))
+[STEP 4] id=563 text=" is"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.45 in 5.73s vm=(Some(6597752), Some(6593004))
+[STEP 5] id=5213 text=" **"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.36 in 5.58s vm=(Some(6597752), Some(6593004))
+[STEP 6] id=50429 text="Paris"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.29 in 4.54s vm=(Some(6597752), Some(6593004))
+[STEP 7] id=84750 text="**."
+[run31b] spec batch=7 drafted=1 accepted=0 next_k=1 ewma=0.23 in 3.62s vm=(Some(6597752), Some(6593004))
+[STEP 8] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=18 accepted=1 batches=7 fallback_k1=0 accept_rate=0.056 generated=9 s_per_tok=4.611
+GEN31B ids=[818, 5279, 529, 7001, 563, 5213, 50429, 84750, 106]
+GEN31B text="The capital of France is **Paris**.<turn|>"
+KV31B mode=Glyph raw_bytes=50462720 naive_bf16_bytes=25231360 compressed_bytes=50462720 glyph_tokens=0 exact_tokens=1680 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=7706 prefill_s=25.08 decode_s=36.89 vm_hwm_kb=Some(6597752) vm_rss_kb=Some(6593004)
+
+
+=== V4.2 | V6_334MB | margin=0.75 | math_2plus2 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_31b_v4_2_colab.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --speculative --batch-k 4 --spec-assistant /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c --assistant-step-pos --assistant-min-margin 0.75 --prompt-text What is 2 + 2? --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5641594656 vision_bytes=160726944 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_31b_v4_2_colab_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 27.86s pinned_layers=60/60 pinned_bytes=5808170096 embed_bytes=539492352 vm=(Some(6875524), Some(6874400))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.55s (pinned=true)
+[run31b] layer 05/60 done in 0.64s (pinned=true)
+[run31b] layer 14/60 done in 0.53s (pinned=true)
+[run31b] layer 29/60 done in 0.60s (pinned=true)
+[run31b] layer 44/60 done in 0.35s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 26.99s ssd_read_mb=0.0 vm=(Some(6875864), Some(6875864))
+PREFILL_TOP5 [818:"The"(23.060), 1018:"**"(19.837), 2021:"To"(19.211), 11634:"Two"(17.630), 3810:"There"(17.422)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 5.50s vm=(Some(6879328), Some(6879328))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec fallback k=1 step=1 in 2.58s k_window=3 vm=(Some(6879328), Some(6879328))
+[STEP 2] id=563 text=" is"
+[run31b] spec fallback k=1 step=2 in 2.56s k_window=3 vm=(Some(6879328), Some(6879328))
+[STEP 3] id=236743 text=" "
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 5.47s vm=(Some(6879464), Some(6879464))
+[STEP 4] id=236812 text="4"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 5.52s vm=(Some(6879464), Some(6879464))
+[STEP 5] id=236761 text="."
+[run31b] spec fallback k=1 step=5 in 2.57s k_window=3 vm=(Some(6879464), Some(6879464))
+[STEP 6] id=106 text="<turn|>"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.75 margin_stopped=3 ast_lm_skipped=309105 drafted=9 accepted=0 batches=3 fallback_k1=3 accept_rate=0.000 generated=7 s_per_tok=4.266
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=Glyph raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=5808170096 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=11488 prefill_s=26.99 decode_s=25.60 vm_hwm_kb=Some(6879464) vm_rss_kb=Some(6879464)
+

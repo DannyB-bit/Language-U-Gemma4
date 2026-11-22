@@ -1,0 +1,434 @@
+
+=== dense ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 24.37s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4875968), Some(4814160))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.33s (pinned=true)
+[run31b] layer 05/60 done in 0.23s (pinned=true)
+[run31b] layer 14/60 done in 0.23s (pinned=true)
+[run31b] layer 29/60 done in 0.23s (pinned=true)
+[run31b] layer 44/60 done in 0.40s (pinned=true)
+[run31b] layer 59/60 done in 0.64s (pinned=true)
+[run31b] prefill done in 20.48s ssd_read_mb=0.0 vm=(Some(4908940), Some(4908940))
+PREFILL_TOP5 [79629:"Depending"(23.290), 818:"The"(22.301), 2021:"To"(22.198), 10081:"Since"(22.144), 4906:"One"(21.767)]
+[STEP 0] id=79629 text="Depending"
+[run31b] decode step 0 in 1.73s vm=(Some(4908940), Some(4908940))
+[STEP 1] id=531 text=" to"
+[run31b] decode step 1 in 1.75s vm=(Some(4908940), Some(4908940))
+[STEP 2] id=506 text=" the"
+[run31b] decode step 2 in 1.69s vm=(Some(4908940), Some(4908940))
+[STEP 3] id=13315 text=" sentence"
+[run31b] decode step 3 in 1.69s vm=(Some(4908940), Some(4908940))
+[STEP 4] id=529 text=" of"
+[run31b] decode step 4 in 1.70s vm=(Some(4908940), Some(4908940))
+[STEP 5] id=496 text=" a"
+[run31b] decode step 5 in 1.71s vm=(Some(4908940), Some(4908940))
+[STEP 6] id=5213 text=" **"
+[run31b] decode step 6 in 1.69s vm=(Some(4908940), Some(4908940))
+[STEP 7] id=26462 text="Love"
+[run31b] decode step 7 in 1.73s vm=(Some(4908940), Some(4908940))
+[STEP 8] id=236772 text="-"
+[run31b] decode step 8 in 1.69s vm=(Some(4908940), Some(4908940))
+[STEP 9] id=25351 text="commerce"
+[run31b] decode step 9 in 1.70s vm=(Some(4908940), Some(4908940))
+[STEP 10] id=13401 text=" planet"
+[run31b] decode step 10 in 1.80s vm=(Some(4914964), Some(4914964))
+[STEP 11] id=563 text=" is"
+[run31b] decode step 11 in 1.81s vm=(Some(4914964), Some(4914964))
+[STEP 12] id=496 text=" a"
+[run31b] decode step 12 in 1.76s vm=(Some(4914964), Some(4914964))
+[STEP 13] id=1589 text=" person"
+[run31b] decode step 13 in 1.83s vm=(Some(4914964), Some(4914964))
+[STEP 14] id=236789 text="'"
+[run31b] decode step 14 in 2.07s vm=(Some(4915024), Some(4915024))
+[STEP 15] id=236751 text="s"
+[run31b] decode step 15 in 2.16s vm=(Some(4915024), Some(4915024))
+[STEP 16] id=9834 text=" identity"
+[run31b] decode step 16 in 1.83s vm=(Some(4915024), Some(4915024))
+[STEP 17] id=236761 text="."
+[run31b] decode step 17 in 1.80s vm=(Some(4915024), Some(4915024))
+[STEP 18] id=1030 text=" It"
+[run31b] decode step 18 in 1.79s vm=(Some(4915024), Some(4915024))
+[STEP 19] id=1093 text=" would"
+[run31b] decode step 19 in 1.78s vm=(Some(4915024), Some(4915024))
+[STEP 20] id=577 text=" be"
+[run31b] decode step 20 in 1.93s vm=(Some(4915824), Some(4915824))
+[STEP 21] id=614 text=" an"
+[run31b] decode step 21 in 1.80s vm=(Some(4915824), Some(4915824))
+[STEP 22] id=5250 text=" essential"
+[run31b] decode step 22 in 1.81s vm=(Some(4915824), Some(4915824))
+[STEP 23] id=573 text=" for"
+GEN31B ids=[79629, 531, 506, 13315, 529, 496, 5213, 26462, 236772, 25351, 13401, 563, 496, 1589, 236789, 236751, 9834, 236761, 1030, 1093, 577, 614, 5250, 573]
+GEN31B text="Depending to the sentence of a **Love-commerce planet is a person's identity. It would be an essential for"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=146243 prefill_s=20.48 decode_s=41.27 vm_hwm_kb=Some(4915824) vm_rss_kb=Some(4915824)
+
+
+=== crtr_p0.70_m0.00 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --cortical-router /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr --mlp-top-p 0.700
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.700
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.01s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4980476), Some(4918828))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.28s (pinned=true)
+[run31b] layer 05/60 done in 0.21s (pinned=true)
+[run31b] layer 14/60 done in 0.20s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.37s (pinned=true)
+[run31b] layer 59/60 done in 0.54s (pinned=true)
+[run31b] prefill done in 18.22s ssd_read_mb=0.0 vm=(Some(4980476), Some(4920000))
+PREFILL_TOP5 [79629:"Depending"(22.578), 818:"The"(22.566), 4906:"One"(22.425), 10081:"Since"(21.883), 2021:"To"(21.695)]
+[STEP 0] id=79629 text="Depending"
+[run31b] decode step 0 in 1.49s vm=(Some(4980476), Some(4920000))
+[STEP 1] id=531 text=" to"
+[run31b] decode step 1 in 1.49s vm=(Some(4980476), Some(4920000))
+[STEP 2] id=506 text=" the"
+[run31b] decode step 2 in 1.50s vm=(Some(4980476), Some(4920000))
+[STEP 3] id=13315 text=" sentence"
+[run31b] decode step 3 in 1.49s vm=(Some(4980476), Some(4920000))
+[STEP 4] id=529 text=" of"
+[run31b] decode step 4 in 1.52s vm=(Some(4980476), Some(4920000))
+[STEP 5] id=5213 text=" **"
+[run31b] decode step 5 in 1.51s vm=(Some(4980476), Some(4920000))
+[STEP 6] id=26462 text="Love"
+[run31b] decode step 6 in 1.52s vm=(Some(4980476), Some(4920000))
+[STEP 7] id=236772 text="-"
+[run31b] decode step 7 in 1.56s vm=(Some(4980476), Some(4920000))
+[STEP 8] id=1071 text="to"
+[run31b] decode step 8 in 1.59s vm=(Some(4980476), Some(4920000))
+[STEP 9] id=236772 text="-"
+[run31b] decode step 9 in 1.55s vm=(Some(4980476), Some(4920000))
+[STEP 10] id=5863 text="known"
+[run31b] decode step 10 in 1.58s vm=(Some(4980476), Some(4926012))
+[STEP 11] id=236761 text="."
+[run31b] decode step 11 in 1.72s vm=(Some(4980476), Some(4926012))
+[STEP 12] id=1174 text=" This"
+[run31b] decode step 12 in 1.58s vm=(Some(4980476), Some(4926012))
+[STEP 13] id=563 text=" is"
+[run31b] decode step 13 in 1.64s vm=(Some(4980476), Some(4926012))
+[STEP 14] id=496 text=" a"
+[run31b] decode step 14 in 1.59s vm=(Some(4980476), Some(4926072))
+[STEP 15] id=1589 text=" person"
+[run31b] decode step 15 in 1.72s vm=(Some(4980476), Some(4926072))
+[STEP 16] id=236789 text="'"
+[run31b] decode step 16 in 1.60s vm=(Some(4980476), Some(4926072))
+[STEP 17] id=236751 text="s"
+[run31b] decode step 17 in 1.62s vm=(Some(4980476), Some(4926072))
+[STEP 18] id=19659 text=" dominant"
+[run31b] decode step 18 in 1.60s vm=(Some(4980476), Some(4926080))
+[STEP 19] id=236764 text=","
+[run31b] decode step 19 in 1.61s vm=(Some(4980476), Some(4926080))
+[STEP 20] id=532 text=" and"
+[run31b] decode step 20 in 1.59s vm=(Some(4980476), Some(4926880))
+[STEP 21] id=12205 text=" suggests"
+[run31b] decode step 21 in 1.59s vm=(Some(4980476), Some(4926880))
+[STEP 22] id=600 text=" that"
+[run31b] decode step 22 in 1.60s vm=(Some(4980476), Some(4926880))
+[STEP 23] id=625 text=" it"
+GEN31B ids=[79629, 531, 506, 13315, 529, 5213, 26462, 236772, 1071, 236772, 5863, 236761, 1174, 563, 496, 1589, 236789, 236751, 19659, 236764, 532, 12205, 600, 625]
+GEN31B text="Depending to the sentence of **Love-to-known. This is a person's dominant, and suggests that it"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MLP_SPARSE top_p=0.700 skipped_blks=21091200 total_blks=85026816 dram_saved_pct=24.8%
+CORTICAL_ROUTER gate_skipped_blks=36000 gate_total_blks=120960 gate_saved_pct=29.8%
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=140571 prefill_s=18.22 decode_s=36.30 vm_hwm_kb=Some(4980476) vm_rss_kb=Some(4926880)
+
+
+=== crtr_p0.50_m0.00 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --cortical-router /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr --mlp-top-p 0.500
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.500
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4980484), Some(4918836))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.23s (pinned=true)
+[run31b] layer 05/60 done in 0.19s (pinned=true)
+[run31b] layer 14/60 done in 0.19s (pinned=true)
+[run31b] layer 29/60 done in 0.20s (pinned=true)
+[run31b] layer 44/60 done in 0.34s (pinned=true)
+[run31b] layer 59/60 done in 0.47s (pinned=true)
+[run31b] prefill done in 16.06s ssd_read_mb=0.0 vm=(Some(4980484), Some(4919856))
+PREFILL_TOP5 [818:"The"(22.681), 4906:"One"(21.870), 79629:"Depending"(21.851), 10081:"Since"(21.245), 2021:"To"(21.206)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 1.35s vm=(Some(4980484), Some(4919856))
+[STEP 1] id=1816 text=" text"
+[run31b] decode step 1 in 1.36s vm=(Some(4980484), Some(4919856))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 1.39s vm=(Some(4980484), Some(4919856))
+[STEP 3] id=496 text=" a"
+[run31b] decode step 3 in 1.35s vm=(Some(4980484), Some(4919856))
+[STEP 4] id=3606 text=" simple"
+[run31b] decode step 4 in 1.35s vm=(Some(4980484), Some(4919856))
+[STEP 5] id=13315 text=" sentence"
+[run31b] decode step 5 in 1.44s vm=(Some(4980484), Some(4919856))
+[STEP 6] id=563 text=" is"
+[run31b] decode step 6 in 1.45s vm=(Some(4980484), Some(4919856))
+[STEP 7] id=5213 text=" **"
+[run31b] decode step 7 in 1.37s vm=(Some(4980484), Some(4919856))
+[STEP 8] id=236776 text="A"
+[run31b] decode step 8 in 1.36s vm=(Some(4980484), Some(4919856))
+[STEP 9] id=236772 text="-"
+[run31b] decode step 9 in 1.43s vm=(Some(4980484), Some(4919856))
+[STEP 10] id=236940 text="@"
+[run31b] decode step 10 in 1.42s vm=(Some(4980484), Some(4925868))
+[STEP 11] id=236751 text="s"
+[run31b] decode step 11 in 1.46s vm=(Some(4980484), Some(4925868))
+[STEP 12] id=236789 text="'"
+[run31b] decode step 12 in 1.46s vm=(Some(4980484), Some(4925868))
+[STEP 13] id=236751 text="s"
+[run31b] decode step 13 in 1.42s vm=(Some(4980484), Some(4925868))
+[STEP 14] id=3567 text=" version"
+[run31b] decode step 14 in 1.58s vm=(Some(4980484), Some(4925928))
+[STEP 15] id=600 text=" that"
+[run31b] decode step 15 in 1.44s vm=(Some(4980484), Some(4925928))
+[STEP 16] id=4728 text=" provides"
+[run31b] decode step 16 in 1.43s vm=(Some(4980484), Some(4925928))
+[STEP 17] id=496 text=" a"
+[run31b] decode step 17 in 1.42s vm=(Some(4980484), Some(4925928))
+[STEP 18] id=7501 text=" sequence"
+[run31b] decode step 18 in 1.44s vm=(Some(4980484), Some(4925936))
+[STEP 19] id=529 text=" of"
+[run31b] decode step 19 in 1.47s vm=(Some(4980484), Some(4925936))
+[STEP 20] id=614 text=" an"
+[run31b] decode step 20 in 1.44s vm=(Some(4980484), Some(4926736))
+[STEP 21] id=2471 text=" image"
+[run31b] decode step 21 in 1.43s vm=(Some(4980484), Some(4926736))
+[STEP 22] id=236761 text="."
+[run31b] decode step 22 in 1.44s vm=(Some(4980484), Some(4926736))
+[STEP 23] id=108 text="\n\n"
+GEN31B ids=[818, 1816, 529, 496, 3606, 13315, 563, 5213, 236776, 236772, 236940, 236751, 236789, 236751, 3567, 600, 4728, 496, 7501, 529, 614, 2471, 236761, 108]
+GEN31B text="The text of a simple sentence is **A-@s's version that provides a sequence of an image.\n\n"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MLP_SPARSE top_p=0.500 skipped_blks=35433216 total_blks=85026816 dram_saved_pct=41.7%
+CORTICAL_ROUTER gate_skipped_blks=60480 gate_total_blks=120960 gate_saved_pct=50.0%
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=184308 prefill_s=16.06 decode_s=32.74 vm_hwm_kb=Some(4980484) vm_rss_kb=Some(4926736)
+
+
+=== crtr_p0.35_m0.00 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --cortical-router /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr --mlp-top-p 0.350
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4980484), Some(4918832))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.21s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.17s (pinned=true)
+[run31b] layer 29/60 done in 0.18s (pinned=true)
+[run31b] layer 44/60 done in 0.31s (pinned=true)
+[run31b] layer 59/60 done in 0.41s (pinned=true)
+[run31b] prefill done in 14.75s ssd_read_mb=0.0 vm=(Some(4980484), Some(4919844))
+PREFILL_TOP5 [818:"The"(20.714), 236776:"A"(19.802), 8291:"Here"(19.632), 4906:"One"(19.514), 10081:"Since"(18.966)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 1.22s vm=(Some(4980484), Some(4919844))
+[STEP 1] id=1816 text=" text"
+[run31b] decode step 1 in 1.26s vm=(Some(4980484), Some(4919844))
+[STEP 2] id=563 text=" is"
+[run31b] decode step 2 in 1.24s vm=(Some(4980484), Some(4919844))
+[STEP 3] id=496 text=" a"
+[run31b] decode step 3 in 1.27s vm=(Some(4980484), Some(4919844))
+[STEP 4] id=13315 text=" sentence"
+[run31b] decode step 4 in 1.25s vm=(Some(4980484), Some(4919844))
+[STEP 5] id=529 text=" of"
+[run31b] decode step 5 in 1.29s vm=(Some(4980484), Some(4919844))
+[STEP 6] id=623 text=" \""
+[run31b] decode step 6 in 1.28s vm=(Some(4980484), Some(4919844))
+[STEP 7] id=236777 text="I"
+[run31b] decode step 7 in 1.35s vm=(Some(4980484), Some(4919844))
+[STEP 8] id=1006 text=" am"
+[run31b] decode step 8 in 1.24s vm=(Some(4980484), Some(4919844))
+[STEP 9] id=564 text=" I"
+[run31b] decode step 9 in 1.26s vm=(Some(4980484), Some(4919844))
+[STEP 10] id=236789 text="'"
+[run31b] decode step 10 in 1.36s vm=(Some(4980484), Some(4925856))
+[STEP 11] id=236745 text="t"
+[run31b] decode step 11 in 1.30s vm=(Some(4980484), Some(4925856))
+[STEP 12] id=506 text=" the"
+[run31b] decode step 12 in 1.32s vm=(Some(4980484), Some(4925856))
+[STEP 13] id=1171 text=" first"
+[run31b] decode step 13 in 1.33s vm=(Some(4980484), Some(4925856))
+[STEP 14] id=532 text=" and"
+[run31b] decode step 14 in 1.31s vm=(Some(4980484), Some(4925916))
+[STEP 15] id=611 text=" you"
+[run31b] decode step 15 in 1.50s vm=(Some(4980484), Some(4925916))
+[STEP 16] id=236789 text="'"
+[run31b] decode step 16 in 1.33s vm=(Some(4980484), Some(4925916))
+[STEP 17] id=236751 text="s"
+[run31b] decode step 17 in 1.33s vm=(Some(4980484), Some(4925916))
+[STEP 18] id=614 text=" an"
+[run31b] decode step 18 in 1.33s vm=(Some(4980484), Some(4925924))
+[STEP 19] id=2471 text=" image"
+[run31b] decode step 19 in 1.33s vm=(Some(4980484), Some(4925924))
+[STEP 20] id=1781 text=".\""
+[run31b] decode step 20 in 1.33s vm=(Some(4980484), Some(4926724))
+[STEP 21] id=106 text="<turn|>"
+GEN31B ids=[818, 1816, 563, 496, 13315, 529, 623, 236777, 1006, 564, 236789, 236745, 506, 1171, 532, 611, 236789, 236751, 614, 2471, 1781, 106]
+GEN31B text="The text is a sentence of \"I am I't the first and you's an image.\"<turn|>"
+KV31B mode=Glyph raw_bytes=77496320 naive_bf16_bytes=38748160 compressed_bytes=59225600 glyph_tokens=620 exact_tokens=1960 shrink=1.31x shrink_vs_bf16=0.65x
+MLP_SPARSE top_p=0.350 skipped_blks=42052608 total_blks=78720768 dram_saved_pct=53.4%
+CORTICAL_ROUTER gate_skipped_blks=71280 gate_total_blks=110880 gate_saved_pct=64.3%
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=228978 prefill_s=14.75 decode_s=27.46 vm_hwm_kb=Some(4980484) vm_rss_kb=Some(4926724)
+
+
+=== crtr_p0.50_m0.35 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --cortical-router /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr --mlp-top-p 0.500 --mod-thresh 0.350
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled KV-Safe V7.0 MoD residual highway: thresh=0.350
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.500
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4980484), Some(4918836))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.23s (pinned=true)
+[run31b] layer 05/60 done in 0.19s (pinned=true)
+[run31b] layer 14/60 done in 0.19s (pinned=true)
+[run31b] layer 29/60 done in 0.19s (pinned=true)
+[run31b] layer 44/60 done in 0.34s (pinned=true)
+[run31b] layer 59/60 done in 0.46s (pinned=true)
+[run31b] prefill done in 16.12s ssd_read_mb=0.0 vm=(Some(4980484), Some(4919864))
+PREFILL_TOP5 [818:"The"(22.681), 4906:"One"(21.870), 79629:"Depending"(21.851), 10081:"Since"(21.245), 2021:"To"(21.206)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 1.04s vm=(Some(4980484), Some(4919864))
+[STEP 1] id=522 text="ing"
+[run31b] decode step 1 in 1.11s vm=(Some(4980484), Some(4919864))
+[STEP 2] id=236761 text="."
+[run31b] decode step 2 in 1.12s vm=(Some(4980484), Some(4919864))
+[STEP 3] id=236772 text="-"
+[run31b] decode step 3 in 1.05s vm=(Some(4980484), Some(4919864))
+[STEP 4] id=699 text=" from"
+[run31b] decode step 4 in 1.03s vm=(Some(4980484), Some(4919864))
+[STEP 5] id=568 text=" ("
+[run31b] decode step 5 in 0.88s vm=(Some(4980484), Some(4919864))
+[STEP 6] id=529 text=" of"
+[run31b] decode step 6 in 0.91s vm=(Some(4980484), Some(4919864))
+[STEP 7] id=532 text=" and"
+[run31b] decode step 7 in 1.17s vm=(Some(4980484), Some(4919864))
+[STEP 8] id=236764 text=","
+[run31b] decode step 8 in 0.98s vm=(Some(4980484), Some(4919864))
+[STEP 9] id=236762 text="y"
+[run31b] decode step 9 in 1.05s vm=(Some(4980484), Some(4919864))
+[STEP 10] id=586 text="ly"
+[run31b] decode step 10 in 1.08s vm=(Some(4980484), Some(4925876))
+[STEP 11] id=1275 text="ful"
+[run31b] decode step 11 in 1.07s vm=(Some(4980484), Some(4925876))
+[STEP 12] id=236751 text="s"
+[run31b] decode step 12 in 0.96s vm=(Some(4980484), Some(4925876))
+[STEP 13] id=528 text=" in"
+[run31b] decode step 13 in 0.97s vm=(Some(4980484), Some(4925876))
+[STEP 14] id=1852 text=" own"
+[run31b] decode step 14 in 1.03s vm=(Some(4980484), Some(4925936))
+[STEP 15] id=236764 text=","
+[run31b] decode step 15 in 1.00s vm=(Some(4980484), Some(4925936))
+[STEP 16] id=529 text=" of"
+[run31b] decode step 16 in 1.21s vm=(Some(4980484), Some(4925936))
+[STEP 17] id=522 text="ing"
+[run31b] decode step 17 in 0.99s vm=(Some(4980484), Some(4925944))
+[STEP 18] id=974 text=" get"
+[run31b] decode step 18 in 1.12s vm=(Some(4980484), Some(4925944))
+[STEP 19] id=236770 text="1"
+[run31b] decode step 19 in 1.14s vm=(Some(4980484), Some(4925944))
+[STEP 20] id=236771 text="0"
+[run31b] decode step 20 in 1.13s vm=(Some(4980484), Some(4926744))
+[STEP 21] id=5213 text=" **"
+[run31b] decode step 21 in 1.27s vm=(Some(4980484), Some(4926744))
+[STEP 22] id=236800 text="3"
+[run31b] decode step 22 in 1.33s vm=(Some(4980484), Some(4926744))
+[STEP 23] id=524 text="ed"
+GEN31B ids=[818, 522, 236761, 236772, 699, 568, 529, 532, 236764, 236762, 586, 1275, 236751, 528, 1852, 236764, 529, 522, 974, 236770, 236771, 5213, 236800, 524]
+GEN31B text="Theing.- from ( of and,ylyfuls in own, ofing get10 **3ed"
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MLP_SPARSE top_p=0.500 skipped_blks=24941952 total_blks=59984064 dram_saved_pct=41.6%
+CORTICAL_ROUTER gate_skipped_blks=38346 gate_total_blks=76692 gate_saved_pct=50.0%
+MOD31B thresh=0.350 skipped_layers=527 eligible_layers=1032 skipped_pct=51.1%
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=160982 prefill_s=16.12 decode_s=24.67 vm_hwm_kb=Some(4980484) vm_rss_kb=Some(4926744)
+
+
+=== crtr_p0.35_m0.35 ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d --lmhead-cs exact --so /home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 24 --cortical-router /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr --mlp-top-p 0.350 --mod-thresh 0.350
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 vision_bytes=234449280 norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled KV-Safe V7.0 MoD residual highway: thresh=0.350
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.98s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4980468), Some(4918820))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.22s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.17s (pinned=true)
+[run31b] layer 29/60 done in 0.18s (pinned=true)
+[run31b] layer 44/60 done in 0.32s (pinned=true)
+[run31b] layer 59/60 done in 0.42s (pinned=true)
+[run31b] prefill done in 14.82s ssd_read_mb=0.0 vm=(Some(4980468), Some(4919840))
+PREFILL_TOP5 [818:"The"(20.714), 236776:"A"(19.802), 8291:"Here"(19.632), 4906:"One"(19.514), 10081:"Since"(18.966)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 0.93s vm=(Some(4980468), Some(4919840))
+[STEP 1] id=522 text="ing"
+[run31b] decode step 1 in 1.03s vm=(Some(4980468), Some(4919840))
+[STEP 2] id=236772 text="-"
+[run31b] decode step 2 in 0.98s vm=(Some(4980468), Some(4919840))
+[STEP 3] id=107 text="\n"
+[run31b] decode step 3 in 1.03s vm=(Some(4980468), Some(4919840))
+[STEP 4] id=578 text=" ="
+[run31b] decode step 4 in 1.18s vm=(Some(4980468), Some(4919840))
+[STEP 5] id=642 text=" {"
+[run31b] decode step 5 in 1.16s vm=(Some(4980468), Some(4919840))
+[STEP 6] id=107 text="\n"
+[run31b] decode step 6 in 1.15s vm=(Some(4980468), Some(4919840))
+[STEP 7] id=236764 text=","
+[run31b] decode step 7 in 1.11s vm=(Some(4980468), Some(4919840))
+[STEP 8] id=753 text=" -"
+[run31b] decode step 8 in 1.11s vm=(Some(4980468), Some(4919840))
+[STEP 9] id=236744 text="e"
+[run31b] decode step 9 in 1.01s vm=(Some(4980468), Some(4919840))
+[STEP 10] id=722 text="ia"
+[run31b] decode step 10 in 1.05s vm=(Some(4980468), Some(4925852))
+[STEP 11] id=1275 text="ful"
+[run31b] decode step 11 in 1.00s vm=(Some(4980468), Some(4925852))
+[STEP 12] id=568 text=" ("
+[run31b] decode step 12 in 1.12s vm=(Some(4980468), Some(4925852))
+[STEP 13] id=236768 text=")"
+[run31b] decode step 13 in 1.20s vm=(Some(4980468), Some(4925852))
+[STEP 14] id=529 text=" of"
+[run31b] decode step 14 in 1.02s vm=(Some(4980468), Some(4925912))
+[STEP 15] id=5213 text=" **"
+[run31b] decode step 15 in 1.15s vm=(Some(4980468), Some(4925912))
+[STEP 16] id=524 text="ed"
+[run31b] decode step 16 in 1.07s vm=(Some(4980468), Some(4925912))
+[STEP 17] id=598 text="est"
+[run31b] decode step 17 in 1.09s vm=(Some(4980468), Some(4925920))
+[STEP 18] id=236751 text="s"
+[run31b] decode step 18 in 0.98s vm=(Some(4980468), Some(4925920))
+[STEP 19] id=236762 text="y"
+[run31b] decode step 19 in 1.07s vm=(Some(4980468), Some(4925920))
+[STEP 20] id=514 text="al"
+[run31b] decode step 20 in 1.02s vm=(Some(4980468), Some(4926720))
+[STEP 21] id=522 text="ing"
+[run31b] decode step 21 in 0.95s vm=(Some(4980468), Some(4926720))
+[STEP 22] id=1713 text="ets"
+[run31b] decode step 22 in 0.98s vm=(Some(4980468), Some(4926720))
+[STEP 23] id=236761 text="."
+GEN31B ids=[818, 522, 236772, 107, 578, 642, 107, 236764, 753, 236744, 722, 1275, 568, 236768, 529, 5213, 524, 598, 236751, 236762, 514, 522, 1713, 236761]
+GEN31B text="Theing-\n = {\n, -eiaful () of **edestsyalingets."
+KV31B mode=Glyph raw_bytes=81100800 naive_bf16_bytes=40550400 compressed_bytes=59394560 glyph_tokens=740 exact_tokens=1960 shrink=1.37x shrink_vs_bf16=0.68x
+MLP_SPARSE top_p=0.350 skipped_blks=35385984 total_blks=65969568 dram_saved_pct=53.6%
+CORTICAL_ROUTER gate_skipped_blks=55512 gate_total_blks=86352 gate_saved_pct=64.3%
+MOD31B thresh=0.350 skipped_layers=412 eligible_layers=1032 skipped_pct=39.9%
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=218138 prefill_s=14.82 decode_s=24.42 vm_hwm_kb=Some(4980468) vm_rss_kb=Some(4926720)
+
