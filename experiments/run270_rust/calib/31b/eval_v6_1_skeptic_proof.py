@@ -195,6 +195,18 @@ def parse_run31b_telemetry(stdout_text: str) -> Dict[str, object]:
         res["accept_rate"] = float(m_spec.group(2))
         res["spec_generated"] = int(m_spec.group(3))
         res["s_per_tok"] = float(m_spec.group(4))
+    m_lod = re.search(r"GTALOD31B active_districts=(\d+) total_districts=(\d+) district_dram_saved_pct=([0-9.]+)%", stdout_text)
+    if m_lod:
+        res["lod_active_districts"] = int(m_lod.group(1))
+        res["lod_total_districts"] = int(m_lod.group(2))
+        res["district_dram_saved_pct"] = float(m_lod.group(3))
+    m_pov = re.search(r"POV6SENSE31B layers_eval=(\d+) mean_consensus=([0-9.]+) clean=(\d+) caution=(\d+) rescue=(\d+)", stdout_text)
+    if m_pov:
+        res["pov_layers_eval"] = int(m_pov.group(1))
+        res["pov_mean_consensus"] = float(m_pov.group(2))
+        res["pov_clean"] = int(m_pov.group(3))
+        res["pov_caution"] = int(m_pov.group(4))
+        res["pov_rescue"] = int(m_pov.group(5))
     return res
 
 
@@ -224,6 +236,17 @@ def _base_cmd(args: argparse.Namespace) -> List[str]:
         cmd.extend(["--cuneiform-bank", str(args.c8d)])
     if args.so is not None and args.so.is_file():
         cmd.extend(["--so", str(args.so)])
+    lod_shared = getattr(args, "lod_shared", None)
+    if lod_shared is not None and lod_shared.is_file():
+        cmd.extend(["--lod-shared", str(lod_shared)])
+    lod_district_dir = getattr(args, "lod_district_dir", None)
+    if lod_district_dir is not None and str(lod_district_dir):
+        cmd.extend(["--lod-district-dir", str(lod_district_dir)])
+    district_router = getattr(args, "district_router", None)
+    if district_router is not None and district_router.is_file():
+        cmd.extend(["--district-router", str(district_router)])
+    if getattr(args, "player_pov_6sense", False):
+        cmd.append("--player-pov-6sense")
     return cmd
 
 
@@ -445,6 +468,8 @@ def _run_selftest() -> int:
             "MOD31B thresh=0.350 skipped_layers=12 eligible_layers=40 skipped_pct=30.0%",
             "SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=201.40 byte_head=true step_pos=true min_margin=0.75 margin_stopped=0 ast_lm_skipped=0 drafted=9 accepted=6 batches=4 fallback_k1=0 accept_rate=0.667 generated=16 s_per_tok=0.812",
             "MEM31B pinned_bytes=4600000000 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1024 prefill_s=12.34 decode_s=14.56 vm_hwm_kb=Some(4800000) vm_rss_kb=Some(4750000)",
+            "GTALOD31B active_districts=112 total_districts=672 district_dram_saved_pct=83.3%",
+            "POV6SENSE31B layers_eval=56 mean_consensus=0.8125 clean=44 caution=10 rescue=2",
         ]
     )
     parsed = parse_run31b_telemetry(sample_log)
@@ -463,6 +488,14 @@ def _run_selftest() -> int:
         and abs(float(parsed.get("mod_skipped_pct", 0.0)) - 30.0) < 1e-3
         and abs(float(parsed.get("assistant_mb", 0.0)) - 201.40) < 1e-2
         and parsed.get("ssd_read_bytes") == 0
+        and parsed.get("lod_active_districts") == 112
+        and parsed.get("lod_total_districts") == 672
+        and abs(float(parsed.get("district_dram_saved_pct", 0.0)) - 83.3) < 1e-2
+        and parsed.get("pov_layers_eval") == 56
+        and abs(float(parsed.get("pov_mean_consensus", 0.0)) - 0.8125) < 1e-4
+        and parsed.get("pov_clean") == 44
+        and parsed.get("pov_caution") == 10
+        and parsed.get("pov_rescue") == 2
         and "<channel|>" in format_gemma4_chat_nll_turn("Q", "A")
     )
     gate("Gate 3: Telemetry parser exact across EVAL_NLL/KL/CRTR/MoD/SPEC/MEM", g3_ok)
@@ -520,6 +553,10 @@ def main() -> int:
     ap.add_argument("--tokenizer", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json"))
     ap.add_argument("--c8d", type=Path, default=None)
     ap.add_argument("--router", type=Path, default=None)
+    ap.add_argument("--lod-shared", type=Path, default=None)
+    ap.add_argument("--lod-district-dir", type=Path, default=None)
+    ap.add_argument("--district-router", type=Path, default=None)
+    ap.add_argument("--player-pov-6sense", action="store_true")
     ap.add_argument("--so", type=Path, default=None)
     ap.add_argument("--teacher-logits", type=Path, default=None)
     ap.add_argument("--assistant-v6", type=Path, default=None)
