@@ -1,0 +1,64 @@
+{
+  "version": "V8.0-6SENSE-PLAYER-POV-CUNEIFORM-SPATIAL-DISTRICTS-L4",
+  "status": "COMPLETED_AND_SEALED",
+  "gpu": "NVIDIA L4 (22.03 GiB VRAM, High-RAM)",
+  "elapsed_minutes": 234.7,
+  "elapsed_hours": 3.91,
+  "drive_path": "/content/drive/MyDrive/gemma4_v8_0_player_pov/",
+  "stage_summary": {
+    "stage1_tokens_packed": 214016,
+    "stage2_warm_start": "inherited_from_v7_5_stage2",
+    "stage3_layers_calibrated": 60,
+    "stage4a_post_cell60": {
+      "l58_k_proj_val_cos": [0.84702, 0.85358],
+      "l58_v_proj_val_cos": [0.82802, 0.83372],
+      "l59_k_proj_val_cos": [0.84388, 0.86092],
+      "l59_vlm_cos": 0.88712,
+      "val_kl": [1.9978, 1.8267],
+      "val_top1": [0.615, 0.636],
+      "val_agree": [0.706, 0.715]
+    },
+    "stage4b_assistant": {
+      "steps": 300,
+      "val_kl": [8.3457, 1.6080],
+      "val_top1_agree": [0.349, 0.687],
+      "bhdr_d_byte": 384,
+      "bhdr_bytes": 2687324
+    },
+    "stage5_held_out_coco": {
+      "val0": { "cos": 0.87681, "top1": 0.692, "text": "A black motorcycle motorcycle is on a of a building." },
+      "val1": { "cos": 0.85268, "top1": 0.462, "text": "A office deskicle with a monitors monitors of computers and" },
+      "val2": { "cos": 0.88055, "top1": 0.545, "text": "A toilet bathroom bathroom with a bathroom bathroom with" },
+      "val3": { "cos": 0.88387, "top1": 0.769, "text": "A people are at a bus next to a bus with" },
+      "mean_cos": 0.87348,
+      "mean_top1": 0.6170
+    }
+  },
+  "artifacts": {
+    "gemma4_31b_v8_0_base.t16c": { "bytes": 5879227392, "sha256_prefix": "9faa3404902e185d" },
+    "gemma4_31b_v8_0_lod_shared.t16c": { "bytes": 718427136, "sha256_prefix": "739d2c023e5b3010" },
+    "gemma4_31b_v8_0_lod_d0.t16c": { "bytes": 820712448, "sha256_prefix": "85101fa7fa5199a7" },
+    "gemma4_31b_v8_0_lod_d1.t16c": { "bytes": 235768320, "sha256_prefix": "ab1dd838d2fd57c8" },
+    "gemma4_31b_v8_0_lod_d2.t16c": { "bytes": 325267968, "sha256_prefix": "29bf623f392b9ca4" },
+    "gemma4_31b_v8_0_lod_d3.t16c": { "bytes": 278387200, "sha256_prefix": "87dc598acaa38458" },
+    "gemma4_31b_v8_0_lod_d4.t16c": { "bytes": 309285888, "sha256_prefix": "e8267d95c1a6712c" },
+    "gemma4_31b_v8_0_lod_d5.t16c": { "bytes": 321006080, "sha256_prefix": "5aea2032183801c3" },
+    "gemma4_31b_v8_0_lod_d6.t16c": { "bytes": 325267968, "sha256_prefix": "dd8fec3482faec61" },
+    "gemma4_31b_v8_0_lod_d7.t16c": { "bytes": 373214208, "sha256_prefix": "598aff44a91213e5" },
+    "gemma4_31b_v8_0_lod_d8.t16c": { "bytes": 297565696, "sha256_prefix": "2380e46ebb24cbf5" },
+    "gemma4_31b_v8_0_lod_d9.t16c": { "bytes": 333791744, "sha256_prefix": "86700bb2456cee4d" },
+    "gemma4_31b_v8_0_lod_d10.t16c": { "bytes": 351904768, "sha256_prefix": "c074d18d7850c623" },
+    "gemma4_31b_v8_0_lod_d11.t16c": { "bytes": 352970240, "sha256_prefix": "016cddebad6989d3" },
+    "gemma4_31b_v8_0_router.crtr": { "bytes": 10861956, "sha256_prefix": "be4a1ab07bcacc8c" },
+    "gemma4_31b_v8_0_c8d.c8d": { "bytes": 11874560, "sha256_prefix": "dd083658448a64d5" },
+    "gemma4_31b_v8_0_pov_6sense_router.pt": { "bytes": 47867961, "sha256_prefix": "583998a94f0ed5d8" },
+    "gemma4_31b_v8_0_pov_6sense_router.drtr": { "bytes": 83782596, "sha256_prefix": "b81a60c19fb4599b" },
+    "gemma4_31b_v8_0_pov_6sense_manifest.json": { "bytes": 133421, "sha256_prefix": "d4b9d01d857dabf0" },
+    "gemma4_31b_v8_0_assistant.bhdr": { "bytes": 2687324, "sha256_prefix": "f8ea861872709844" },
+    "gemma4_31b_v8_0_assistant_body_q2.t16c": { "bytes": 56628032, "sha256_prefix": "2f9f733b95452735" },
+    "gemma4_31b_v8_0_assistant_body_q4.t16c": { "bytes": 106894144, "sha256_prefix": "98565f69517f66b8" },
+    "gemma4_31b_v8_0_assistant_body_q8.t16c": { "bytes": 207426368, "sha256_prefix": "7e0a19fe949c718a" },
+    "v8_0_report.json": { "bytes": 11584, "sha256_prefix": "759da52fb7a8e226" },
+    "SHA256SUMS.txt": { "bytes": 2314, "sha256_prefix": "c99095a87f05af78" }
+  }
+}
