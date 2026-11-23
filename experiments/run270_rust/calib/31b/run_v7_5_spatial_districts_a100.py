@@ -104,14 +104,18 @@ PROGRESS_JSON = CKPT_DIR / "progress.json"
 # Hardware & A100 Max-Utilization Configuration
 # ---------------------------------------------------------------------------
 def configure_a100_max_utilization(gpu_vram_gb: float, has_cuda: bool) -> Dict[str, object]:
-    """Configure TF32, cudnn, HBM residency, micro-batch size, and async I/O pools."""
+    """Configure TF32, cudnn, HBM residency, micro-batch size, and async I/O pools across G4/A100/L4."""
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
     force_max = os.environ.get("V7_5_A100_MAX_UTIL", "1").strip() == "1"
-    is_a100 = gpu_vram_gb >= 64.0
+    is_big_gpu = gpu_vram_gb >= 64.0
     resident_env = os.environ.get("V7_5_RESIDENT_GPU", "").strip()
-    resident_gpu = (resident_env == "1") if resident_env else (is_a100 and force_max and has_cuda)
+    resident_gpu = (resident_env == "1") if resident_env else (is_big_gpu and force_max and has_cuda)
 
-    if is_a100:
+    if gpu_vram_gb >= 88.0:
+        default_bs = 128
+        default_ev = 4096
+        profile = "G4-96GB-MAX"
+    elif is_big_gpu:
         default_bs = 128
         default_ev = 4096
         profile = "A100-80GB-MAX"
@@ -122,7 +126,7 @@ def configure_a100_max_utilization(gpu_vram_gb: float, has_cuda: bool) -> Dict[s
     elif has_cuda:
         default_bs = 48
         default_ev = 2048
-        profile = "L4-22GB-SAFE"
+        profile = "L4-22GB-MAX"
     else:
         default_bs = 16
         default_ev = 512
@@ -1034,10 +1038,20 @@ def run_selftest() -> int:
     except ValueError:
         caught_misalign = True
     a100_cfg = configure_a100_max_utilization(80.0, has_cuda=False)
+    g4_cfg = configure_a100_max_utilization(96.0, has_cuda=False)
+    l4_cfg = configure_a100_max_utilization(22.5, has_cuda=True)
     gate(
-        "Gate 6: Holdout disjointness, fail-closed checks & A100 config",
-        dj["overlap_4grams"] == 0 and caught_misalign and a100_cfg["profile"] == "A100-80GB-MAX" and a100_cfg["batch_seq"] == 128,
-        f"overlap={dj['overlap_4grams']} misaligned_caught={caught_misalign} a100={a100_cfg['profile']}/bs={a100_cfg['batch_seq']}",
+        "Gate 6: Holdout disjointness, fail-closed checks & G4/A100/L4 config",
+        dj["overlap_4grams"] == 0
+        and caught_misalign
+        and g4_cfg["profile"] == "G4-96GB-MAX"
+        and g4_cfg["batch_seq"] == 128
+        and a100_cfg["profile"] == "A100-80GB-MAX"
+        and a100_cfg["batch_seq"] == 128
+        and l4_cfg["profile"] == "L4-22GB-MAX"
+        and l4_cfg["batch_seq"] == 48,
+        f"overlap={dj['overlap_4grams']} misaligned_caught={caught_misalign} "
+        f"g4={g4_cfg['profile']}/bs={g4_cfg['batch_seq']} a100={a100_cfg['profile']}/bs={a100_cfg['batch_seq']} l4={l4_cfg['profile']}/bs={l4_cfg['batch_seq']}",
     )
 
     print(f"V7_5_SELFTEST: {6 - failures}/6 gates passed", flush=True)
