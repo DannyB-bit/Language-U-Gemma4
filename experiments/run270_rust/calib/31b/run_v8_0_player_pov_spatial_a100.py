@@ -1182,6 +1182,15 @@ def forward_geglu_lod_batch(
 # ---------------------------------------------------------------------------
 # Fail-Closed Multi-Shard Drive Sync
 # ---------------------------------------------------------------------------
+def _drive_safe_copy(src: Path, dst: Path, chunk_bytes: int = 16 * 1024 * 1024) -> None:
+    """Truncate-and-overwrite in-place so Google Drive FUSE updates the existing file ID without creating duplicates."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(src, "rb") as fs, open(dst, "wb") as fd:
+        shutil.copyfileobj(fs, fd, chunk_bytes)
+        fd.flush()
+        os.fsync(fd.fileno())
+
+
 def sync_v8_0_checkpoints_to_drive(
     expected_positions: Dict[Path, int],
     drive_dir: Optional[Path] = None,
@@ -1204,9 +1213,7 @@ def sync_v8_0_checkpoints_to_drive(
             print(f"  [Drive Sync Abort] Size mismatch for {src_p.name}: {cur_sz:,} != {exp_pos:,}", flush=True)
             return
         dst_p = d_dir / (src_p.name + ".partial")
-        tmp_p = dst_p.with_suffix(dst_p.suffix + ".tmp")
-        shutil.copy2(src_p, tmp_p)
-        os.replace(tmp_p, dst_p)
+        _drive_safe_copy(src_p, dst_p)
         if not dst_p.is_file() or dst_p.stat().st_size != cur_sz:
             print(f"  [Drive Sync Abort] Short Drive copy for {dst_p.name}; keeping prior ckpt.", flush=True)
             return
@@ -1219,9 +1226,7 @@ def sync_v8_0_checkpoints_to_drive(
         dp = drive_ckpt / fn
         if fn in _STATIC_S2 and dp.is_file() and dp.stat().st_size == sp.stat().st_size:
             continue
-        tp = dp.with_suffix(dp.suffix + ".tmp")
-        shutil.copy2(sp, tp)
-        os.replace(tp, dp)
+        _drive_safe_copy(sp, dp)
 
 
 def persist_v8_0_file(src: Path, drive_dir: Optional[Path] = None) -> Tuple[int, str]:
@@ -1231,9 +1236,10 @@ def persist_v8_0_file(src: Path, drive_dir: Optional[Path] = None) -> Tuple[int,
     if d_dir is not None:
         d_dir.mkdir(parents=True, exist_ok=True)
         dst = d_dir / src.name
-        tmp = dst.with_suffix(dst.suffix + ".tmp")
-        shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+        if dst.is_file() and dst.stat().st_size == sz and v70.sha256_file(dst) == dig:
+            print(f"  [DRIVE VERIFIED EXISTING] {dst.name} ({sz:,} B, sha256={dig[:16]}...)", flush=True)
+            return sz, dig
+        _drive_safe_copy(src, dst)
         if v70.sha256_file(dst) != dig or dst.stat().st_size != sz:
             raise IOError(f"Drive SHA-256 mismatch for {src.name}")
         print(f"  [DRIVE PERSISTED] {dst.name} ({sz:,} B, sha256={dig[:16]}...)", flush=True)
@@ -2897,7 +2903,8 @@ def run_pipeline() -> Dict[str, object]:
                     exp_sync = {OUT_BASE_T16C: shard_pos["base"]}
                     for sn_k, sp_k in shard_map.items():
                         exp_sync[sp_k] = shard_pos[sn_k]
-                    sync_v8_0_checkpoints_to_drive(exp_sync)
+                    if l_idx == 0 or (l_idx + 1) % 10 == 0:
+                        sync_v8_0_checkpoints_to_drive(exp_sync)
                     gc.collect()
 
                 save_progress({"stage": f"L{l_idx:02d}_done", "next_layer": l_idx + 1, "txt_cos": round(cos_l_txt, 5), "vlm_cos": round(cos_l_vlm, 5)})

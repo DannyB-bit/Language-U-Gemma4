@@ -1,0 +1,181 @@
+{
+  "version": "V7.5-SPATIAL-DISTRICTS-GTA-LOD-60L-A100",
+  "gpu": "NVIDIA L4",
+  "hw_profile": {
+    "profile": "L4-22GB-MAX",
+    "gpu_vram_gb": 22.03,
+    "resident_gpu": false,
+    "batch_seq": 64,
+    "als_ev_toks": 4096,
+    "distill_bs": 24,
+    "ast_bs": 8,
+    "bh_bs": 512,
+    "tf32": true,
+    "distill_enabled": true,
+    "distill_thresh": 0.72,
+    "distill_steps": 40
+  },
+  "elapsed_s": 600.68,
+  "base_t16c_bytes": 5879227392,
+  "base_t16c_gib": 5.4755,
+  "lod_shared_bytes": 718427136,
+  "lod_district_bytes": {
+    "gemma4_31b_v7_5_lod_d0.t16c": 820712448,
+    "gemma4_31b_v7_5_lod_d1.t16c": 235768320,
+    "gemma4_31b_v7_5_lod_d2.t16c": 325267968,
+    "gemma4_31b_v7_5_lod_d3.t16c": 278387200,
+    "gemma4_31b_v7_5_lod_d4.t16c": 309285888,
+    "gemma4_31b_v7_5_lod_d5.t16c": 321006080,
+    "gemma4_31b_v7_5_lod_d6.t16c": 325267968,
+    "gemma4_31b_v7_5_lod_d7.t16c": 373214208,
+    "gemma4_31b_v7_5_lod_d8.t16c": 297565696,
+    "gemma4_31b_v7_5_lod_d9.t16c": 333791744,
+    "gemma4_31b_v7_5_lod_d10.t16c": 351904768,
+    "gemma4_31b_v7_5_lod_d11.t16c": 352970240
+  },
+  "mean_native_capture": 0.9161,
+  "mean_district_router_top2_recall": 0.9872,
+  "mean_crtr_val_recall": 0.84216,
+  "mean_mod_val_acc": 0.93062,
+  "vision_val_cos": [
+    0.90928,
+    0.91111
+  ],
+  "l59_vlm_state_cos": 0.46024,
+  "post_cell60_val_kl": [
+    4.9912,
+    3.2063
+  ],
+  "post_cell60_val_top1": [
+    0.115,
+    0.3842
+  ],
+  "post_cell60_val_agree": [
+    0.1597,
+    0.2525
+  ],
+  "assistant_v7_align_kl": [
+    0.0,
+    0.0
+  ],
+  "assistant_v7_align_top1_agree": [
+    0.0,
+    0.0
+  ],
+  "assistant_v7_bhdr": {
+    "skipped": true,
+    "reason": "resumed_from_L60_without_pre58_kv"
+  },
+  "heldout_coco_val0_3": [
+    {
+      "val_idx": 0,
+      "gt_caption": "A black Honda motorcycle parked in front of a garage.",
+      "ans_cos": 0.68711,
+      "ans_top1_agree": 0.5385,
+      "ans_top5_agree": 0.7692,
+      "student_forced_pred": "A black motorcycle motorcycle is outdoors a of a building."
+    },
+    {
+      "val_idx": 1,
+      "gt_caption": "An office cubicle with four different types of computers.",
+      "ans_cos": 0.64174,
+      "ans_top1_agree": 0.4615,
+      "ans_top5_agree": 0.8462,
+      "student_forced_pred": "A office spaces with a computers of computer and"
+    },
+    {
+      "val_idx": 2,
+      "gt_caption": "A small closed toilet in a cramped space.",
+      "ans_cos": 0.69853,
+      "ans_top1_agree": 0.4545,
+      "ans_top5_agree": 0.8182,
+      "student_forced_pred": "A white bathroom, with a bathroom bathroom.}"
+    },
+    {
+      "val_idx": 3,
+      "gt_caption": "Two women waiting at a bench next to a street.",
+      "ans_cos": 0.69095,
+      "ans_top1_agree": 0.6154,
+      "ans_top5_agree": 0.7692,
+      "student_forced_pred": "A people are on a bus next to a bus and}"
+    }
+  ],
+  "artifacts": {
+    "gemma4_31b_v7_5_base.t16c": {
+      "bytes": 5879227392,
+      "sha256": "329aae433b395cbdf682ed7d8ba351468d95a0add0a43b0587ae4818d18fd338"
+    },
+    "gemma4_31b_v7_5_lod_shared.t16c": {
+      "bytes": 718427136,
+      "sha256": "91c4c688d08358cea959c2936c1b62d7e570461cb3a8fa4b69ece2042061f323"
+    },
+    "gemma4_31b_v7_5_lod_d0.t16c": {
+      "bytes": 820712448,
+      "sha256": "2b11bff2b99e3260f51fb142eb00f97da38e47837600fc6daf9a44a0c439d322"
+    },
+    "gemma4_31b_v7_5_lod_d1.t16c": {
+      "bytes": 235768320,
+      "sha256": "e42ad2d4d3391b3fbf653e7dadcc166de166bd5328205f7b1d5ae7d9a08bbdb1"
+    },
+    "gemma4_31b_v7_5_lod_d2.t16c": {
+      "bytes": 325267968,
+      "sha256": "de0c997c1608e535721dda8f4111b4724d8b7538ef9658030b6523da907b5d33"
+    },
+    "gemma4_31b_v7_5_lod_d3.t16c": {
+      "bytes": 278387200,
+      "sha256": "749ec110444756ffdc33576179077024fc8ea06cf603d4cd126622a576ff6448"
+    },
+    "gemma4_31b_v7_5_lod_d4.t16c": {
+      "bytes": 309285888,
+      "sha256": "f3c3827df0a50f4e80f2393cb166209f55863dc36fffdc1ded1c800109840268"
+    },
+    "gemma4_31b_v7_5_lod_d5.t16c": {
+      "bytes": 321006080,
+      "sha256": "a6e78264602b2dfb8b34e2f53505ca3640fffb9643213a085254571fd887041a"
+    },
+    "gemma4_31b_v7_5_lod_d6.t16c": {
+      "bytes": 325267968,
+      "sha256": "19876ca3faea3beb6d5c3070b41ddc5dd8499e586b88065412ae0066a0b1e4c1"
+    },
+    "gemma4_31b_v7_5_lod_d7.t16c": {
+      "bytes": 373214208,
+      "sha256": "09f0274d2e10c2b26f617742d2a63a5d609444118d404e77b275648c294d8bba"
+    },
+    "gemma4_31b_v7_5_lod_d8.t16c": {
+      "bytes": 297565696,
+      "sha256": "fbdb721a9d3a5d9ce4d09ce64cfc52adcbdc69a7f4cd210c17fcd35342dafd5c"
+    },
+    "gemma4_31b_v7_5_lod_d9.t16c": {
+      "bytes": 333791744,
+      "sha256": "baa69cb1cabcce2d97ce8e8e605fb52ca289831ba60f1f6536e79d9a53ede2f3"
+    },
+    "gemma4_31b_v7_5_lod_d10.t16c": {
+      "bytes": 351904768,
+      "sha256": "166d33b195e5acd281f0518993c3c72d6648eedb848aa078653ba23973f5cf24"
+    },
+    "gemma4_31b_v7_5_lod_d11.t16c": {
+      "bytes": 352970240,
+      "sha256": "f86b0adac556707a1ee6a3480e943ef53ba29d2ba1fe86a4bae2237b44e6f407"
+    },
+    "gemma4_31b_v7_5_router.crtr": {
+      "bytes": 10861956,
+      "sha256": "9af6f52e5b883904c5af37cc8b44617a795c57fed003025dd6fd2a7f759942e0"
+    },
+    "gemma4_31b_v7_5_c8d.c8d": {
+      "bytes": 4792256,
+      "sha256": "bb6091a5560ad01d0f7efc61f1bd9c1d4c46162572a1cba1ea09c782b931a6cc"
+    },
+    "gemma4_31b_v7_5_district_router.pt": {
+      "bytes": 47273525,
+      "sha256": "9eadbc05efce064bedf4d464ef9d5565d9250547f9a927a95a1744bd8e1e3997"
+    },
+    "gemma4_31b_v7_5_district_router.drtr": {
+      "bytes": 82768836,
+      "sha256": "621f1624d70b62548cb10194ebffe231050ffcf8611938fd7c4cf5653af33d85"
+    },
+    "gemma4_31b_v7_5_district_manifest.json": {
+      "bytes": 91662,
+      "sha256": "8336ad6eda1c1bc5170d3b52e5f3535ed804ecbc61f16b2793ee352b69d6a6b8"
+    }
+  }
+}
