@@ -2133,6 +2133,8 @@ def run_pipeline() -> Dict[str, object]:
                 pb, invs, lrt, w_o_eff = pack_matrix_gpu_gptq(w_teach["o_proj"], [h_o], torch.sqrt((xsq_o / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_o, 0)[: hw_cfg["als_ev_toks"]], to_rowmajor=trm)
                 shard_pos["base"] = p3._write_mat_record(shard_fps["base"], shard_pos["base"], f"{p}self_attn.o_proj.weight", do_o, di_o, bsi, nb, asy, True, pb, invs, lrt)
                 base_mats_count += 1; w_o_eff_c = w_o_eff.to(compute_dtype)
+                if l_idx in (58, 59):
+                    w_stud["o_proj"] = w_o_eff.cpu()
                 del h_o, xsq_o, x_ev_o, pb, invs, lrt
 
                 with torch.no_grad():
@@ -2461,15 +2463,12 @@ def run_pipeline() -> Dict[str, object]:
     crtr_sz = crtr.export_crtr([crtr_layers[l] for l in range(N_LAYERS)], OUT_CRTR)
     v70._atomic_torch_save({"n_layers": N_LAYERS, "n_districts": N_DISTRICTS, "block_size": BLOCK_SIZE, "top_k": TOP_K_DISTRICTS, "layers": district_routers}, OUT_DISTRICT_ROUTER)
     OUT_DISTRICT_MANIFEST.write_text(json.dumps({"layers": district_manifest}, indent=2), encoding="utf-8")
-    print(f"[Stage 3 DONE] Base={base_sz/1024**3:.3f} GiB + 9 LOD shards | CRTR={crtr_sz:,} B", flush=True)
+    print(f"[Stage 3 DONE] Base={base_sz/1024**3:.3f} GiB + 13 LOD shards | CRTR={crtr_sz:,} B", flush=True)
 
-    # Clean checkpoints before Stages 4A/4B
-    for rmp in (VIS_CKPT_PATH, VIS_META_PATH, VLM_SOFT_CACHE, STAGE3_CKPT, CRTR_CKPT, D_ROUTER_CKPT, CKPT_X_TEACH, CKPT_X_STUD):
-        rmp.unlink(missing_ok=True)
-    if DRIVE_DIR is not None:
-        shutil.rmtree(DRIVE_DIR / "ckpt_v7_5", ignore_errors=True)
-        for sp_k in all_t16c_paths:
-            (DRIVE_DIR / (sp_k.name + ".partial")).unlink(missing_ok=True)
+    # Persist ALL completed Stage 3 artifacts to Drive IMMEDIATELY before Stage 4A/4B (never delete checkpoints first!)
+    for fp_s3 in all_t16c_paths + [OUT_CRTR, OUT_DISTRICT_ROUTER, OUT_DISTRICT_MANIFEST]:
+        persist_v7_5_file(fp_s3)
+    print(f"[Stage 3 PERSISTED TO DRIVE] {len(all_t16c_paths) + 3} verified artifacts safely saved.", flush=True)
 
     # Stage 4A: Multimodal C8DB + Capture L58/L59 Student KV
     print("\n[Stage 4A] Multimodal C8DB + Capturing V7.5 L58/L59 KV (128 seqs)...", flush=True)
@@ -2979,6 +2978,12 @@ def run_pipeline() -> Dict[str, object]:
     sha_lines.append(f"{r_dig}  {OUT_REPORT.name}")
     OUT_SHA256.write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
     persist_v7_5_file(OUT_SHA256)
+    for rmp in (VIS_CKPT_PATH, VIS_META_PATH, VLM_SOFT_CACHE, STAGE3_CKPT, CRTR_CKPT, D_ROUTER_CKPT, CKPT_X_TEACH, CKPT_X_STUD):
+        rmp.unlink(missing_ok=True)
+    if DRIVE_DIR is not None:
+        shutil.rmtree(DRIVE_DIR / "ckpt_v7_5", ignore_errors=True)
+        for sp_k in all_t16c_paths:
+            (DRIVE_DIR / (sp_k.name + ".partial")).unlink(missing_ok=True)
     print(f"[V7.5 COMPLETE] Elapsed={(time.perf_counter()-t0_all)/60:.1f} min | Report={OUT_REPORT}", flush=True)
 
     if os.environ.get("COLAB_AUTO_UNASSIGN", "1") == "1":

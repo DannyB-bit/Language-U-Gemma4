@@ -2558,6 +2558,8 @@ def run_pipeline() -> Dict[str, object]:
                 pb, invs, lrt, w_o_eff = pack_matrix_gpu_gptq(w_teach["o_proj"], [h_o], torch.sqrt((xsq_o / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_o, 0)[: hw_cfg["als_ev_toks"]], to_rowmajor=trm)
                 shard_pos["base"] = p3._write_mat_record(shard_fps["base"], shard_pos["base"], f"{p}self_attn.o_proj.weight", do_o, di_o, bsi, nb, asy, True, pb, invs, lrt)
                 base_mats_count += 1; w_o_eff_c = w_o_eff.to(compute_dtype)
+                if l_idx in (58, 59):
+                    w_stud["o_proj"] = w_o_eff.cpu()
                 del h_o, xsq_o, x_ev_o, pb, invs, lrt
 
                 with torch.no_grad():
@@ -2920,17 +2922,15 @@ def run_pipeline() -> Dict[str, object]:
     crtr_sz = crtr.export_crtr([crtr_layers[l] for l in range(N_LAYERS)], OUT_CRTR)
     dr_obj = {"version": "V8.0-6SENSE-POV", "n_layers": N_LAYERS, "n_districts": N_DISTRICTS, "block_size": BLOCK_SIZE, "top_k": TOP_K_DISTRICTS, "sense_dim": SENSE_DIM, "sense_names": list(SENSE_NAMES), "layers": district_routers}
     v70._atomic_torch_save(dr_obj, OUT_DISTRICT_ROUTER)
-    drtr_sz = export_district_router_drtr(dr_obj, OUT_DISTRICT_ROUTER.with_suffix(".drtr"), ff=21504)
+    OUT_DRTR = OUT_DISTRICT_ROUTER.with_suffix(".drtr")
+    drtr_sz = export_district_router_drtr(dr_obj, OUT_DRTR, ff=21504)
     OUT_DISTRICT_MANIFEST.write_text(json.dumps({"version": "V8.0-6SENSE-POV", "sense_names": list(SENSE_NAMES), "layers": district_manifest}, indent=2), encoding="utf-8")
     print(f"[Stage 3 DONE] Base={base_sz/1024**3:.3f} GiB + 13 COLBLOCK LOD shards | CRTR={crtr_sz:,} B | DRTR={drtr_sz:,} B", flush=True)
 
-    # Clean checkpoints before Stages 4A/4B
-    for rmp in (VIS_CKPT_PATH, VIS_META_PATH, VLM_SOFT_CACHE, STAGE3_CKPT, CRTR_CKPT, D_ROUTER_CKPT, CKPT_X_TEACH, CKPT_X_STUD):
-        rmp.unlink(missing_ok=True)
-    if DRIVE_DIR is not None:
-        shutil.rmtree(DRIVE_DIR / "ckpt_v8_0", ignore_errors=True)
-        for sp_k in all_t16c_paths:
-            (DRIVE_DIR / (sp_k.name + ".partial")).unlink(missing_ok=True)
+    # Persist ALL completed Stage 3 artifacts to Drive IMMEDIATELY before Stage 4A/4B (never delete checkpoints first!)
+    for fp_s3 in all_t16c_paths + [OUT_CRTR, OUT_DISTRICT_ROUTER, OUT_DRTR, OUT_DISTRICT_MANIFEST]:
+        persist_v8_0_file(fp_s3)
+    print(f"[Stage 3 PERSISTED TO DRIVE] {len(all_t16c_paths) + 4} verified artifacts safely saved.", flush=True)
 
     # Stage 4A: Multimodal C8DB + Capture L58/L59 Student KV
     print("\n[Stage 4A] Multimodal C8DB + Capturing V8.0 L58/L59 KV (128 seqs)...", flush=True)
@@ -3025,42 +3025,54 @@ def run_pipeline() -> Dict[str, object]:
         return X_in_c, None, {"k_rope": ast_k, "v_norm": ast_v}
 
     adp_k58 = adp_v58 = adp_k59 = None
-    for attr_t, nm_k, ytk, ysk, popx in [
-        ("k58", "model.language_model.layers.58.self_attn.k_proj.weight", "kt58", "ks58_base", False),
-        ("v58", "model.language_model.layers.58.self_attn.v_proj.weight", "vt58", "vs58_base", True),
-    ]:
-        xk = (bridge_cache.pop("in_58_stud") if popx else bridge_cache["in_58_stud"]).float()
-        ytk_t, ysk_t = bridge_cache.pop(ytk).float(), bridge_cache.pop(ysk).float()
-        ntr = (xk.shape[0] * 4) // 5
-        ent, ct, ex = train_c8d_proj(nm_k, xk[:ntr].to(device), ytk_t[:ntr].to(device), ysk_t[:ntr].to(device), xk[ntr:].to(device), ytk_t[ntr:].to(device), ysk_t[ntr:].to(device))
-        if ent is not None:
-            c8db_entries.append(ent)
-            if attr_t == "k58":
-                adp_k58 = (ct, ex)
-            else:
-                adp_v58 = (ct, ex)
-        del xk, ytk_t, ysk_t
-
-    del X_stud_store; gc.collect()
+    has_l58_replay = (
+        Path("/tmp/v8_0_x_stud_pre58.pt").is_file()
+        and Path("/tmp/v8_0_l58_stud.pt").is_file()
+        and Path("/tmp/v8_0_l59_stud.pt").is_file()
+        and "in_58_stud" in bridge_cache
+    )
     AST_SEQS = np.linspace(0, N_TEXT_SEQ - 1, 128, dtype=int).tolist()
-    x58 = torch.load("/tmp/v8_0_x_stud_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v8_0_x_stud_pre58.pt").unlink(missing_ok=True)
-    x59_in, _, cap_kv58 = forward_adapted_layer(x58, Path("/tmp/v8_0_l58_stud.pt"), 58, adp_k58, adp_v58, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
-    hev58 = torch.load("/tmp/v8_0_h_eval_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v8_0_h_eval_pre58.pt").unlink(missing_ok=True)
-    hev59, _, _ = forward_adapted_layer(hev58, Path("/tmp/v8_0_l58_stud.pt"), 58, adp_k58, adp_v58, mask_full=heldout_full_mask_gpu)
-    Path("/tmp/v8_0_l58_stud.pt").unlink(missing_ok=True)
+    cap_kv58 = cap_kv59 = None
+    if has_l58_replay:
+        for attr_t, nm_k, ytk, ysk, popx in [
+            ("k58", "model.language_model.layers.58.self_attn.k_proj.weight", "kt58", "ks58_base", False),
+            ("v58", "model.language_model.layers.58.self_attn.v_proj.weight", "vt58", "vs58_base", True),
+        ]:
+            xk = (bridge_cache.pop("in_58_stud") if popx else bridge_cache["in_58_stud"]).float()
+            ytk_t, ysk_t = bridge_cache.pop(ytk).float(), bridge_cache.pop(ysk).float()
+            ntr = (xk.shape[0] * 4) // 5
+            ent, ct, ex = train_c8d_proj(nm_k, xk[:ntr].to(device), ytk_t[:ntr].to(device), ysk_t[:ntr].to(device), xk[ntr:].to(device), ytk_t[ntr:].to(device), ysk_t[ntr:].to(device))
+            if ent is not None:
+                c8db_entries.append(ent)
+                if attr_t == "k58":
+                    adp_k58 = (ct, ex)
+                else:
+                    adp_v58 = (ct, ex)
+            del xk, ytk_t, ysk_t
 
-    sub_59 = np.concatenate([np.linspace(0, N_TEXT_SEQ - 1, 96, dtype=int), np.linspace(N_TEXT_SEQ, N_SEQ - 1, 32, dtype=int)])
-    _, c59, _ = forward_adapted_layer(x59_in, Path("/tmp/v8_0_l59_stud.pt"), 59, cap_sub=sub_59, capture_only=True)
-    xk59, ytk59, ysk59 = c59["in"].reshape(-1, D_MOD).float(), bridge_cache.pop("kt59").float(), c59["k"].reshape(-1, 2048).float()
-    del c59, bridge_cache
-    ntr59 = (xk59.shape[0] * 4) // 5
-    ent59, c59n, e59n = train_c8d_proj("model.language_model.layers.59.self_attn.k_proj.weight", xk59[:ntr59].to(device), ytk59[:ntr59].to(device), ysk59[:ntr59].to(device), xk59[ntr59:].to(device), ytk59[ntr59:].to(device), ysk59[ntr59:].to(device))
-    if ent59 is not None:
-        c8db_entries.append(ent59); adp_k59 = (c59n, e59n)
-    del xk59, ytk59, ysk59
-    X_stud_cpu, _, cap_kv59 = forward_adapted_layer(x59_in, Path("/tmp/v8_0_l59_stud.pt"), 59, adp_k59, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
-    H_stud_eval, _, _ = forward_adapted_layer(hev59, Path("/tmp/v8_0_l59_stud.pt"), 59, adp_k59, mask_full=heldout_full_mask_gpu)
-    Path("/tmp/v8_0_l59_stud.pt").unlink(missing_ok=True)
+        del X_stud_store; gc.collect()
+        x58 = torch.load("/tmp/v8_0_x_stud_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v8_0_x_stud_pre58.pt").unlink(missing_ok=True)
+        x59_in, _, cap_kv58 = forward_adapted_layer(x58, Path("/tmp/v8_0_l58_stud.pt"), 58, adp_k58, adp_v58, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
+        hev58 = torch.load("/tmp/v8_0_h_eval_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v8_0_h_eval_pre58.pt").unlink(missing_ok=True)
+        hev59, _, _ = forward_adapted_layer(hev58, Path("/tmp/v8_0_l58_stud.pt"), 58, adp_k58, adp_v58, mask_full=heldout_full_mask_gpu)
+        Path("/tmp/v8_0_l58_stud.pt").unlink(missing_ok=True)
+
+        sub_59 = np.concatenate([np.linspace(0, N_TEXT_SEQ - 1, 96, dtype=int), np.linspace(N_TEXT_SEQ, N_SEQ - 1, 32, dtype=int)])
+        _, c59, _ = forward_adapted_layer(x59_in, Path("/tmp/v8_0_l59_stud.pt"), 59, cap_sub=sub_59, capture_only=True)
+        xk59, ytk59, ysk59 = c59["in"].reshape(-1, D_MOD).float(), bridge_cache.pop("kt59").float(), c59["k"].reshape(-1, 2048).float()
+        del c59, bridge_cache
+        ntr59 = (xk59.shape[0] * 4) // 5
+        ent59, c59n, e59n = train_c8d_proj("model.language_model.layers.59.self_attn.k_proj.weight", xk59[:ntr59].to(device), ytk59[:ntr59].to(device), ysk59[:ntr59].to(device), xk59[ntr59:].to(device), ytk59[ntr59:].to(device), ysk59[ntr59:].to(device))
+        if ent59 is not None:
+            c8db_entries.append(ent59); adp_k59 = (c59n, e59n)
+        del xk59, ytk59, ysk59
+        X_stud_cpu, _, cap_kv59 = forward_adapted_layer(x59_in, Path("/tmp/v8_0_l59_stud.pt"), 59, adp_k59, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
+        H_stud_eval, _, _ = forward_adapted_layer(hev59, Path("/tmp/v8_0_l59_stud.pt"), 59, adp_k59, mask_full=heldout_full_mask_gpu)
+        Path("/tmp/v8_0_l59_stud.pt").unlink(missing_ok=True)
+    else:
+        print("  [Stage 4A L60-Resume Mode] Using saved L59 X_stud_store/H_stud_eval directly for post_cell60 C8DB + Held-Out VLM eval.", flush=True)
+        X_stud_cpu = X_stud_store.cpu()
+        del X_stud_store; gc.collect()
 
     cos_l59 = float(F.cosine_similarity(X_stud_cpu[-16:].reshape(-1, D_MOD).float().to(device), X_teach_store[-16:].reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
     print(f"  [L59 V8.0 VLM cos] {cos_l59:.5f}", flush=True)
@@ -3199,184 +3211,190 @@ def run_pipeline() -> Dict[str, object]:
     del p_teach_store, ht_ans, hs_ans, nxt_ans, y_star, t_top1, log_tail_q0, m60, mc60
     torch.cuda.empty_cache()
 
-    # Stage 4B: Target-Aligned Assistant-V7 + BHDR-384
-    print("\n[Stage 4B] Target-Aligning Assistant-V7 + BHDR (d_byte=384)...", flush=True)
-    ast_dir = Path(snapshot_download("google/gemma-4-31B-it-assistant", local_dir="/tmp/gemma4_31b_assistant", ignore_patterns=["*.bin", "*.pt"]))
-    with safe_open(ast_dir / "model.safetensors", framework="pt", device="cpu") as asf:
-        ast_sd = {k: asf.get_tensor(k) for k in asf.keys()}
+    # Stage 4B: Target-Aligned Assistant-V8 + BHDR-384
+    akl0 = akl1 = aagr0 = aagr1 = 0.0
+    bh_metrics: Dict[str, object] = {"skipped": True, "reason": "resumed_from_L60_without_pre58_kv"}
+    if cap_kv58 is not None and cap_kv59 is not None:
+        print("\n[Stage 4B] Target-Aligning Assistant-V8 + BHDR (d_byte=384)...", flush=True)
+        ast_dir = Path(snapshot_download("google/gemma-4-31B-it-assistant", local_dir="/tmp/gemma4_31b_assistant", ignore_patterns=["*.bin", "*.pt"]))
+        with safe_open(ast_dir / "model.safetensors", framework="pt", device="cpu") as asf:
+            ast_sd = {k: asf.get_tensor(k) for k in asf.keys()}
 
-    class Gemma4AssistantTrain(nn.Module):
-        def __init__(self, sd: Dict[str, torch.Tensor]) -> None:
-            super().__init__()
-            self.pre = nn.Parameter(sd["pre_projection.weight"].float().clone())
-            self.post = nn.Parameter(sd["post_projection.weight"].float().clone())
-            self.fn = nn.Parameter(sd["model.norm.weight"].float().clone())
-            self.register_buffer("emb", sd["model.embed_tokens.weight"].to(compute_dtype), persistent=False)
-            self.layers = nn.ModuleList()
-            for la in range(4):
-                pa_s = f"model.layers.{la}."
-                m = nn.Module()
-                m.q_proj = nn.Parameter(sd[pa_s + "self_attn.q_proj.weight"].float().clone())
-                m.o_proj = nn.Parameter(sd[pa_s + "self_attn.o_proj.weight"].float().clone())
-                m.gate = nn.Parameter(sd[pa_s + "mlp.gate_proj.weight"].float().clone())
-                m.up = nn.Parameter(sd[pa_s + "mlp.up_proj.weight"].float().clone())
-                m.down = nn.Parameter(sd[pa_s + "mlp.down_proj.weight"].float().clone())
-                m.n_in = nn.Parameter(sd[pa_s + "input_layernorm.weight"].float().clone())
-                m.n_qn = nn.Parameter(sd[pa_s + "self_attn.q_norm.weight"].float().clone())
-                m.n_pa = nn.Parameter(sd[pa_s + "post_attention_layernorm.weight"].float().clone())
-                m.n_pf = nn.Parameter(sd[pa_s + "pre_feedforward_layernorm.weight"].float().clone())
-                m.n_pff = nn.Parameter(sd[pa_s + "post_feedforward_layernorm.weight"].float().clone())
-                m.lsc = nn.Parameter(sd[pa_s + "layer_scalar"].float().reshape(1).clone())
-                self.layers.append(m)
-            cr_loc, sr_loc = make_rope(THETA_L, int(round(HD_S * PART_L)), HD_S)
-            cr_glb, sr_glb = make_rope(THETA_G, int(round(HD_F * PART_G)), HD_F)
-            self.register_buffer("cr_l", cr_loc, persistent=False); self.register_buffer("sr_l", sr_loc, persistent=False)
-            self.register_buffer("cr_g", cr_glb, persistent=False); self.register_buffer("sr_g", sr_glb, persistent=False)
+        class Gemma4AssistantTrain(nn.Module):
+            def __init__(self, sd: Dict[str, torch.Tensor]) -> None:
+                super().__init__()
+                self.pre = nn.Parameter(sd["pre_projection.weight"].float().clone())
+                self.post = nn.Parameter(sd["post_projection.weight"].float().clone())
+                self.fn = nn.Parameter(sd["model.norm.weight"].float().clone())
+                self.register_buffer("emb", sd["model.embed_tokens.weight"].to(compute_dtype), persistent=False)
+                self.layers = nn.ModuleList()
+                for la in range(4):
+                    pa_s = f"model.layers.{la}."
+                    m = nn.Module()
+                    m.q_proj = nn.Parameter(sd[pa_s + "self_attn.q_proj.weight"].float().clone())
+                    m.o_proj = nn.Parameter(sd[pa_s + "self_attn.o_proj.weight"].float().clone())
+                    m.gate = nn.Parameter(sd[pa_s + "mlp.gate_proj.weight"].float().clone())
+                    m.up = nn.Parameter(sd[pa_s + "mlp.up_proj.weight"].float().clone())
+                    m.down = nn.Parameter(sd[pa_s + "mlp.down_proj.weight"].float().clone())
+                    m.n_in = nn.Parameter(sd[pa_s + "input_layernorm.weight"].float().clone())
+                    m.n_qn = nn.Parameter(sd[pa_s + "self_attn.q_norm.weight"].float().clone())
+                    m.n_pa = nn.Parameter(sd[pa_s + "post_attention_layernorm.weight"].float().clone())
+                    m.n_pf = nn.Parameter(sd[pa_s + "pre_feedforward_layernorm.weight"].float().clone())
+                    m.n_pff = nn.Parameter(sd[pa_s + "post_feedforward_layernorm.weight"].float().clone())
+                    m.lsc = nn.Parameter(sd[pa_s + "layer_scalar"].float().reshape(1).clone())
+                    self.layers.append(m)
+                cr_loc, sr_loc = make_rope(THETA_L, int(round(HD_S * PART_L)), HD_S)
+                cr_glb, sr_glb = make_rope(THETA_G, int(round(HD_F * PART_G)), HD_F)
+                self.register_buffer("cr_l", cr_loc, persistent=False); self.register_buffer("sr_l", sr_loc, persistent=False)
+                self.register_buffer("cr_g", cr_glb, persistent=False); self.register_buffer("sr_g", sr_glb, persistent=False)
 
-        def forward_seq(self, tok_emb_seq, back_h_seq, k58, v58, k59):
-            B, Sm1, _ = tok_emb_seq.shape
-            state = F.linear(torch.cat([tok_emb_seq, back_h_seq], dim=-1).to(compute_dtype), self.pre.to(compute_dtype)).float()
-            q_mask = torch.tril(torch.ones((Sm1, SEQ_LEN), device=state.device, dtype=torch.bool), diagonal=0).unsqueeze(0).unsqueeze(0)
-            for la, m in enumerate(self.layers):
-                is_f = (la == 3)
-                hda, nkva = (HD_F, NKV_F) if is_f else (HD_S, NKV_S)
-                rota = int(round(HD_F * PART_G)) if is_f else int(round(HD_S * PART_L))
-                ga = NH // nkva
-                inp = rmsn_gpu(state, m.n_in).to(compute_dtype)
-                q = F.linear(inp, m.q_proj.to(compute_dtype)).view(B, Sm1, NH, hda)
-                cr = (self.cr_g if is_f else self.cr_l)[1 : Sm1 + 1]
-                sr = (self.sr_g if is_f else self.sr_l)[1 : Sm1 + 1]
-                qn = apply_rope(rmsn_gpu(q, m.n_qn), cr, sr, rota, hda).transpose(1, 2).to(compute_dtype)
-                kk = (k59 if is_f else k58).to(compute_dtype).repeat_interleave(ga, dim=1)
-                vv = (k59 if is_f else v58).to(compute_dtype).repeat_interleave(ga, dim=1)
-                ctx = F.scaled_dot_product_attention(qn, kk, vv, attn_mask=q_mask, scale=1.0)
-                state = state + rmsn_gpu(F.linear(ctx.transpose(1, 2).contiguous().view(B, Sm1, NH * hda), m.o_proj.to(compute_dtype)), m.n_pa).float()
-                hm = rmsn_gpu(state, m.n_pf).to(compute_dtype)
-                act = (F.gelu(F.linear(hm, m.gate.to(compute_dtype)).float(), approximate="tanh") * F.linear(hm, m.up.to(compute_dtype)).float()).to(compute_dtype)
-                state = (state + rmsn_gpu(F.linear(act, m.down.to(compute_dtype)), m.n_pff).float()) * m.lsc
-            return rmsn_gpu(state, self.fn).float()
+            def forward_seq(self, tok_emb_seq, back_h_seq, k58, v58, k59):
+                B, Sm1, _ = tok_emb_seq.shape
+                state = F.linear(torch.cat([tok_emb_seq, back_h_seq], dim=-1).to(compute_dtype), self.pre.to(compute_dtype)).float()
+                q_mask = torch.tril(torch.ones((Sm1, SEQ_LEN), device=state.device, dtype=torch.bool), diagonal=0).unsqueeze(0).unsqueeze(0)
+                for la, m in enumerate(self.layers):
+                    is_f = (la == 3)
+                    hda, nkva = (HD_F, NKV_F) if is_f else (HD_S, NKV_S)
+                    rota = int(round(HD_F * PART_G)) if is_f else int(round(HD_S * PART_L))
+                    ga = NH // nkva
+                    inp = rmsn_gpu(state, m.n_in).to(compute_dtype)
+                    q = F.linear(inp, m.q_proj.to(compute_dtype)).view(B, Sm1, NH, hda)
+                    cr = (self.cr_g if is_f else self.cr_l)[1 : Sm1 + 1]
+                    sr = (self.sr_g if is_f else self.sr_l)[1 : Sm1 + 1]
+                    qn = apply_rope(rmsn_gpu(q, m.n_qn), cr, sr, rota, hda).transpose(1, 2).to(compute_dtype)
+                    kk = (k59 if is_f else k58).to(compute_dtype).repeat_interleave(ga, dim=1)
+                    vv = (k59 if is_f else v58).to(compute_dtype).repeat_interleave(ga, dim=1)
+                    ctx = F.scaled_dot_product_attention(qn, kk, vv, attn_mask=q_mask, scale=1.0)
+                    state = state + rmsn_gpu(F.linear(ctx.transpose(1, 2).contiguous().view(B, Sm1, NH * hda), m.o_proj.to(compute_dtype)), m.n_pa).float()
+                    hm = rmsn_gpu(state, m.n_pf).to(compute_dtype)
+                    act = (F.gelu(F.linear(hm, m.gate.to(compute_dtype)).float(), approximate="tanh") * F.linear(hm, m.up.to(compute_dtype)).float()).to(compute_dtype)
+                    state = (state + rmsn_gpu(F.linear(act, m.down.to(compute_dtype)), m.n_pff).float()) * m.lsc
+                return rmsn_gpu(state, self.fn).float()
 
-    ast_mod = Gemma4AssistantTrain(ast_sd).to(device)
-    with torch.no_grad():
-        ast_h_final = torch.empty((len(AST_SEQS), SEQ_LEN, D_MOD), dtype=torch.float16)
-        for ai in range(len(AST_SEQS)):
-            hf = rmsn_gpu(ast_x59_stud[ai].to(device), fn_eff_g).float()
-            if keep_c60:
-                hf = hf + eval_c8d_gpu(hf, cents60, experts60)
-            ast_h_final[ai] = hf.to(torch.float16).cpu()
-        W_ast_cand = ast_mod.emb[cand_ids].float()
-    del ast_x59_stud
-
-    def eval_ast():
+        ast_mod = Gemma4AssistantTrain(ast_sd).to(device)
         with torch.no_grad():
-            agrs = kls = 0.0; cnt = 0
-            for ai in range(112, 128):
+            ast_h_final = torch.empty((len(AST_SEQS), SEQ_LEN, D_MOD), dtype=torch.float16)
+            for ai in range(len(AST_SEQS)):
+                hf = rmsn_gpu(ast_x59_stud[ai].to(device), fn_eff_g).float()
+                if keep_c60:
+                    hf = hf + eval_c8d_gpu(hf, cents60, experts60)
+                ast_h_final[ai] = hf.to(torch.float16).cpu()
+            W_ast_cand = ast_mod.emb[cand_ids].float()
+        del ast_x59_stud
+
+        def eval_ast():
+            with torch.no_grad():
+                agrs = kls = 0.0; cnt = 0
+                for ai in range(112, 128):
+                    gi = AST_SEQS[ai]
+                    te = (emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE).unsqueeze(0)
+                    ha = ast_mod.forward_seq(te, ast_h_final[ai : ai + 1, :-1].to(device).float(), cap_kv58["k_rope"][gi].unsqueeze(0).to(device), cap_kv58["v_norm"][gi].unsqueeze(0).to(device), cap_kv59["k_rope"][gi].unsqueeze(0).to(device)).squeeze(0)
+                    zs = SOFTCAP * torch.tanh((ast_h_final[ai, 1:].to(device).float() @ W_cand_g.T) / SOFTCAP)
+                    za = ha @ W_ast_cand.T
+                    ps = F.softmax(zs / TAU, dim=-1)
+                    kls += float(((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).sum().item())
+                    agrs += float((za.argmax(dim=-1) == zs.argmax(dim=-1)).float().sum().item())
+                    cnt += ha.shape[0]
+                return kls / max(cnt, 1), agrs / max(cnt, 1)
+
+        akl0, aagr0 = eval_ast()
+        opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2.5e-4, weight_decay=1e-4)
+        sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=300, eta_min=2e-5)
+        best_aagr, best_asd = aagr0, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
+        ast_bs = int(hw_cfg["ast_bs"])
+        for st in range(300):
+            opt_a.zero_grad()
+            bais = np.random.choice(112, size=ast_bs, replace=False).tolist()
+            te_l, bh_l, k58_l, v58_l, k59_l, ht_l = [], [], [], [], [], []
+            for ai in bais:
                 gi = AST_SEQS[ai]
-                te = (emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE).unsqueeze(0)
-                ha = ast_mod.forward_seq(te, ast_h_final[ai : ai + 1, :-1].to(device).float(), cap_kv58["k_rope"][gi].unsqueeze(0).to(device), cap_kv58["v_norm"][gi].unsqueeze(0).to(device), cap_kv59["k_rope"][gi].unsqueeze(0).to(device)).squeeze(0)
-                zs = SOFTCAP * torch.tanh((ast_h_final[ai, 1:].to(device).float() @ W_cand_g.T) / SOFTCAP)
-                za = ha @ W_ast_cand.T
-                ps = F.softmax(zs / TAU, dim=-1)
-                kls += float(((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).sum().item())
-                agrs += float((za.argmax(dim=-1) == zs.argmax(dim=-1)).float().sum().item())
-                cnt += ha.shape[0]
-            return kls / max(cnt, 1), agrs / max(cnt, 1)
+                te_l.append(emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE)
+                bh_l.append(ast_h_final[ai, :-1].to(device).float())
+                k58_l.append(cap_kv58["k_rope"][gi].to(device)); v58_l.append(cap_kv58["v_norm"][gi].to(device)); k59_l.append(cap_kv59["k_rope"][gi].to(device))
+                ht_l.append(ast_h_final[ai, 1:].to(device).float())
+            ha = ast_mod.forward_seq(torch.stack(te_l), torch.stack(bh_l), torch.stack(k58_l), torch.stack(v58_l), torch.stack(k59_l))
+            hst = torch.stack(ht_l)
+            with torch.no_grad():
+                zs = SOFTCAP * torch.tanh((hst.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
+                ps, ys_t1 = F.softmax(zs / TAU, dim=-1), zs.argmax(dim=-1)
+            za = ha.reshape(-1, 1024) @ W_ast_cand.T
+            hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+            l_6s_ast = compute_6sense_spectral_spatial_loss(hpost, hst)
+            loss_a = (
+                ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
+                + 0.5 * F.cross_entropy(za, ys_t1)
+                + 0.5 * (F.mse_loss(hpost, hst) / (hst.var() + 1e-5))
+                + 0.25 * l_6s_ast
+            )
+            loss_a.backward(); torch.nn.utils.clip_grad_norm_(ast_mod.parameters(), 1.0); opt_a.step(); sch_a.step()
+            if (st + 1) % 60 == 0:
+                klv, agrv = eval_ast()
+                print(f"    [Ast step {st+1:03d}/300] Val KL={klv:.4f} Top1Agree={agrv*100:.1f}%", flush=True)
+                if agrv > best_aagr:
+                    best_aagr, best_asd = agrv, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
+        ast_mod.load_state_dict({k: v.to(device) for k, v in best_asd.items()})
+        akl1, aagr1 = eval_ast()
+        print(f"  [Assistant V8.0 Aligned] Val KL={akl0:.4f}->{akl1:.4f} | Top1Agree={aagr0*100:.1f}%->{aagr1*100:.1f}%", flush=True)
 
-    akl0, aagr0 = eval_ast()
-    opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2.5e-4, weight_decay=1e-4)
-    sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=300, eta_min=2e-5)
-    best_aagr, best_asd = aagr0, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
-    ast_bs = int(hw_cfg["ast_bs"])
-    for st in range(300):
-        opt_a.zero_grad()
-        bais = np.random.choice(112, size=ast_bs, replace=False).tolist()
-        te_l, bh_l, k58_l, v58_l, k59_l, ht_l = [], [], [], [], [], []
-        for ai in bais:
-            gi = AST_SEQS[ai]
-            te_l.append(emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE)
-            bh_l.append(ast_h_final[ai, :-1].to(device).float())
-            k58_l.append(cap_kv58["k_rope"][gi].to(device)); v58_l.append(cap_kv58["v_norm"][gi].to(device)); k59_l.append(cap_kv59["k_rope"][gi].to(device))
-            ht_l.append(ast_h_final[ai, 1:].to(device).float())
-        ha = ast_mod.forward_seq(torch.stack(te_l), torch.stack(bh_l), torch.stack(k58_l), torch.stack(v58_l), torch.stack(k59_l))
-        hst = torch.stack(ht_l)
+        ast_sd["pre_projection.weight"] = ast_mod.pre.detach().to(torch.bfloat16).cpu()
+        ast_sd["post_projection.weight"] = ast_mod.post.detach().to(torch.bfloat16).cpu()
+        ast_sd["model.norm.weight"] = ast_mod.fn.detach().to(torch.bfloat16).cpu()
+        for la, m in enumerate(ast_mod.layers):
+            pa_s = f"model.layers.{la}."
+            for k_s, par in [("self_attn.q_proj.weight", m.q_proj), ("self_attn.o_proj.weight", m.o_proj), ("mlp.gate_proj.weight", m.gate), ("mlp.up_proj.weight", m.up), ("mlp.down_proj.weight", m.down), ("input_layernorm.weight", m.n_in), ("self_attn.q_norm.weight", m.n_qn), ("post_attention_layernorm.weight", m.n_pa), ("pre_feedforward_layernorm.weight", m.n_pf), ("post_feedforward_layernorm.weight", m.n_pff)]:
+                ast_sd[pa_s + k_s] = par.detach().to(torch.bfloat16).cpu()
+            ast_sd[pa_s + "layer_scalar"] = m.lsc.detach().to(torch.bfloat16).cpu().reshape(ast_sd[pa_s + "layer_scalar"].shape)
+        ft_sf = Path("/tmp/assistant_v8_0_ft.safetensors")
+        st_save_file(ast_sd, str(ft_sf))
+        for bits, bp in [(2, OUT_AST_Q2), (4, OUT_AST_Q4), (8, OUT_AST_Q8)]:
+            bhmod.pack_assistant_body_from_safetensors(ft_sf, bp, body_bits=bits, block_size=64, has_fwht=(bits == 4))
+        ft_sf.unlink(missing_ok=True)
+        del opt_a, sch_a, ast_sd, best_asd, W_cand_g, W_ast_cand
+
+        h_ast_chunks = []
         with torch.no_grad():
-            zs = SOFTCAP * torch.tanh((hst.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
-            ps, ys_t1 = F.softmax(zs / TAU, dim=-1), zs.argmax(dim=-1)
-        za = ha.reshape(-1, 1024) @ W_ast_cand.T
-        hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
-        l_6s_ast = compute_6sense_spectral_spatial_loss(hpost, hst)
-        loss_a = (
-            ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
-            + 0.5 * F.cross_entropy(za, ys_t1)
-            + 0.5 * (F.mse_loss(hpost, hst) / (hst.var() + 1e-5))
-            + 0.25 * l_6s_ast
+            for b0 in range(0, len(AST_SEQS), 32):
+                bais = list(range(b0, min(b0 + 32, len(AST_SEQS))))
+                gis = [AST_SEQS[ai] for ai in bais]
+                te_s = torch.stack([emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE for gi in gis])
+                bh_s = ast_h_final[b0 : b0 + len(bais), :-1].to(device).float()
+                k58_s = torch.stack([cap_kv58["k_rope"][gi].to(device) for gi in gis])
+                v58_s = torch.stack([cap_kv58["v_norm"][gi].to(device) for gi in gis])
+                k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
+                h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s)[:, :-1, :].cpu())
+        del ast_mod, cap_kv58, cap_kv59; torch.cuda.empty_cache()
+
+        H_ast_all = torch.cat(h_ast_chunks, dim=0).reshape(-1, 1024)
+        H_stud_tgt = ast_h_final[:, 1:-1, :].reshape(-1, D_MOD)
+        top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
+        top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
+        with torch.no_grad():
+            for i0 in range(0, H_stud_tgt.shape[0], 512):
+                i1 = min(i0 + 512, H_stud_tgt.shape[0])
+                lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_gpu.T).float() / SOFTCAP)
+                tv, ti = torch.topk(lg_b, k=64, dim=-1)
+                top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
+                top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
+        trie = bhmod.BpePrefixTrie.from_tokenizer_json(tok_path)
+        student_argmax_ids = torch.tensor(v70.select_first_valid_trie_ids(top_ids_t, trie), dtype=torch.long)
+        del H_stud_tgt, ast_h_final
+
+        act_bundle = Path("/tmp/v8_0_bhdr_activations.pt")
+        torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
+        bh_rpt = bhmod.train_from_activations(
+            act_bundle, tok_path, OUT_BHDR,
+            d_byte=384, max_bytes=48, steps=2400, batch_size=int(hw_cfg["bh_bs"]), lr=3e-3, device=str(device),
         )
-        loss_a.backward(); torch.nn.utils.clip_grad_norm_(ast_mod.parameters(), 1.0); opt_a.step(); sch_a.step()
-        if (st + 1) % 60 == 0:
-            klv, agrv = eval_ast()
-            print(f"    [Ast step {st+1:03d}/300] Val KL={klv:.4f} Top1Agree={agrv*100:.1f}%", flush=True)
-            if agrv > best_aagr:
-                best_aagr, best_asd = agrv, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
-    ast_mod.load_state_dict({k: v.to(device) for k, v in best_asd.items()})
-    akl1, aagr1 = eval_ast()
-    print(f"  [Assistant V7.5 Aligned] Val KL={akl0:.4f}->{akl1:.4f} | Top1Agree={aagr0*100:.1f}%->{aagr1*100:.1f}%", flush=True)
-
-    ast_sd["pre_projection.weight"] = ast_mod.pre.detach().to(torch.bfloat16).cpu()
-    ast_sd["post_projection.weight"] = ast_mod.post.detach().to(torch.bfloat16).cpu()
-    ast_sd["model.norm.weight"] = ast_mod.fn.detach().to(torch.bfloat16).cpu()
-    for la, m in enumerate(ast_mod.layers):
-        pa_s = f"model.layers.{la}."
-        for k_s, par in [("self_attn.q_proj.weight", m.q_proj), ("self_attn.o_proj.weight", m.o_proj), ("mlp.gate_proj.weight", m.gate), ("mlp.up_proj.weight", m.up), ("mlp.down_proj.weight", m.down), ("input_layernorm.weight", m.n_in), ("self_attn.q_norm.weight", m.n_qn), ("post_attention_layernorm.weight", m.n_pa), ("pre_feedforward_layernorm.weight", m.n_pf), ("post_feedforward_layernorm.weight", m.n_pff)]:
-            ast_sd[pa_s + k_s] = par.detach().to(torch.bfloat16).cpu()
-        ast_sd[pa_s + "layer_scalar"] = m.lsc.detach().to(torch.bfloat16).cpu().reshape(ast_sd[pa_s + "layer_scalar"].shape)
-    ft_sf = Path("/tmp/assistant_v7_5_ft.safetensors")
-    st_save_file(ast_sd, str(ft_sf))
-    for bits, bp in [(2, OUT_AST_Q2), (4, OUT_AST_Q4), (8, OUT_AST_Q8)]:
-        bhmod.pack_assistant_body_from_safetensors(ft_sf, bp, body_bits=bits, block_size=64, has_fwht=(bits == 4))
-    ft_sf.unlink(missing_ok=True)
-    del opt_a, sch_a, ast_sd, best_asd, W_cand_g, W_ast_cand
-
-    h_ast_chunks = []
-    with torch.no_grad():
-        for b0 in range(0, len(AST_SEQS), 32):
-            bais = list(range(b0, min(b0 + 32, len(AST_SEQS))))
-            gis = [AST_SEQS[ai] for ai in bais]
-            te_s = torch.stack([emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE for gi in gis])
-            bh_s = ast_h_final[b0 : b0 + len(bais), :-1].to(device).float()
-            k58_s = torch.stack([cap_kv58["k_rope"][gi].to(device) for gi in gis])
-            v58_s = torch.stack([cap_kv58["v_norm"][gi].to(device) for gi in gis])
-            k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
-            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s)[:, :-1, :].cpu())
-    del ast_mod, cap_kv58, cap_kv59; torch.cuda.empty_cache()
-
-    H_ast_all = torch.cat(h_ast_chunks, dim=0).reshape(-1, 1024)
-    H_stud_tgt = ast_h_final[:, 1:-1, :].reshape(-1, D_MOD)
-    top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
-    top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
-    with torch.no_grad():
-        for i0 in range(0, H_stud_tgt.shape[0], 512):
-            i1 = min(i0 + 512, H_stud_tgt.shape[0])
-            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_gpu.T).float() / SOFTCAP)
-            tv, ti = torch.topk(lg_b, k=64, dim=-1)
-            top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
-            top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
-    trie = bhmod.BpePrefixTrie.from_tokenizer_json(tok_path)
-    student_argmax_ids = torch.tensor(v70.select_first_valid_trie_ids(top_ids_t, trie), dtype=torch.long)
-    del H_stud_tgt, ast_h_final
-
-    act_bundle = Path("/tmp/v7_5_bhdr_activations.pt")
-    torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
-    bh_rpt = bhmod.train_from_activations(
-        act_bundle, tok_path, OUT_BHDR,
-        d_byte=384, max_bytes=48, steps=2400, batch_size=int(hw_cfg["bh_bs"]), lr=3e-3, device=str(device),
-    )
-    act_bundle.unlink(missing_ok=True)
-    bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)
-    val_h = H_ast_all[-256:].numpy().astype(np.float32)
-    val_g = student_argmax_ids[-256:].tolist()
-    beam_hits = sum(1 for hv, gv in zip(val_h, val_g) if bhmod.decode_bhdr_np_beam(bh_loaded, trie, hv, beam_width=2)[0] == gv)
-    bh_metrics = {**bh_rpt["metrics"], "heldout_beam_top1_acc_vs_v75_argmax": round(beam_hits / 256.0, 4), "heldout_beam_samples": 256}
-    del H_ast_all, student_argmax_ids, top_ids_t, top_probs_t
+        act_bundle.unlink(missing_ok=True)
+        bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)
+        val_h = H_ast_all[-256:].numpy().astype(np.float32)
+        val_g = student_argmax_ids[-256:].tolist()
+        beam_hits = sum(1 for hv, gv in zip(val_h, val_g) if bhmod.decode_bhdr_np_beam(bh_loaded, trie, hv, beam_width=2)[0] == gv)
+        bh_metrics = {**bh_rpt["metrics"], "heldout_beam_top1_acc_vs_v80_argmax": round(beam_hits / 256.0, 4), "heldout_beam_samples": 256}
+        del H_ast_all, student_argmax_ids, top_ids_t, top_probs_t
+    else:
+        print("\n[Stage 4B Skipped] L60-Resume mode without pre58 KV cache (all 14 V8.0 COLBLOCK shards + CRTR + DRTR + C8DB intact).", flush=True)
+        del ast_x59_stud, W_cand_g
 
     # Stage 5: Strictly Held-Out COCO val[0..3]
     heldout_vlm_report = []
@@ -3407,9 +3425,10 @@ def run_pipeline() -> Dict[str, object]:
     del emb_gpu; torch.cuda.empty_cache()
 
     all_artifacts = all_t16c_paths + [
-        OUT_CRTR, OUT_C8D, OUT_DISTRICT_ROUTER, OUT_DISTRICT_MANIFEST,
+        OUT_CRTR, OUT_C8D, OUT_DISTRICT_ROUTER, OUT_DRTR, OUT_DISTRICT_MANIFEST,
         OUT_BHDR, OUT_AST_Q2, OUT_AST_Q4, OUT_AST_Q8,
     ]
+    all_artifacts = [fp for fp in all_artifacts if fp.is_file()]
     artifacts: Dict[str, dict] = {}
     sha_lines: List[str] = []
     for fp in all_artifacts:
@@ -3451,6 +3470,12 @@ def run_pipeline() -> Dict[str, object]:
     sha_lines.append(f"{r_dig}  {OUT_REPORT.name}")
     OUT_SHA256.write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
     persist_v8_0_file(OUT_SHA256)
+    for rmp in (VIS_CKPT_PATH, VIS_META_PATH, VLM_SOFT_CACHE, STAGE3_CKPT, CRTR_CKPT, D_ROUTER_CKPT, CKPT_X_TEACH, CKPT_X_STUD):
+        rmp.unlink(missing_ok=True)
+    if DRIVE_DIR is not None:
+        shutil.rmtree(DRIVE_DIR / "ckpt_v8_0", ignore_errors=True)
+        for sp_k in all_t16c_paths:
+            (DRIVE_DIR / (sp_k.name + ".partial")).unlink(missing_ok=True)
     print(f"[V8.0 COMPLETE] Elapsed={(time.perf_counter()-t0_all)/60:.1f} min | Report={OUT_REPORT}", flush=True)
 
     if os.environ.get("COLAB_AUTO_UNASSIGN", "1") == "1":
