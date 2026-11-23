@@ -1213,9 +1213,12 @@ def sync_v8_0_checkpoints_to_drive(
 
     names = [p.name for p in sorted(c_dir.glob("*")) if p.is_file() and not p.name.endswith(".tmp")]
     names = [n for n in names if n != "stage3_layer_ckpt.pt"] + (["stage3_layer_ckpt.pt"] if "stage3_layer_ckpt.pt" in names else [])
+    _STATIC_S2 = {"stage2_vision.pt", "stage2_meta.pt", "stage2_vlm_soft.pt"}
     for fn in names:
         sp = c_dir / fn
         dp = drive_ckpt / fn
+        if fn in _STATIC_S2 and dp.is_file() and dp.stat().st_size == sp.stat().st_size:
+            continue
         tp = dp.with_suffix(dp.suffix + ".tmp")
         shutil.copy2(sp, tp)
         os.replace(tp, dp)
@@ -1523,15 +1526,31 @@ def run_pipeline() -> Dict[str, object]:
         DRIVE_DIR.mkdir(parents=True, exist_ok=True)
         d_ckpt = DRIVE_DIR / "ckpt_v8_0"
         if d_ckpt.is_dir():
-            print(f"[Drive Resume] Restoring checkpoints from {d_ckpt}...", flush=True)
-            for p in d_ckpt.glob("*"):
-                if p.is_file() and not p.name.endswith(".tmp") and not (CKPT_DIR / p.name).is_file():
-                    shutil.copy2(p, CKPT_DIR / p.name)
+            _CANON_CKPTS = (
+                "stage2_vision.pt",
+                "stage2_meta.pt",
+                "stage2_vlm_soft.pt",
+                "stage3_layer_ckpt.pt",
+                "crtr_layers.pt",
+                "district_routers.pt",
+                "v8_0_x_teach.pt",
+                "v8_0_x_stud.pt",
+            )
+            print(f"[Drive Resume] Restoring canonical checkpoints from {d_ckpt}...", flush=True)
+            for fn in _CANON_CKPTS:
+                p = d_ckpt / fn
+                if p.is_file() and not (CKPT_DIR / fn).is_file():
+                    print(f"  [Drive Resume] {fn} ({p.stat().st_size:,} B)...", flush=True)
+                    shutil.copy2(p, CKPT_DIR / fn)
         for sp in all_t16c_paths:
+            if sp.is_file():
+                continue
+            fp_fin = DRIVE_DIR / sp.name
             pp = DRIVE_DIR / (sp.name + ".partial")
-            if pp.is_file() and not sp.is_file():
-                print(f"[Drive Resume] Restoring {pp.name} ({pp.stat().st_size:,} B)...", flush=True)
-                shutil.copy2(pp, sp)
+            src_cand = fp_fin if fp_fin.is_file() else (pp if pp.is_file() else None)
+            if src_cand is not None:
+                print(f"[Drive Resume] Restoring {src_cand.name} ({src_cand.stat().st_size:,} B)...", flush=True)
+                shutil.copy2(src_cand, sp)
 
     # Cross-Version Warm-Start: Reuse already-calibrated Stage 2 3-Bit Vision checkpoints from V7.5/V7.0 if present!
     for warm_src in (
