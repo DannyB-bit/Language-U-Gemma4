@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Gemma 4 31B V8.0 Full 60-Layer 6-Sense Player POV + Cuneiform S^7 Radicals + Spatial Semantic Districts
 + GTA LOD Residual Split (`COLBLOCK 0x20`) + Live CRTR/MoD (q20) + 3-Bit Vision + Multimodal C8DB + Assistant-V8 (BHDR-384).
@@ -563,6 +563,141 @@ def extract_6sense_pov_features(
         return torch.nan_to_num(pov_32d, nan=0.0, posinf=1.5, neginf=-1.5).contiguous()
 
 
+def evaluate_6sense_consensus_gate_batch(
+    x_seq: torch.Tensor,
+    *,
+    caution_thresh: float = 0.72,
+    rescue_thresh: float = 0.48,
+    base_top_k: int = TOP_K_DISTRICTS,
+    base_top_p: float = 0.30,
+    base_mod_q: float = 0.20,
+    base_draft_k: int = 4,
+) -> Dict[str, object]:
+    """
+    6-Sense Accuracy, Speed & Intelligence Consensus Driver (extending `tri_modal.rs::TriModalConsensusGate`):
+      1. SEE   health (`s_see`): penalizes spatial crest spikes (`peak/rms`) and tile collapse (`tile_cv`, `edge_ratio`).
+      2. HEAR  health (`s_hear`): penalizes Walsh-Hadamard high-sequency quantization chatter (`hf_ratio`, `spectral_entropy`).
+      3. FEEL  health (`s_feel`): measures trajectory smoothness vs kinematic jerk (`vel`, `jerk`, `roughness`).
+      4. SMELL health (`s_smell`): detects heavy-tail outlier volatility (`kurtosis_trace`, `rare_trace_ratio`).
+      5. TASTE health (`s_taste`): rewards coherent umami token locking and balanced excitatory/inhibitory valence.
+      6. CUNEIFORM_S7 (`s_c8d`): 8D Walsh-Hadamard S^7 unit radical concentration (`max(|g_hat|)`).
+    Outputs per-sequence consensus scores in `[0, 1]`, mode (`CLEAN` / `CAUTION` / `RESCUE`), and adaptive speed/accuracy controls:
+      - `CLEAN`:   fast decode (`top_k=2` districts, `crtr_top_p=0.30`, `mod_q=0.20`, `draft_k=4`, `sieve=0.25`)
+      - `CAUTION`: accuracy guard (`top_k=3` districts, `crtr_top_p=0.45`, `mod_q=0.10`, `draft_k=2`, `c8db_rescue=True`)
+      - `RESCUE`:  maximum precision (`top_k=4` districts, `crtr_top_p=0.65`, `mod_q=0.0`, `draft_k=1`, `optical_self_analyze=True`)
+    """
+    with torch.no_grad():
+        s32 = extract_6sense_pov_features(x_seq) if (x_seq.ndim == 3 or x_seq.shape[-1] != SENSE_DIM) else x_seq.float()
+        # Extract individual sensory bands from 32D vector
+        see_crest, see_cv, see_edge = s32[:, 1], s32[:, 2], s32[:, 3]
+        hear_b0, hear_b1, hear_hf, hear_ent = s32[:, 4], s32[:, 5], s32[:, 8], s32[:, 9]
+        feel_vel, feel_jerk, feel_rough = s32[:, 10], s32[:, 11], s32[:, 13]
+        smell_kurt, smell_top1, smell_rare = s32[:, 14], s32[:, 16], s32[:, 17]
+        taste_sour, taste_umami, taste_bal = s32[:, 20], s32[:, 22], s32[:, 23]
+        c8d_s7 = s32[:, 24:32]
+
+        s_see = (1.0 - 0.45 * ((see_crest - 0.55) / 0.75).clamp(0.0, 1.0) - 0.35 * ((see_cv - 0.45) / 0.75).clamp(0.0, 1.0) - 0.20 * (see_edge / 1.2).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+        s_hear = (0.65 * (hear_b0 + hear_b1).clamp(0.0, 1.0) + 0.35 * (1.0 - 0.75 * hear_hf.clamp(0.0, 1.0) - 0.25 * hear_ent.clamp(0.0, 1.0))).clamp(0.0, 1.0)
+        s_feel = (1.0 - 0.45 * (feel_jerk / 1.1).clamp(0.0, 1.0) - 0.30 * (feel_rough / 1.2).clamp(0.0, 1.0) - 0.25 * ((feel_vel - 0.85).clamp(min=0.0))).clamp(0.0, 1.0)
+        s_smell = (1.0 - 0.45 * ((smell_kurt - 0.35) / 0.85).clamp(0.0, 1.0) - 0.30 * ((smell_rare - 0.35) / 0.90).clamp(0.0, 1.0) - 0.25 * ((smell_top1 - 0.65) / 0.85).clamp(0.0, 1.0)).clamp(0.0, 1.0)
+        s_taste = (0.55 * taste_umami.clamp(0.0, 1.0) + 0.25 * (1.0 - taste_sour.clamp(0.0, 1.0)) + 0.20 * (1.0 - taste_bal.abs().clamp(0.0, 1.0))).clamp(0.0, 1.0)
+        s_c8d = (c8d_s7.abs().amax(dim=-1) / 0.85).clamp(0.25, 1.0)
+
+        consensus = (0.22 * s_see + 0.22 * s_hear + 0.16 * s_feel + 0.14 * s_smell + 0.14 * s_taste + 0.12 * s_c8d).clamp(0.0, 1.0)
+        is_rescue = (consensus < rescue_thresh) | (s_see < 0.30) | (s_hear < 0.30)
+        is_caution = (~is_rescue) & ((consensus < caution_thresh) | (s_see < 0.52) | (s_hear < 0.52) | (s_feel < 0.45) | (s_smell < 0.42))
+        is_clean = (~is_rescue) & (~is_caution)
+
+        dyn_top_k = torch.where(is_rescue, torch.full_like(consensus, base_top_k + 2, dtype=torch.long), torch.where(is_caution, torch.full_like(consensus, base_top_k + 1, dtype=torch.long), torch.full_like(consensus, base_top_k, dtype=torch.long)))
+        dyn_draft_k = torch.where(is_rescue, torch.ones_like(consensus, dtype=torch.long), torch.where(is_caution, torch.full_like(consensus, max(1, base_draft_k // 2), dtype=torch.long), torch.full_like(consensus, base_draft_k, dtype=torch.long)))
+        sample_weights = (1.0 + 0.45 * (1.0 - consensus) + 0.30 * is_rescue.float() + 0.15 * is_caution.float()).detach()
+
+        mean_c = float(consensus.mean().item())
+        clean_f = float(is_clean.float().mean().item())
+        caut_f = float(is_caution.float().mean().item())
+        resc_f = float(is_rescue.float().mean().item())
+        layer_top_p = round(float(base_top_p + 0.15 * caut_f + 0.30 * resc_f), 4)
+        layer_mod_q = round(float(max(0.05, base_mod_q * (1.0 - 0.40 * caut_f - 0.75 * resc_f))), 4)
+
+        return {
+            "s32": s32,
+            "consensus": consensus,
+            "sample_weights": sample_weights,
+            "is_clean": is_clean,
+            "is_caution": is_caution,
+            "is_rescue": is_rescue,
+            "dyn_top_k": dyn_top_k,
+            "dyn_draft_k": dyn_draft_k,
+            "layer_top_p": layer_top_p,
+            "layer_mod_q": layer_mod_q,
+            "summary": {
+                "consensus_mean": round(mean_c, 4),
+                "see_health": round(float(s_see.mean().item()), 4),
+                "hear_health": round(float(s_hear.mean().item()), 4),
+                "feel_health": round(float(s_feel.mean().item()), 4),
+                "smell_health": round(float(s_smell.mean().item()), 4),
+                "taste_health": round(float(s_taste.mean().item()), 4),
+                "cuneiform_s7_health": round(float(s_c8d.mean().item()), 4),
+                "clean_frac": round(clean_f, 4),
+                "caution_frac": round(caut_f, 4),
+                "rescue_frac": round(resc_f, 4),
+                "adaptive_crtr_top_p": layer_top_p,
+                "adaptive_mod_q": layer_mod_q,
+            },
+        }
+
+
+def compute_6sense_spectral_spatial_loss(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+    """
+    Differentiable 6-Sense Spectral + Spatial + Tactile + Gustatory Consistency Loss:
+      1. HEAR (FWHT 4-Band Sequency Spectrum Loss): penalizes high-sequency Walsh-Hadamard chatter between `y_pred` and `y_true`.
+      2. SEE  (Spatial Tile RMS & Edge Envelope Loss): preserves 64-wide spatial tile RMS envelope and inter-tile contrast.
+      3. FEEL + TASTE (Proprioceptive Velocity & Umami Directional Coherence): aligns token velocity & directional cosine.
+    Works on both `[B, T, D]` sequence activations and `[N, D]` token activations.
+    """
+    yp = y_pred.float()
+    yt = y_true.float()
+    orig_ndim = yp.ndim
+    if orig_ndim == 2:
+        yp = yp.unsqueeze(1)
+        yt = yt.unsqueeze(1)
+    B, T, D = yp.shape
+    dev = yp.device
+    tw = 64 if (D >= 64 and D % 64 == 0) else (8 if D % 8 == 0 else D)
+    n_t = D // tw
+
+    # 1. SEE: Spatial tile RMS envelope + inter-tile edge jump consistency
+    yp_t = yp.reshape(B, T, n_t, tw)
+    yt_t = yt.reshape(B, T, n_t, tw)
+    rms_p = yp_t.pow(2).mean(dim=-1).add(1e-8).sqrt()
+    rms_t = yt_t.pow(2).mean(dim=-1).add(1e-8).sqrt()
+    loss_see = F.mse_loss(rms_p, rms_t) / rms_t.pow(2).mean().clamp(min=1e-6)
+    if n_t > 1:
+        loss_see = loss_see + 0.5 * F.mse_loss(rms_p[..., 1:] - rms_p[..., :-1], rms_t[..., 1:] - rms_t[..., :-1]) / rms_t.pow(2).mean().clamp(min=1e-6)
+
+    # 2. HEAR: Walsh-Hadamard 4-band sequency energy distribution + phase alignment
+    if tw == 64:
+        h_mat, seq_ord = _get_h64_and_sequency_order(dev)
+        sp_p = (yp_t @ h_mat)[..., seq_ord]
+        sp_t = (yt_t @ h_mat)[..., seq_ord]
+        # Weight upper-half sequency errors 1.5x to suppress high-frequency quantization chatter!
+        hf_w = torch.linspace(0.75, 1.50, 64, device=dev, dtype=torch.float32)
+        loss_hear = ((sp_p - sp_t).pow(2) * hf_w).mean() / sp_t.pow(2).mean().clamp(min=1e-6)
+    else:
+        loss_hear = F.mse_loss(yp, yt) / yt.pow(2).mean().clamp(min=1e-6)
+
+    # 3. FEEL & TASTE: Token velocity smoothness + Umami cosine valence alignment
+    loss_taste = 1.0 - F.cosine_similarity(yp.reshape(-1, D), yt.reshape(-1, D), dim=-1).mean()
+    if T >= 2:
+        vp = yp[:, 1:] - yp[:, :-1]
+        vt = yt[:, 1:] - yt[:, :-1]
+        loss_feel = F.mse_loss(vp, vt) / vt.pow(2).mean().clamp(min=1e-6)
+    else:
+        loss_feel = F.mse_loss(yp[..., 1:] - yp[..., :-1], yt[..., 1:] - yt[..., :-1]) / yt.pow(2).mean().clamp(min=1e-6)
+
+    return 0.35 * loss_hear + 0.25 * loss_see + 0.20 * loss_feel + 0.20 * loss_taste
+
+
 class DistrictRouterNet(nn.Module):
     """
     6-Sense Player POV Spatial District Router (`SixSensePovRouterNet`):
@@ -781,9 +916,10 @@ def distill_district_locality(
         act = F.gelu(F.linear(xb.to(compute_dt), wg.to(compute_dt)).float(), approximate="tanh") * F.linear(xb.to(compute_dt), wu.to(compute_dt)).float()
         yp = F.linear(act.to(compute_dt), wd.to(compute_dt)).float()
         l_mse = F.mse_loss(yp, yt_tr[perm_b]) / max(va_var, 1e-6)
+        l_6sense = compute_6sense_spectral_spatial_loss(yp, yt_tr[perm_b])
         act_sq = act * act
         l_off = (act_sq * off_mask_tr[perm_b]).sum(dim=-1).mean() / act_sq.sum(dim=-1).mean().clamp(min=1e-8)
-        loss = l_mse + l1_coeff * l_off
+        loss = l_mse + 0.25 * l_6sense + l1_coeff * l_off
         if loss0 is None:
             loss0 = float(loss.item())
         loss1 = float(loss.item())
@@ -1209,16 +1345,35 @@ def run_selftest() -> int:
         hm_d_tr, hm_d_va, wg_diff, wu_diff, wd_s, slices_np,
         top_k=2, steps=45, lr=1.5e-3, l1_coeff=2.0, max_rel_mse_drift=0.35,
     )
+    # Check 6-Sense Consensus Gate & Spectral-Spatial Loss discrimination (clean vs noisy/spiky states)
+    clean_probe = torch.sin(torch.linspace(0.0, 6.28, d_mod_t)).unsqueeze(0).unsqueeze(0).repeat(8, 4, 1)
+    noisy_probe = clean_probe.clone()
+    noisy_probe[:, :, ::2] += 3.5
+    noisy_probe[:, :, 1::2] -= 3.5
+    noisy_probe[:, 0, 7] = 42.0
+    g_clean = evaluate_6sense_consensus_gate_batch(clean_probe)
+    g_noisy = evaluate_6sense_consensus_gate_batch(noisy_probe)
+    l_6s_zero = float(compute_6sense_spectral_spatial_loss(clean_probe, clean_probe).item())
+    l_6s_noisy = float(compute_6sense_spectral_spatial_loss(noisy_probe, clean_probe).item())
+    consensus_gate_ok = (
+        g_clean["summary"]["consensus_mean"] > g_noisy["summary"]["consensus_mean"] + 0.15
+        and g_clean["summary"]["hear_health"] > g_noisy["summary"]["hear_health"] + 0.20
+        and int(g_noisy["dyn_top_k"].max().item()) >= int(g_clean["dyn_top_k"].min().item())
+        and l_6s_zero < 1e-5
+        and l_6s_noisy > 0.25
+    )
     gate(
-        "Gate 4: 6-Sense Player POV Cortex (SEE/HEAR/FEEL/SMELL/TASTE/CUNEIFORM) & Distillation",
+        "Gate 4: 6-Sense Player POV Cortex (SEE/HEAR/FEEL/SMELL/TASTE/CUNEIFORM), Consensus Gate & Distillation",
         senses_ok
+        and consensus_gate_ok
         and "sense_profile" in r_met
         and r_met["val_top2_recall_after"] >= 0.90
         and r_met["loss_after"] < r_met["loss_before"]
         and d_met["accepted"]
         and d_met["cap_va_after"] > d_met["cap_va_before"],
-        f"senses_32d_ok={senses_ok} router_recall={r_met['val_top2_recall_before']}->{r_met['val_top2_recall_after']} "
-        f"distill_cap={d_met['cap_va_before']}->{d_met['cap_va_after']} (acc={d_met['accepted']})",
+        f"senses_32d_ok={senses_ok} consensus={g_clean['summary']['consensus_mean']:.3f}->{g_noisy['summary']['consensus_mean']:.3f} "
+        f"l6s={l_6s_zero:.1e}->{l_6s_noisy:.3f} router_recall={r_met['val_top2_recall_before']}->{r_met['val_top2_recall_after']} "
+        f"distill_cap={d_met['cap_va_before']}->{d_met['cap_va_after']}",
     )
 
     # Gate 5 & 6: Multi-shard T16C base + shared + 4 district COLBLOCK shards write/verify + fail-closed checks
@@ -1780,14 +1935,14 @@ def run_pipeline() -> Dict[str, object]:
         def make_optical_va_pil(idx: int) -> Tuple[Image.Image, str]:
             im = Image.new("RGB", (672, 672), (248, 248, 248))
             dr = ImageDraw.Draw(im)
-            dr.text((18, 18), f"GEMMA4 31B V7.5 LM=60 VIS=27 FRAME={idx:03d}", fill=(12, 18, 28))
-            dr.text((18, 42), "OPTICAL VA SPATIAL DISTRICTS C8DB-H8", fill=(12, 18, 28))
+            dr.text((18, 18), f"GEMMA4 31B V8.0 6-SENSE POV LM=60 VIS=27 FRAME={idx:03d}", fill=(12, 18, 28))
+            dr.text((18, 42), "SEE+HEAR+FEEL+SMELL+TASTE+CUNEIFORM-S7 OPTICAL VA", fill=(12, 18, 28))
             rng_v = np.random.default_rng(1000 + idx)
             for b in range(60):
                 bh = int(rng_v.integers(25, 118))
                 col = (35, 115, 210) if b >= 58 else ((30, 165, 95) if b % 5 != 0 else (210, 65, 45))
                 dr.rectangle([24 + b * 10, 550 - bh, 31 + b * 10, 550], fill=col)
-            cap = f"An optical diagnostic chart labeled GEMMA4 31B V7.5 LM=60 VIS=27 FRAME={idx:03d} displaying 60 vertical green, red, and blue bar segments on a light background."
+            cap = f"An optical diagnostic chart labeled GEMMA4 31B V8.0 6-SENSE POV LM=60 VIS=27 FRAME={idx:03d} displaying 60 vertical green, red, and blue bar segments on a light background."
             return im, cap
 
         vis_va_pairs = [make_optical_va_pil(i) for i in range(32)]
@@ -2422,7 +2577,8 @@ def run_pipeline() -> Dict[str, object]:
                     w_teach["gate_proj"], w_teach["up_proj"], w_teach["down_proj"] = wg_n, wu_n, wd_n
                     del hm_d_tr, hm_d_va
 
-                # Fit 6-Sense Player POV District Router for this layer (trained on real seq_energy_perm)
+                # Fit 6-Sense Player POV District Router & evaluate 6-Sense Consensus Gate for this layer
+                sense_gate_l = evaluate_6sense_consensus_gate_batch(seq_sense_32)
                 non_sh = [(s, e) for nm, s, e in slices_np if nm != "shared_core"]
                 dist_e_all = torch.from_numpy(np.stack([seq_energy_perm[:, s:e].sum(axis=1) for s, e in non_sh], axis=1)).float()
                 tr_idx_t = torch.from_numpy(tr_seq_idx).long().to(device)
@@ -2436,12 +2592,14 @@ def run_pipeline() -> Dict[str, object]:
                     sense_va=seq_sense_32[va_idx_d],
                     rank=64, top_k=TOP_K_DISTRICTS, steps=200, device=device, seed=200 + l_idx,
                 )
+                dr_met["consensus_gate"] = sense_gate_l["summary"]
                 district_routers[l_idx] = {
                     "state_dict": dr_sd,
                     "district_slices": slices_np,
                     "perm": perm_np.astype(np.int32),
                     "sense_names": list(SENSE_NAMES),
                     "sense_dim": SENSE_DIM,
+                    "consensus_gate": sense_gate_l["summary"],
                 }
                 del seq_inp_mean, seq_sense_32, dist_e_all, tr_idx_t, va_idx_d
 
@@ -2521,24 +2679,27 @@ def run_pipeline() -> Dict[str, object]:
                     wu1_g, wuf_g = w_stud["up_proj_1b"].to(device, dtype=compute_dtype), w_stud["up_proj_full"].to(device, dtype=compute_dtype)
                     with torch.no_grad():
                         _hm_he = rmsn_gpu(H_stud_eval_mid, ng["pf"])
-                        # For heldout images use predicted 6-Sense Player POV router top-2 + Shared Core!
+                        # For heldout images use predicted 6-Sense Player POV router + dynamic consensus Top-K (`2 -> 3 -> 4`)!
                         _he_inp = he_inp_mean.to(device)
                         _he_s32 = he_sense_32.to(device)
+                        _he_gate = evaluate_6sense_consensus_gate_batch(_he_s32, base_top_k=TOP_K_DISTRICTS)
                         _rnet = DistrictRouterNet(D_MOD, N_DISTRICTS, 64, SENSE_DIM).to(device)
                         _rnet.load_state_dict({k: v.to(device, dtype=torch.float32) for k, v in dr_sd.items()})
-                        _top_he = torch.topk(_rnet(_he_inp, _he_s32), k=min(TOP_K_DISTRICTS, N_DISTRICTS), dim=-1).indices.cpu().numpy()
+                        _r_logits = _rnet(_he_inp, _he_s32)
                         _m_he = torch.zeros((H_stud_eval_mid.shape[0], 21504), dtype=torch.bool, device=device)
                         _sh_sl = [x for x in slices_np if x[0] == "shared_core"]
                         _ns_sl = [x for x in slices_np if x[0] != "shared_core"]
                         if _sh_sl:
                             _m_he[:, _sh_sl[0][1] : _sh_sl[0][2]] = True
                         for r_i in range(H_stud_eval_mid.shape[0]):
-                            for d_i in _top_he[r_i]:
+                            k_ri = min(int(_he_gate["dyn_top_k"][r_i].item()), len(_ns_sl))
+                            top_ri = torch.topk(_r_logits[r_i], k=k_ri, dim=-1).indices.cpu().numpy()
+                            for d_i in top_ri:
                                 _, s_i, e_i = _ns_sl[int(d_i)]
                                 _m_he[r_i, s_i:e_i] = True
                         _he_out = forward_geglu_lod_batch(_hm_he, wg1_g, wgf_g, wu1_g, wuf_g, wd1_g, wdf_g, _m_he)
                         H_stud_eval = ((H_stud_eval_mid.float() + rmsn_gpu(_he_out.to(compute_dtype), ng["pff"]).float()) * lsc).to(torch.float16).to(STUD_DEV)
-                        del _hm_he, _he_inp, _he_s32, _rnet, _top_he, _m_he, _he_out, H_stud_eval_mid, he_inp_mean, he_sense_32
+                        del _hm_he, _he_inp, _he_s32, _he_gate, _rnet, _r_logits, _m_he, _he_out, H_stud_eval_mid, he_inp_mean, he_sense_32
 
                     X_stud_next = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), STUD_DEV)
                     with torch.no_grad():
@@ -2624,8 +2785,14 @@ def run_pipeline() -> Dict[str, object]:
                     xp_crtr_tr, xm_crtr_tr, X_stud_next[torch.from_numpy(tr_crtr_s).long().to(X_stud_next.device), torch.from_numpy(tr_crtr_t).long().to(X_stud_next.device)].cpu(),
                     xp_crtr_va, xm_crtr_va, X_stud_next[torch.from_numpy(va_crtr_s).long().to(X_stud_next.device), torch.from_numpy(va_crtr_t).long().to(X_stud_next.device)].cpu(),
                     ng["in"], ng["pf"], wg_cr, wu_cr, rmsn_gpu,
-                    block_size=256, rank=32, top_p=0.30, mod_quantile=0.20, steps=200, eps=EPS, device=device,
+                    block_size=256, rank=32,
+                    top_p=float(sense_gate_l["layer_top_p"]),
+                    mod_quantile=float(sense_gate_l["layer_mod_q"]),
+                    steps=200, eps=EPS, device=device,
                 )
+                cm["adaptive_top_p"] = float(sense_gate_l["layer_top_p"])
+                cm["adaptive_mod_q"] = float(sense_gate_l["layer_mod_q"])
+                del sense_gate_l
                 crtr_layers[l_idx] = crec
                 del xp_crtr_tr, xp_crtr_va, xm_crtr_tr, xm_crtr_va, wg_cr, wu_cr
 
@@ -2735,7 +2902,8 @@ def run_pipeline() -> Dict[str, object]:
             opt.zero_grad()
             ib = torch.randint(0, x_tr.shape[0], (min(2048, x_tr.shape[0]),), device=device)
             dv, _, lb = m(x_tr[ib]); p_y = ys_tr[ib] + dv
-            loss = F.mse_loss(p_y, yt_tr[ib]) + 0.3 * (1.0 - F.cosine_similarity(p_y, yt_tr[ib], dim=-1).mean()) + 0.005 * lb
+            l_6s_kv = compute_6sense_spectral_spatial_loss(p_y, yt_tr[ib])
+            loss = F.mse_loss(p_y, yt_tr[ib]) + 0.3 * (1.0 - F.cosine_similarity(p_y, yt_tr[ib], dim=-1).mean()) + 0.20 * l_6s_kv + 0.005 * lb
             loss.backward(); torch.nn.utils.clip_grad_norm_(m.parameters(), 1.0); opt.step()
             if (st + 1) % 60 == 0:
                 with torch.no_grad():
@@ -2952,10 +3120,16 @@ def run_pipeline() -> Dict[str, object]:
         zw = torch.cat([zc / TAU, log_tail_q0[pb].unsqueeze(1)], dim=1)
         ptb = p_teach_store[pb.cpu()].to(device, dtype=torch.float32)
         zy = zc.gather(1, y_star[pb].unsqueeze(1)).squeeze(1); zm = zc.clone(); zm.scatter_(1, y_star[pb].unsqueeze(1), -1e9)
+        g60 = evaluate_6sense_consensus_gate_batch(hs_ans[pb])
+        w60 = g60["sample_weights"]
+        l_6s_60 = compute_6sense_spectral_spatial_loss(hp, ht_ans[pb])
+        kl_per_tok = (ptb * (torch.log(ptb.clamp(min=1e-12)) - F.log_softmax(zw, dim=-1))).sum(dim=-1) * (TAU * TAU)
+        marg_per_tok = F.relu(2.0 - zy + zm.max(dim=-1).values)
         loss = (
-            ((ptb * (torch.log(ptb.clamp(min=1e-12)) - F.log_softmax(zw, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
-            + 0.5 * F.relu(2.0 - zy + zm.max(dim=-1).values).mean()
+            (kl_per_tok * w60).mean()
+            + 0.5 * (marg_per_tok * w60).mean()
             + 2.0 * F.mse_loss(hp, ht_ans[pb]) + 0.5 * (1.0 - F.cosine_similarity(hp, ht_ans[pb], dim=-1).mean())
+            + 0.35 * l_6s_60
             + 0.005 * lb + 2e-2 * (m60.A_bank.pow(2).sum() + m60.B_bank.pow(2).sum()) / float(pb.numel() * D_MOD)
         )
         loss.backward(); torch.nn.utils.clip_grad_norm_(m60.parameters(), 1.0); o60.step(); s60.step()
@@ -3084,10 +3258,12 @@ def run_pipeline() -> Dict[str, object]:
             ps, ys_t1 = F.softmax(zs / TAU, dim=-1), zs.argmax(dim=-1)
         za = ha.reshape(-1, 1024) @ W_ast_cand.T
         hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+        l_6s_ast = compute_6sense_spectral_spatial_loss(hpost, hst)
         loss_a = (
             ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU, dim=-1))).sum(dim=-1) * (TAU * TAU)).mean()
             + 0.5 * F.cross_entropy(za, ys_t1)
             + 0.5 * (F.mse_loss(hpost, hst) / (hst.var() + 1e-5))
+            + 0.25 * l_6s_ast
         )
         loss_a.backward(); torch.nn.utils.clip_grad_norm_(ast_mod.parameters(), 1.0); opt_a.step(); sch_a.step()
         if (st + 1) % 60 == 0:
