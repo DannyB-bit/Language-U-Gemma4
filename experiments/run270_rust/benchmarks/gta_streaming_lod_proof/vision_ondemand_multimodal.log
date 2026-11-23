@@ -1,0 +1,36 @@
+=== PROOF 2b: MULTIMODAL IMAGE (/home/astronautshe/frame_01_coco.png) VISION ON-DEMAND WARM -> ENCODE -> EVICT ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 20.15s pinned_layers=60/60 pinned_bytes=3911770608 embed_bytes=539492352 vm=(Some(4741340), Some(4679644))
+[run31b] vision encoded 640x480 -> n_soft=266 in 904.16s warmed=235263936 vm_before=(Some(4741340), Some(4679644)) vm_warm=(Some(4907856), Some(4907856)) vm_enc=(Some(5124192), Some(4962460))
+[run31b] vision on-demand evicted 233684992 B after prefill (vm_after_evict=(Some(5124192), Some(4734252)))
+[run31b] prompt 293 tokens ids=[2, 105, 2364, 107, 255999, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880, 258880]
+[run31b] layer 00/60 done in 4.75s (pinned=true)
+[run31b] layer 05/60 done in 3.98s (pinned=true)
+[run31b] layer 14/60 done in 3.75s (pinned=true)
+[run31b] layer 29/60 done in 3.92s (pinned=true)
+[run31b] layer 44/60 done in 6.34s (pinned=true)
+[run31b] layer 59/60 done in 9.75s (pinned=true)
+[run31b] prefill done in 323.40s ssd_read_mb=0.0 vm=(Some(5124192), Some(4863584))
+PREFILL_TOP5 [236776:"A"(26.743), 2267:"An"(23.935), 818:"The"(23.750), 2094:"This"(22.078), 902:"In"(21.712)]
+[STEP 0] id=236776 text="A"
+[run31b] decode step 0 in 2.38s vm=(Some(5124192), Some(4863608))
+[STEP 1] id=2764 text=" black"
+[run31b] decode step 1 in 2.28s vm=(Some(5124192), Some(4863608))
+[STEP 2] id=5866 text=" cat"
+[run31b] decode step 2 in 2.24s vm=(Some(5124192), Some(4863608))
+[STEP 3] id=563 text=" is"
+[run31b] decode step 3 in 2.23s vm=(Some(5124192), Some(4863620))
+[STEP 4] id=496 text=" a"
+[run31b] decode step 4 in 2.23s vm=(Some(5124192), Some(4863620))
+[STEP 5] id=3730 text=" blue"
+[run31b] decode step 5 in 2.28s vm=(Some(5124192), Some(4864420))
+[STEP 6] id=236772 text="-"
+[run31b] decode step 6 in 2.26s vm=(Some(5124192), Some(4864420))
+[STEP 7] id=529 text=" of"
+GEN31B ids=[236776, 2764, 5866, 563, 496, 3730, 236772, 529]
+GEN31B text="A black cat is a blue- of"
+KV31B mode=GlyphLod raw_bytes=540672000 naive_bf16_bytes=270336000 compressed_bytes=156631040 glyph_tokens=4520 mid_tokens=11520 exact_tokens=1960 shrink=3.45x shrink_vs_bf16=1.73x
+MEM31B pinned_bytes=3911770608 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=24916 prefill_s=323.40 decode_s=15.91 vm_hwm_kb=Some(5124192) vm_rss_kb=Some(4864420)

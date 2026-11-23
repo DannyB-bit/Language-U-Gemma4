@@ -1,0 +1,11 @@
+=== 1a.1: --bench-128k-kv --kv-quant glyph ===
+[run31b] --bench-128k-kv mode=Glyph seq_len=131072 k_eq_v=false layers=60 lod=(4,32,0) threads=4 native_glyph_c=true
+KV128K_BENCH mode=Glyph seq_len=131072 k_eq_v=false layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=13.13 ref512_cos=0.62159 mid_tokens=0 global_resident_mb=965.36 global_naive_bf16_mb=10240.00 global_shrink_bf16=10.61x total_resident_mb=1088.02 total_naive_bf16_mb=11040.00 total_shrink_bf16=10.15x total_shrink_fp32=20.29x global_10l_ms=4631.81 sliding_50l_ms=135.81 total_60l_ms=4767.61 checksum=7.73790 vm_hwm_kb=Some(1177952) vm_rss_kb=Some(1131528)
+
+=== 1a.2: --bench-128k-kv --kv-quant glyph-lod (defaults 4/32/192) ===
+[run31b] --bench-128k-kv mode=GlyphLod seq_len=131072 k_eq_v=false layers=60 lod=(4,32,192) threads=4 native_glyph_c=true
+KV128K_BENCH mode=GlyphLod seq_len=131072 k_eq_v=false layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=18.67 ref512_cos=0.58094 mid_tokens=11520 global_resident_mb=971.92 global_naive_bf16_mb=10240.00 global_shrink_bf16=10.54x total_resident_mb=1160.21 total_naive_bf16_mb=11040.00 total_shrink_bf16=9.52x total_shrink_fp32=19.03x global_10l_ms=5528.30 sliding_50l_ms=450.04 total_60l_ms=5978.34 checksum=19.35192 vm_hwm_kb=Some(1325860) vm_rss_kb=Some(1279272)
+
+=== 1a.3: --bench-128k-kv --kv-quant glyph-lod --kv-sinks 4 --kv-near 32 --kv-mid 512 ===
+[run31b] --bench-128k-kv mode=GlyphLod seq_len=131072 k_eq_v=false layers=60 lod=(4,32,512) threads=4 native_glyph_c=true
+KV128K_BENCH mode=GlyphLod seq_len=131072 k_eq_v=false layers=60 global_layers=10 sliding_layers=50 native_glyph_c=true fill_s=27.89 ref512_cos=0.99995 mid_tokens=30720 global_resident_mb=982.86 global_naive_bf16_mb=10240.00 global_shrink_bf16=10.42x total_resident_mb=1280.52 total_naive_bf16_mb=11040.00 total_shrink_bf16=8.62x total_shrink_fp32=17.24x global_10l_ms=6432.13 sliding_50l_ms=1028.06 total_60l_ms=7460.19 checksum=44.75139 vm_hwm_kb=Some(1432748) vm_rss_kb=Some(1386592)

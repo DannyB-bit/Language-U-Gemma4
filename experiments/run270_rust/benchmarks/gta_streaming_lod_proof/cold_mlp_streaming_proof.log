@@ -1,0 +1,275 @@
+--- 3a_pinned_crtr_035 ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.04s pinned_layers=60/60 pinned_bytes=3911770608 embed_bytes=539492352 vm=(Some(4752304), Some(4690520))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(4752304), Some(4690520)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.21s (pinned=true)
+[run31b] layer 05/60 done in 0.17s (pinned=true)
+[run31b] layer 14/60 done in 0.16s (pinned=true)
+[run31b] layer 29/60 done in 0.17s (pinned=true)
+[run31b] layer 44/60 done in 0.31s (pinned=true)
+[run31b] layer 59/60 done in 0.41s (pinned=true)
+[run31b] prefill done in 14.15s ssd_read_mb=0.0 vm=(Some(4752304), Some(4691820))
+PREFILL_TOP5 [818:"The"(21.845), 2021:"To"(21.443), 8291:"Here"(19.855), 10354:"###"(19.570), 4906:"One"(18.964)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 1.22s vm=(Some(4752304), Some(4691820))
+[STEP 1] id=3890 text=" answer"
+[run31b] decode step 1 in 1.19s vm=(Some(4752304), Some(4691820))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 1.21s vm=(Some(4752304), Some(4691820))
+[STEP 3] id=5213 text=" **"
+[run31b] decode step 3 in 1.21s vm=(Some(4752304), Some(4691820))
+[STEP 4] id=236778 text="2"
+[run31b] decode step 4 in 1.20s vm=(Some(4752304), Some(4691820))
+[STEP 5] id=236770 text="1"
+[run31b] decode step 5 in 1.19s vm=(Some(4752304), Some(4691820))
+[STEP 6] id=236761 text="."
+[run31b] decode step 6 in 1.20s vm=(Some(4752304), Some(4691820))
+[STEP 7] id=236778 text="2"
+[run31b] decode step 7 in 1.19s vm=(Some(4752304), Some(4691820))
+[STEP 8] id=236771 text="0"
+[run31b] decode step 8 in 1.31s vm=(Some(4752304), Some(4691820))
+[STEP 9] id=236771 text="0"
+[run31b] decode step 9 in 1.60s vm=(Some(4752304), Some(4691820))
+[STEP 10] id=1018 text="**"
+[run31b] decode step 10 in 1.57s vm=(Some(4752304), Some(4691820))
+[STEP 11] id=107 text="\n"
+[run31b] decode step 11 in 1.28s vm=(Some(4752304), Some(4691820))
+[STEP 12] id=140 text="    "
+[run31b] decode step 12 in 1.30s vm=(Some(4752304), Some(4691820))
+[STEP 13] id=2063 text="def"
+[run31b] decode step 13 in 1.28s vm=(Some(4752304), Some(4691820))
+[STEP 14] id=5062 text=" __"
+[run31b] decode step 14 in 1.25s vm=(Some(4752304), Some(4691820))
+[STEP 15] id=236800 text="3"
+GEN31B ids=[818, 3890, 529, 5213, 236778, 236770, 236761, 236778, 236771, 236771, 1018, 107, 140, 2063, 5062, 236800]
+GEN31B text="The answer of **21.200**\n    def __3"
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+MLP_SPARSE top_p=0.350 skipped_blks=31539456 total_blks=59802624 dram_saved_pct=52.7%
+CORTICAL_ROUTER gate_skipped_blks=51840 gate_total_blks=80640 gate_saved_pct=64.3%
+MEM31B pinned_bytes=3911770608 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=209400 prefill_s=14.15 decode_s=19.22 vm_hwm_kb=Some(4752304) vm_rss_kb=Some(4691820)
+
+--- 3b_cold_6_53_crtr_035_k1 ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=48
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3369440320 streamed_cold_bytes=536481792 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 27.97s pinned_layers=60/60 pinned_bytes=3375288816 embed_bytes=539492352 vm=(Some(4210904), Some(4149292))
+[run31b] vision on-demand: text-only run evicted 233627648 B (vm=(Some(4210904), Some(4149292)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.23s (pinned=true)
+[run31b] layer 05/60 done in 0.17s (pinned=true)
+[run31b] layer 14/60 done in 0.17s (pinned=true)
+[run31b] layer 29/60 done in 0.17s (pinned=true)
+[run31b] layer 44/60 done in 0.30s (pinned=true)
+[run31b] layer 59/60 done in 0.40s (pinned=true)
+[run31b] prefill done in 14.98s ssd_read_mb=191.6 vm=(Some(4285360), Some(4285360))
+PREFILL_TOP5 [818:"The"(21.845), 2021:"To"(21.443), 8291:"Here"(19.855), 10354:"###"(19.570), 4906:"One"(18.964)]
+[STEP 0] id=818 text="The"
+[run31b] decode step 0 in 2.01s vm=(Some(4297276), Some(4297276))
+[STEP 1] id=3890 text=" answer"
+[run31b] decode step 1 in 1.95s vm=(Some(4297276), Some(4297276))
+[STEP 2] id=529 text=" of"
+[run31b] decode step 2 in 1.96s vm=(Some(4297288), Some(4297288))
+[STEP 3] id=5213 text=" **"
+[run31b] decode step 3 in 1.96s vm=(Some(4297324), Some(4297324))
+[STEP 4] id=236778 text="2"
+[run31b] decode step 4 in 1.98s vm=(Some(4297324), Some(4297324))
+[STEP 5] id=236770 text="1"
+[run31b] decode step 5 in 1.95s vm=(Some(4297332), Some(4297332))
+[STEP 6] id=236761 text="."
+[run31b] decode step 6 in 2.01s vm=(Some(4297332), Some(4297332))
+[STEP 7] id=236778 text="2"
+[run31b] decode step 7 in 1.98s vm=(Some(4297332), Some(4297332))
+[STEP 8] id=236771 text="0"
+[run31b] decode step 8 in 1.98s vm=(Some(4297388), Some(4297388))
+[STEP 9] id=236771 text="0"
+[run31b] decode step 9 in 1.95s vm=(Some(4297388), Some(4297388))
+[STEP 10] id=1018 text="**"
+[run31b] decode step 10 in 1.98s vm=(Some(4297388), Some(4297388))
+[STEP 11] id=107 text="\n"
+[run31b] decode step 11 in 2.02s vm=(Some(4297388), Some(4297388))
+[STEP 12] id=140 text="    "
+[run31b] decode step 12 in 2.01s vm=(Some(4297388), Some(4297388))
+[STEP 13] id=2063 text="def"
+[run31b] decode step 13 in 2.20s vm=(Some(4297388), Some(4297388))
+[STEP 14] id=5062 text=" __"
+[run31b] decode step 14 in 2.01s vm=(Some(4297388), Some(4297388))
+[STEP 15] id=236800 text="3"
+GEN31B ids=[818, 3890, 529, 5213, 236778, 236770, 236761, 236778, 236771, 236771, 1018, 107, 140, 2063, 5062, 236800]
+GEN31B text="The answer of **21.200**\n    def __3"
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+MLP_SPARSE top_p=0.350 skipped_blks=32519232 total_blks=59802624 dram_saved_pct=54.4%
+CORTICAL_ROUTER gate_skipped_blks=51840 gate_total_blks=80640 gate_saved_pct=64.3%
+MEM31B pinned_bytes=3375288816 embed_bytes=539492352 ssd_read_bytes=3065610240 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=209400 prefill_s=14.98 decode_s=29.96 vm_hwm_kb=Some(4297388) vm_rss_kb=Some(4297388)
+
+--- 3c_cold_6_53_dense_100_k1 ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=48
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3369440320 streamed_cold_bytes=536481792 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.55s pinned_layers=60/60 pinned_bytes=3375288816 embed_bytes=539492352 vm=(Some(4208072), Some(4146304))
+[run31b] vision on-demand: text-only run evicted 233627648 B (vm=(Some(4208072), Some(4146304)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.25s (pinned=true)
+[run31b] layer 14/60 done in 0.20s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.39s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 21.39s ssd_read_mb=536.5 vm=(Some(4350812), Some(4350812))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] decode step 0 in 3.77s vm=(Some(4408828), Some(4408828))
+[STEP 1] id=1586 text=" find"
+[run31b] decode step 1 in 3.60s vm=(Some(4408828), Some(4408828))
+[STEP 2] id=506 text=" the"
+[run31b] decode step 2 in 3.63s vm=(Some(4408828), Some(4408828))
+[STEP 3] id=1156 text=" two"
+[run31b] decode step 3 in 3.61s vm=(Some(4408828), Some(4408828))
+[STEP 4] id=4945 text=" numbers"
+[run31b] decode step 4 in 3.58s vm=(Some(4408828), Some(4408828))
+[STEP 5] id=529 text=" of"
+[run31b] decode step 5 in 3.62s vm=(Some(4408828), Some(4408828))
+[STEP 6] id=496 text=" a"
+[run31b] decode step 6 in 3.65s vm=(Some(4408828), Some(4408828))
+[STEP 7] id=2558 text=" total"
+[run31b] decode step 7 in 3.59s vm=(Some(4408828), Some(4408828))
+[STEP 8] id=1548 text=" number"
+[run31b] decode step 8 in 3.59s vm=(Some(4408828), Some(4408828))
+[STEP 9] id=529 text=" of"
+[run31b] decode step 9 in 3.68s vm=(Some(4408828), Some(4408828))
+[STEP 10] id=5213 text=" **"
+[run31b] decode step 10 in 3.61s vm=(Some(4408828), Some(4408828))
+[STEP 11] id=236778 text="2"
+[run31b] decode step 11 in 3.76s vm=(Some(4408828), Some(4408828))
+[STEP 12] id=236761 text="."
+[run31b] decode step 12 in 3.65s vm=(Some(4408828), Some(4408828))
+[STEP 13] id=236828 text="8"
+[run31b] decode step 13 in 3.62s vm=(Some(4408828), Some(4408828))
+[STEP 14] id=236829 text="*"
+[run31b] decode step 14 in 3.62s vm=(Some(4408828), Some(4408828))
+[STEP 15] id=236770 text="1"
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236778, 236761, 236828, 236829, 236770]
+GEN31B text="To find the two numbers of a total number of **2.8*1"
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+MEM31B pinned_bytes=3375288816 embed_bytes=539492352 ssd_read_bytes=8583708672 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=146334 prefill_s=21.39 decode_s=54.58 vm_hwm_kb=Some(4408828) vm_rss_kb=Some(4408828)
+
+--- 3d_cold_6_53_crtr_035_ast_v7_k4 ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=48
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3369440320 streamed_cold_bytes=536481792 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c: layers=4 d=1024 resident_mb=66.98 byte_head=true shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 11.30s pinned_layers=60/60 pinned_bytes=3375288816 embed_bytes=539492352 vm=(Some(4218824), Some(4212484))
+[run31b] vision on-demand: text-only run evicted 233627648 B (vm=(Some(4218824), Some(4212484)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.21s (pinned=true)
+[run31b] layer 05/60 done in 0.17s (pinned=true)
+[run31b] layer 14/60 done in 0.16s (pinned=true)
+[run31b] layer 29/60 done in 0.17s (pinned=true)
+[run31b] layer 44/60 done in 0.30s (pinned=true)
+[run31b] layer 59/60 done in 0.40s (pinned=true)
+[run31b] prefill done in 14.66s ssd_read_mb=191.6 vm=(Some(4306836), Some(4306836))
+PREFILL_TOP5 [818:"The"(21.845), 2021:"To"(21.443), 8291:"Here"(19.855), 10354:"###"(19.570), 4906:"One"(18.964)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 3.93s vm=(Some(4327684), Some(4327684))
+[STEP 1] id=3890 text=" answer"
+[run31b] spec batch=2 drafted=3 accepted=0 next_k=3 ewma=0.64 in 3.84s vm=(Some(4348284), Some(4348284))
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.51 in 3.79s vm=(Some(4348700), Some(4348700))
+[STEP 3] id=5213 text=" **"
+[STEP 4] id=236778 text="2"
+[run31b] spec batch=4 drafted=3 accepted=1 next_k=3 ewma=0.48 in 3.90s vm=(Some(4348700), Some(4348700))
+[STEP 5] id=236771 text="0"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.38 in 4.00s vm=(Some(4390100), Some(4390100))
+[STEP 6] id=236770 text="1"
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.30 in 3.18s vm=(Some(4390100), Some(4390100))
+[STEP 7] id=236761 text="."
+[STEP 8] id=236778 text="2"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.44 in 2.47s vm=(Some(4390100), Some(4390100))
+[STEP 9] id=236800 text="3"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.36 in 2.51s vm=(Some(4390100), Some(4390100))
+[STEP 10] id=236832 text="7"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.28 in 2.57s vm=(Some(4421280), Some(4421280))
+[STEP 11] id=236819 text="9"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.23 in 2.60s vm=(Some(4421280), Some(4421280))
+[STEP 12] id=236828 text="8"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.18 in 2.59s vm=(Some(4431676), Some(4431676))
+[STEP 13] id=236771 text="0"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.15 in 2.63s vm=(Some(4431676), Some(4431676))
+[STEP 14] id=1018 text="**"
+[run31b] spec fallback k=1 step=14 in 2.03s k_window=1 vm=(Some(4431676), Some(4431676))
+[STEP 15] id=108 text="\n\n"
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=66.98 byte_head=true step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=0 drafted=23 accepted=2 batches=12 fallback_k1=1 accept_rate=0.087 generated=16 s_per_tok=2.729
+GEN31B ids=[818, 3890, 529, 5213, 236778, 236771, 236770, 236761, 236778, 236800, 236832, 236819, 236828, 236771, 1018, 108]
+GEN31B text="The answer of **201.237980**\n\n"
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+MLP_SPARSE top_p=0.350 skipped_blks=29014848 total_blks=53496576 dram_saved_pct=54.2%
+CORTICAL_ROUTER gate_skipped_blks=45360 gate_total_blks=70560 gate_saved_pct=64.3%
+MEM31B pinned_bytes=3375288816 embed_bytes=539492352 ssd_read_bytes=2682408960 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=103832 prefill_s=14.66 decode_s=40.94 vm_hwm_kb=Some(4431676) vm_rss_kb=Some(4431676)
+
+--- 3e_cold_6_53_crtr_035_ast_v6_k4 ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=48
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3369440320 streamed_cold_bytes=536481792 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr: layers=60 rank=32 bsize=256 blocks=84 mod_gate=true (10.36 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded AssistantRuntime /home/astronautshe/gemma4_v6/gemma4_31b_assistant_v6.t16c: layers=4 d=1024 resident_mb=334.31 byte_head=false shared_kv=(L58,L59) step_pos=true
+[run31b] loaded in 21.28s pinned_layers=60/60 pinned_bytes=3375288816 embed_bytes=539492352 vm=(Some(4499012), Some(4499012))
+[run31b] vision on-demand: text-only run evicted 233627648 B (vm=(Some(4499012), Some(4499012)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.20s (pinned=true)
+[run31b] layer 05/60 done in 0.18s (pinned=true)
+[run31b] layer 14/60 done in 0.16s (pinned=true)
+[run31b] layer 29/60 done in 0.17s (pinned=true)
+[run31b] layer 44/60 done in 0.30s (pinned=true)
+[run31b] layer 59/60 done in 0.40s (pinned=true)
+[run31b] prefill done in 14.72s ssd_read_mb=191.6 vm=(Some(4634748), Some(4634748))
+PREFILL_TOP5 [818:"The"(21.845), 2021:"To"(21.443), 8291:"Here"(19.855), 10354:"###"(19.570), 4906:"One"(18.964)]
+[STEP 0] id=818 text="The"
+[run31b] spec batch=1 drafted=3 accepted=0 next_k=3 ewma=0.80 in 3.89s vm=(Some(4665956), Some(4665956))
+[STEP 1] id=3890 text=" answer"
+[STEP 2] id=529 text=" of"
+[run31b] spec batch=2 drafted=3 accepted=1 next_k=3 ewma=0.71 in 3.83s vm=(Some(4665956), Some(4665956))
+[STEP 3] id=5213 text=" **"
+[run31b] spec batch=3 drafted=3 accepted=0 next_k=3 ewma=0.57 in 3.83s vm=(Some(4686756), Some(4686756))
+[STEP 4] id=236778 text="2"
+[run31b] spec batch=4 drafted=3 accepted=0 next_k=3 ewma=0.45 in 3.85s vm=(Some(4686756), Some(4686756))
+[STEP 5] id=236770 text="1"
+[run31b] spec batch=5 drafted=3 accepted=0 next_k=2 ewma=0.36 in 3.86s vm=(Some(4686764), Some(4686764))
+[STEP 6] id=236761 text="."
+[run31b] spec batch=6 drafted=2 accepted=0 next_k=1 ewma=0.29 in 3.21s vm=(Some(4686764), Some(4686764))
+[STEP 7] id=236778 text="2"
+[STEP 8] id=236771 text="0"
+[run31b] spec batch=7 drafted=1 accepted=1 next_k=1 ewma=0.43 in 2.46s vm=(Some(4686764), Some(4686764))
+[STEP 9] id=236771 text="0"
+[run31b] spec batch=8 drafted=1 accepted=0 next_k=1 ewma=0.35 in 2.47s vm=(Some(4686764), Some(4686764))
+[STEP 10] id=1018 text="**"
+[run31b] spec batch=9 drafted=1 accepted=0 next_k=1 ewma=0.28 in 2.55s vm=(Some(4707552), Some(4707552))
+[STEP 11] id=107 text="\n"
+[run31b] spec batch=10 drafted=1 accepted=0 next_k=1 ewma=0.22 in 2.59s vm=(Some(4707552), Some(4707552))
+[STEP 12] id=236820 text="<"
+[run31b] spec batch=11 drafted=1 accepted=0 next_k=1 ewma=0.18 in 2.62s vm=(Some(4707560), Some(4707560))
+[STEP 13] id=236770 text="1"
+[run31b] spec batch=12 drafted=1 accepted=0 next_k=1 ewma=0.14 in 2.57s vm=(Some(4707560), Some(4707560))
+[STEP 14] id=236764 text=","
+[run31b] spec fallback k=1 step=14 in 2.02s k_window=1 vm=(Some(4728348), Some(4728348))
+[STEP 15] id=236743 text=" "
+SPEC31B max_batch_k=4 ngram=4 min_count=1 seed_entries=0 assistant_mb=334.31 byte_head=false step_pos=true min_margin=0.00 margin_stopped=0 ast_lm_skipped=946502 drafted=23 accepted=2 batches=12 fallback_k1=1 accept_rate=0.087 generated=16 s_per_tok=2.842
+GEN31B ids=[818, 3890, 529, 5213, 236778, 236770, 236761, 236778, 236771, 236771, 1018, 107, 236820, 236770, 236764, 236743]
+GEN31B text="The answer of **21.200**\n<1, "
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+MLP_SPARSE top_p=0.350 skipped_blks=29014848 total_blks=53496576 dram_saved_pct=54.2%
+CORTICAL_ROUTER gate_skipped_blks=45360 gate_total_blks=70560 gate_saved_pct=64.3%
+MEM31B pinned_bytes=3375288816 embed_bytes=539492352 ssd_read_bytes=2682408960 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=179592 prefill_s=14.72 decode_s=42.62 vm_hwm_kb=Some(4728348) vm_rss_kb=Some(4728348)

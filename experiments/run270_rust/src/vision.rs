@@ -208,6 +208,69 @@ impl VisionWeights {
         }))
     }
 
+    pub fn total_bytes(&self) -> usize {
+        let pos_b = match &self.pos_table {
+            PosTableBackend::SplitMats { x, y } => x.total_bytes() + y.total_bytes(),
+            PosTableBackend::NormF32(v) => v.len() * 4,
+        };
+        let layer_b: usize = self
+            .layers
+            .iter()
+            .map(|l| {
+                l.q_proj.total_bytes()
+                    + l.k_proj.total_bytes()
+                    + l.v_proj.total_bytes()
+                    + l.o_proj.total_bytes()
+                    + l.gate_proj.total_bytes()
+                    + l.up_proj.total_bytes()
+                    + l.down_proj.total_bytes()
+            })
+            .sum();
+        self.input_proj.total_bytes() + pos_b + layer_b + self.embed_proj.total_bytes()
+    }
+
+    /// Touch & `MADV_WILLNEED` all Vision weights into RAM prior to image encoding.
+    pub fn warm_pages(&self) -> usize {
+        let mut b = 0usize;
+        b += self.input_proj.advise_willneed_and_touch();
+        if let PosTableBackend::SplitMats { x, y } = &self.pos_table {
+            b += x.advise_willneed_and_touch();
+            b += y.advise_willneed_and_touch();
+        }
+        for lw in &self.layers {
+            b += lw.q_proj.advise_willneed_and_touch();
+            b += lw.k_proj.advise_willneed_and_touch();
+            b += lw.v_proj.advise_willneed_and_touch();
+            b += lw.o_proj.advise_willneed_and_touch();
+            b += lw.gate_proj.advise_willneed_and_touch();
+            b += lw.up_proj.advise_willneed_and_touch();
+            b += lw.down_proj.advise_willneed_and_touch();
+        }
+        b += self.embed_proj.advise_willneed_and_touch();
+        b
+    }
+
+    /// Reclaim Vision encoder physical pages immediately (`MADV_DONTNEED`) when idle.
+    pub fn evict_pages(&self) -> usize {
+        let mut b = 0usize;
+        b += self.input_proj.advise_dontneed();
+        if let PosTableBackend::SplitMats { x, y } = &self.pos_table {
+            b += x.advise_dontneed();
+            b += y.advise_dontneed();
+        }
+        for lw in &self.layers {
+            b += lw.q_proj.advise_dontneed();
+            b += lw.k_proj.advise_dontneed();
+            b += lw.v_proj.advise_dontneed();
+            b += lw.o_proj.advise_dontneed();
+            b += lw.gate_proj.advise_dontneed();
+            b += lw.up_proj.advise_dontneed();
+            b += lw.down_proj.advise_dontneed();
+        }
+        b += self.embed_proj.advise_dontneed();
+        b
+    }
+
     fn apply_c8d_if_present(
         c8d: Option<&CuneiformBank>,
         keys: &[&str],

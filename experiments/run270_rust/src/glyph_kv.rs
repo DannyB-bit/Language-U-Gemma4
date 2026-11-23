@@ -18,6 +18,80 @@ use crate::t16c::NativeTile16Kernel;
 pub const OPT5_GLYPH_DIM: usize = 256;
 pub const OPT5_BPG_OUTLIER: usize = 48;
 pub const OPT5_CODEC_ID: i32 = 5;
+pub const MID_SUBBLOCK_DIM: usize = 64;
+
+/// Encode `[n_kv * hd]` KV slice into per-64-dim symmetric INT8 (`dst_q8`, `dst_sc`).
+pub fn encode_mid_int8(src: &[f32], dst_q8: &mut [i8], dst_sc: &mut [f32]) {
+    debug_assert_eq!(src.len(), dst_q8.len());
+    debug_assert_eq!(src.len() / MID_SUBBLOCK_DIM, dst_sc.len());
+    for ((blk_in, blk_q), sc_out) in src
+        .chunks_exact(MID_SUBBLOCK_DIM)
+        .zip(dst_q8.chunks_exact_mut(MID_SUBBLOCK_DIM))
+        .zip(dst_sc.iter_mut())
+    {
+        let mut max_abs = 0.0f32;
+        for &v in blk_in {
+            let av = v.abs();
+            if av > max_abs {
+                max_abs = av;
+            }
+        }
+        if max_abs > 1e-30 {
+            let sc = max_abs / 127.0f32;
+            let inv_sc = 127.0f32 / max_abs;
+            *sc_out = sc;
+            for (dst, &v) in blk_q.iter_mut().zip(blk_in.iter()) {
+                *dst = (v * inv_sc).round().clamp(-127.0f32, 127.0f32) as i8;
+            }
+        } else {
+            *sc_out = 0.0f32;
+            blk_q.fill(0);
+        }
+    }
+}
+
+/// Decode per-64-dim symmetric INT8 (`src_q8`, `src_sc`) back to FP32.
+pub fn decode_mid_int8(src_q8: &[i8], src_sc: &[f32], dst: &mut [f32]) {
+    debug_assert_eq!(src_q8.len(), dst.len());
+    debug_assert_eq!(src_q8.len() / MID_SUBBLOCK_DIM, src_sc.len());
+    for ((blk_q, &sc), blk_out) in src_q8
+        .chunks_exact(MID_SUBBLOCK_DIM)
+        .zip(src_sc.iter())
+        .zip(dst.chunks_exact_mut(MID_SUBBLOCK_DIM))
+    {
+        for (d, &q) in blk_out.iter_mut().zip(blk_q.iter()) {
+            *d = (q as f32) * sc;
+        }
+    }
+}
+
+/// 4-way unrolled FP32 query dot product against per-64-dim symmetric INT8 keys.
+#[inline]
+pub fn dot_f32_mid_int8(q: &[f32], k_q8: &[i8], k_sc: &[f32]) -> f32 {
+    debug_assert_eq!(q.len(), k_q8.len());
+    debug_assert_eq!(q.len() / MID_SUBBLOCK_DIM, k_sc.len());
+    let mut total = 0.0f32;
+    for ((qb, kb), &sc) in q
+        .chunks_exact(MID_SUBBLOCK_DIM)
+        .zip(k_q8.chunks_exact(MID_SUBBLOCK_DIM))
+        .zip(k_sc.iter())
+    {
+        let mut s0 = 0.0f32;
+        let mut s1 = 0.0f32;
+        let mut s2 = 0.0f32;
+        let mut s3 = 0.0f32;
+        let mut i = 0usize;
+        while i < MID_SUBBLOCK_DIM {
+            s0 += qb[i] * (kb[i] as f32);
+            s1 += qb[i + 1] * (kb[i + 1] as f32);
+            s2 += qb[i + 2] * (kb[i + 2] as f32);
+            s3 += qb[i + 3] * (kb[i + 3] as f32);
+            i += 4;
+        }
+        total += ((s0 + s1) + (s2 + s3)) * sc;
+    }
+    total
+}
 
 /// Pure-Rust `Option 5` 48-byte Top-4 Outlier macro-glyph encoder matching
 /// `encode_single_opt5_glyph_fast` in `neon_stream_accelerator_v2.c`.
@@ -158,12 +232,13 @@ pub fn decode_opt5_48b_glyph(glyph_48: &[u8], out_256: &mut [f32], apply_inv_fwh
     }
 }
 
-/// Snapshot of a single evicted token for lossless speculative decoding rollback.
+/// Snapshot of a single evicted token for lossless 3-tier speculative decoding rollback.
 #[derive(Clone)]
 struct EvictedEntry {
     pos: usize,
     k: Vec<f32>,
     v: Vec<f32>,
+    evicted_mid: Option<(usize, Vec<i8>, Vec<f32>, Vec<i8>, Vec<f32>)>,
     overwrote_glyph_slot: Option<(usize, usize, Vec<u8>, Vec<u8>)>,
 }
 
@@ -172,6 +247,7 @@ struct EvictedEntry {
 pub struct GlyphKvMemStats {
     pub active_tokens: usize,
     pub glyph_tokens: usize,
+    pub mid_tokens: usize,
     pub exact_tokens: usize,
     pub resident_bytes: usize,
     pub naive_bf16_bytes: usize,
@@ -208,6 +284,7 @@ pub struct GlyphKvLayer {
     pub sliding_window: Option<usize>,
     pub sink_cap: usize,
     pub tail_cap: usize,
+    pub mid_cap: usize,
     pub apply_fwht8: bool,
 
     glyph_cap: usize,
@@ -223,6 +300,13 @@ pub struct GlyphKvLayer {
     k_sink: Vec<f32>,
     v_sink: Vec<f32>,
     sink_pos: Vec<usize>,
+
+    /// Tier 1 Mid-Distance INT8 KV ring stored chronologically (`len <= mid_cap`, per-64-dim scales).
+    k_mid_q8: Vec<i8>,
+    k_mid_sc: Vec<f32>,
+    v_mid_q8: Vec<i8>,
+    v_mid_sc: Vec<f32>,
+    mid_pos: Vec<usize>,
 
     /// Rolling FP32 local hot-tail stored in chronological order (`len <= tail_cap`).
     k_tail: Vec<f32>,
@@ -244,6 +328,31 @@ impl GlyphKvLayer {
         tail_cap: usize,
         init_glyph_cap: usize,
     ) -> Result<Self, String> {
+        Self::new_with_lod(
+            n_heads,
+            n_kv,
+            hd,
+            k_eq_v,
+            sliding_window,
+            sink_cap,
+            tail_cap,
+            0,
+            init_glyph_cap,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lod(
+        n_heads: usize,
+        n_kv: usize,
+        hd: usize,
+        k_eq_v: bool,
+        sliding_window: Option<usize>,
+        sink_cap: usize,
+        tail_cap: usize,
+        mid_cap: usize,
+        init_glyph_cap: usize,
+    ) -> Result<Self, String> {
         if n_heads == 0 || n_kv == 0 || n_heads % n_kv != 0 {
             return Err(format!("GlyphKvLayer invalid GQA heads: n_heads={n_heads}, n_kv={n_kv}"));
         }
@@ -254,7 +363,7 @@ impl GlyphKvLayer {
         let head_glyph_bytes = glyphs_per_head * OPT5_BPG_OUTLIER;
         let eff_sink_cap = if sliding_window.is_some() { 0 } else { sink_cap };
         let glyph_cap = if let Some(w) = sliding_window {
-            w.saturating_sub(tail_cap).max(1)
+            w.saturating_sub(tail_cap + mid_cap).max(1)
         } else {
             init_glyph_cap.max(64)
         };
@@ -269,6 +378,7 @@ impl GlyphKvLayer {
             sliding_window,
             sink_cap: eff_sink_cap,
             tail_cap,
+            mid_cap,
             apply_fwht8: true,
             glyph_cap,
             glyph_len: 0,
@@ -279,6 +389,11 @@ impl GlyphKvLayer {
             k_sink: Vec::new(),
             v_sink: Vec::new(),
             sink_pos: Vec::new(),
+            k_mid_q8: Vec::new(),
+            k_mid_sc: Vec::new(),
+            v_mid_q8: Vec::new(),
+            v_mid_sc: Vec::new(),
+            mid_pos: Vec::new(),
             k_tail: Vec::new(),
             v_tail: Vec::new(),
             tail_pos: Vec::new(),
@@ -295,21 +410,27 @@ impl GlyphKvLayer {
         self.glyph_len
     }
 
+    pub fn mid_len(&self) -> usize {
+        self.mid_pos.len()
+    }
+
     pub fn exact_len(&self) -> usize {
         self.sink_pos.len() + self.tail_pos.len()
     }
 
     pub fn memory_stats(&self) -> GlyphKvMemStats {
-        let active_tokens = self.sink_pos.len() + self.glyph_len + self.tail_pos.len();
+        let active_tokens = self.sink_pos.len() + self.mid_pos.len() + self.glyph_len + self.tail_pos.len();
         let streams = if self.k_eq_v { 1usize } else { 2usize };
         let glyph_bytes = self.glyph_len * self.n_kv * self.head_glyph_bytes * streams;
+        let mid_bytes = self.mid_pos.len() * (self.n_kv * self.hd + self.n_kv * (self.hd / MID_SUBBLOCK_DIM) * 4) * streams;
         let exact_bytes = (self.sink_pos.len() + self.tail_pos.len()) * self.n_kv * self.hd * 4 * streams;
-        let resident_bytes = glyph_bytes + exact_bytes;
+        let resident_bytes = glyph_bytes + mid_bytes + exact_bytes;
         let naive_bf16_bytes = active_tokens * self.n_kv * self.hd * 2 * 2;
         let fp32_bytes = active_tokens * self.n_kv * self.hd * 4 * 2;
         GlyphKvMemStats {
             active_tokens,
             glyph_tokens: self.glyph_len,
+            mid_tokens: self.mid_pos.len(),
             exact_tokens: self.sink_pos.len() + self.tail_pos.len(),
             resident_bytes,
             naive_bf16_bytes,
@@ -445,6 +566,89 @@ impl GlyphKvLayer {
         overwrote
     }
 
+    fn push_mid_back(&mut self, pos: usize, k_tok: &[f32], v_tok: &[f32]) {
+        let stride = self.n_kv * self.hd;
+        let sc_stride = self.n_kv * (self.hd / MID_SUBBLOCK_DIM);
+        let old_k = self.k_mid_q8.len();
+        let old_sc = self.k_mid_sc.len();
+        self.k_mid_q8.resize(old_k + stride, 0);
+        self.k_mid_sc.resize(old_sc + sc_stride, 0.0);
+        encode_mid_int8(k_tok, &mut self.k_mid_q8[old_k..], &mut self.k_mid_sc[old_sc..]);
+        if !self.k_eq_v {
+            self.v_mid_q8.resize(old_k + stride, 0);
+            self.v_mid_sc.resize(old_sc + sc_stride, 0.0);
+            encode_mid_int8(v_tok, &mut self.v_mid_q8[old_k..], &mut self.v_mid_sc[old_sc..]);
+        }
+        self.mid_pos.push(pos);
+    }
+
+    fn pop_mid_front_raw(&mut self) -> (usize, Vec<i8>, Vec<f32>, Vec<i8>, Vec<f32>, Vec<f32>, Vec<f32>) {
+        let stride = self.n_kv * self.hd;
+        let sc_stride = self.n_kv * (self.hd / MID_SUBBLOCK_DIM);
+        let m_pos = self.mid_pos.remove(0);
+        let mkq: Vec<i8> = self.k_mid_q8.drain(0..stride).collect();
+        let mks: Vec<f32> = self.k_mid_sc.drain(0..sc_stride).collect();
+        let mut mk_f32 = vec![0.0f32; stride];
+        decode_mid_int8(&mkq, &mks, &mut mk_f32);
+        let (mvq, mvs, mv_f32) = if self.k_eq_v {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            let vq: Vec<i8> = self.v_mid_q8.drain(0..stride).collect();
+            let vs: Vec<f32> = self.v_mid_sc.drain(0..sc_stride).collect();
+            let mut vf = vec![0.0f32; stride];
+            decode_mid_int8(&vq, &vs, &mut vf);
+            (vq, vs, vf)
+        };
+        (m_pos, mkq, mks, mvq, mvs, mk_f32, mv_f32)
+    }
+
+    fn pop_mid_back(&mut self) {
+        let stride = self.n_kv * self.hd;
+        let sc_stride = self.n_kv * (self.hd / MID_SUBBLOCK_DIM);
+        self.mid_pos.pop();
+        self.k_mid_q8.truncate(self.k_mid_q8.len() - stride);
+        self.k_mid_sc.truncate(self.k_mid_sc.len() - sc_stride);
+        if !self.k_eq_v {
+            self.v_mid_q8.truncate(self.v_mid_q8.len() - stride);
+            self.v_mid_sc.truncate(self.v_mid_sc.len() - sc_stride);
+        }
+    }
+
+    fn insert_mid_front(&mut self, pos: usize, mkq: Vec<i8>, mks: Vec<f32>, mvq: Vec<i8>, mvs: Vec<f32>) {
+        self.mid_pos.insert(0, pos);
+        self.k_mid_q8.splice(0..0, mkq);
+        self.k_mid_sc.splice(0..0, mks);
+        if !self.k_eq_v {
+            self.v_mid_q8.splice(0..0, mvq);
+            self.v_mid_sc.splice(0..0, mvs);
+        }
+    }
+
+    fn undo_glyph_push(&mut self, overwrote: Option<(usize, usize, Vec<u8>, Vec<u8>)>) {
+        let prev_slot = if self.glyph_write_pos == 0 {
+            self.glyph_cap - 1
+        } else {
+            self.glyph_write_pos - 1
+        };
+        if let Some((slot, old_pos, old_k, old_v)) = overwrote {
+            let head_stride = self.glyph_cap * self.head_glyph_bytes;
+            self.glyph_write_pos = slot;
+            self.glyph_pos[slot] = old_pos;
+            for h in 0..self.n_kv {
+                let off = h * head_stride + slot * self.head_glyph_bytes;
+                self.k_arena[off..off + self.head_glyph_bytes]
+                    .copy_from_slice(&old_k[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
+                if !self.k_eq_v {
+                    self.v_arena[off..off + self.head_glyph_bytes]
+                        .copy_from_slice(&old_v[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
+                }
+            }
+        } else {
+            self.glyph_write_pos = prev_slot;
+            self.glyph_len -= 1;
+        }
+    }
+
     /// Append one post-RoPE token `(k_tok, v_tok)` of length `n_kv * hd`.
     pub fn append_token(
         &mut self,
@@ -473,15 +677,34 @@ impl GlyphKvLayer {
         }
 
         if self.tail_cap == 0 {
+            if self.mid_cap > 0 {
+                if self.mid_pos.len() == self.mid_cap {
+                    let (m_pos, mkq, mks, mvq, mvs, mk_f32, mv_f32) = self.pop_mid_front_raw();
+                    let ow = self.push_glyph_token(m_pos, &mk_f32, &mv_f32, native, true);
+                    self.rollback_log.push(EvictedEntry {
+                        pos: m_pos,
+                        k: Vec::new(),
+                        v: Vec::new(),
+                        evicted_mid: Some((m_pos, mkq, mks, mvq, mvs)),
+                        overwrote_glyph_slot: ow,
+                    });
+                    if self.rollback_log.len() > 32 {
+                        self.rollback_log.remove(0);
+                    }
+                }
+                self.push_mid_back(pos, k_tok, v_tok);
+                return Ok(());
+            }
             let ow = self.push_glyph_token(pos, k_tok, v_tok, native, true);
             if ow.is_some() {
                 self.rollback_log.push(EvictedEntry {
                     pos,
                     k: Vec::new(),
                     v: Vec::new(),
+                    evicted_mid: None,
                     overwrote_glyph_slot: ow,
                 });
-                if self.rollback_log.len() > 16 {
+                if self.rollback_log.len() > 32 {
                     self.rollback_log.remove(0);
                 }
             }
@@ -496,14 +719,27 @@ impl GlyphKvLayer {
             } else {
                 self.v_tail.drain(0..stride).collect()
             };
-            let ow = self.push_glyph_token(ev_pos, &ev_k, &ev_v, native, true);
+            let (evicted_mid, ow) = if self.mid_cap > 0 {
+                let res = if self.mid_pos.len() == self.mid_cap {
+                    let (m_pos, mkq, mks, mvq, mvs, mk_f32, mv_f32) = self.pop_mid_front_raw();
+                    let ow_g = self.push_glyph_token(m_pos, &mk_f32, &mv_f32, native, true);
+                    (Some((m_pos, mkq, mks, mvq, mvs)), ow_g)
+                } else {
+                    (None, None)
+                };
+                self.push_mid_back(ev_pos, &ev_k, &ev_v);
+                res
+            } else {
+                (None, self.push_glyph_token(ev_pos, &ev_k, &ev_v, native, true))
+            };
             self.rollback_log.push(EvictedEntry {
                 pos: ev_pos,
                 k: ev_k,
                 v: ev_v,
+                evicted_mid,
                 overwrote_glyph_slot: ow,
             });
-            if self.rollback_log.len() > 16 {
+            if self.rollback_log.len() > 32 {
                 self.rollback_log.remove(0);
             }
         }
@@ -634,6 +870,11 @@ impl GlyphKvLayer {
             self.k_sink.clear();
             self.v_sink.clear();
             self.sink_pos.clear();
+            self.k_mid_q8.clear();
+            self.k_mid_sc.clear();
+            self.v_mid_q8.clear();
+            self.v_mid_sc.clear();
+            self.mid_pos.clear();
             self.k_tail.clear();
             self.v_tail.clear();
             self.tail_pos.clear();
@@ -642,7 +883,6 @@ impl GlyphKvLayer {
             return Ok(());
         }
         let stride = self.n_kv * self.hd;
-        let head_stride = self.glyph_cap * self.head_glyph_bytes;
         while self.total_seen > keep_tokens {
             self.total_seen -= 1;
             let drop_pos = self.total_seen;
@@ -653,40 +893,44 @@ impl GlyphKvLayer {
                 if !self.k_eq_v {
                     self.v_tail.truncate(new_len);
                 }
-                // Restore evicted token from glyph arena back to front of tail if present
-                if self.tail_cap > 0 && self.glyph_len > 0 {
-                    let prev_slot = if self.glyph_write_pos == 0 {
-                        self.glyph_cap - 1
-                    } else {
-                        self.glyph_write_pos - 1
-                    };
-                    if let Some(ev) = self.rollback_log.pop() {
-                        self.tail_pos.insert(0, ev.pos);
-                        self.k_tail.splice(0..0, ev.k);
-                        if !self.k_eq_v {
-                            self.v_tail.splice(0..0, ev.v);
-                        }
-                        if let Some((slot, old_pos, old_k, old_v)) = ev.overwrote_glyph_slot {
-                            self.glyph_write_pos = slot;
-                            self.glyph_pos[slot] = old_pos;
-                            for h in 0..self.n_kv {
-                                let off = h * head_stride + slot * self.head_glyph_bytes;
-                                self.k_arena[off..off + self.head_glyph_bytes]
-                                    .copy_from_slice(&old_k[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
-                                if !self.k_eq_v {
-                                    self.v_arena[off..off + self.head_glyph_bytes]
-                                        .copy_from_slice(&old_v[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
-                                }
-                            }
-                        } else {
-                            self.glyph_write_pos = prev_slot;
-                            self.glyph_len -= 1;
-                        }
-                    } else {
+                let had_eviction = if self.mid_cap > 0 {
+                    !self.mid_pos.is_empty()
+                } else {
+                    self.glyph_len > 0
+                };
+                if self.tail_cap > 0 && had_eviction {
+                    let Some(ev) = self.rollback_log.pop() else {
                         return Err(format!(
-                            "GlyphKvLayer::truncate cannot unwind >16 evicted tokens (drop_pos={drop_pos})"
+                            "GlyphKvLayer::truncate cannot unwind >32 evicted tokens (drop_pos={drop_pos})"
                         ));
+                    };
+                    self.tail_pos.insert(0, ev.pos);
+                    self.k_tail.splice(0..0, ev.k);
+                    if !self.k_eq_v {
+                        self.v_tail.splice(0..0, ev.v);
                     }
+                    if self.mid_cap > 0 {
+                        self.pop_mid_back();
+                        if let Some((mp, mkq, mks, mvq, mvs)) = ev.evicted_mid {
+                            self.insert_mid_front(mp, mkq, mks, mvq, mvs);
+                            self.undo_glyph_push(ev.overwrote_glyph_slot);
+                        }
+                    } else {
+                        self.undo_glyph_push(ev.overwrote_glyph_slot);
+                    }
+                }
+            } else if self.tail_cap == 0 && self.mid_cap > 0 && self.mid_pos.last().copied() == Some(drop_pos) {
+                self.pop_mid_back();
+                if self.glyph_len > 0 {
+                    let Some(ev) = self.rollback_log.pop() else {
+                        return Err(format!(
+                            "GlyphKvLayer::truncate cannot unwind >32 evicted mid tokens (drop_pos={drop_pos})"
+                        ));
+                    };
+                    if let Some((mp, mkq, mks, mvq, mvs)) = ev.evicted_mid {
+                        self.insert_mid_front(mp, mkq, mks, mvq, mvs);
+                    }
+                    self.undo_glyph_push(ev.overwrote_glyph_slot);
                 }
             } else if self.sink_pos.last().copied() == Some(drop_pos) {
                 self.sink_pos.pop();
@@ -695,33 +939,12 @@ impl GlyphKvLayer {
                 if !self.k_eq_v {
                     self.v_sink.truncate(new_len);
                 }
-            } else if self.tail_cap == 0 && self.glyph_len > 0 {
-                let prev_slot = if self.glyph_write_pos == 0 {
-                    self.glyph_cap - 1
-                } else {
-                    self.glyph_write_pos - 1
-                };
+            } else if self.tail_cap == 0 && self.mid_cap == 0 && self.glyph_len > 0 {
                 if let Some(ev) = self.rollback_log.last().filter(|e| e.pos == drop_pos).cloned() {
                     self.rollback_log.pop();
-                    if let Some((slot, old_pos, old_k, old_v)) = ev.overwrote_glyph_slot {
-                        self.glyph_write_pos = slot;
-                        self.glyph_pos[slot] = old_pos;
-                        for h in 0..self.n_kv {
-                            let off = h * head_stride + slot * self.head_glyph_bytes;
-                            self.k_arena[off..off + self.head_glyph_bytes]
-                                .copy_from_slice(&old_k[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
-                            if !self.k_eq_v {
-                                self.v_arena[off..off + self.head_glyph_bytes]
-                                    .copy_from_slice(&old_v[h * self.head_glyph_bytes..(h + 1) * self.head_glyph_bytes]);
-                            }
-                        }
-                    } else {
-                        self.glyph_write_pos = prev_slot;
-                        self.glyph_len -= 1;
-                    }
+                    self.undo_glyph_push(ev.overwrote_glyph_slot);
                 } else {
-                    self.glyph_write_pos = prev_slot;
-                    self.glyph_len -= 1;
+                    self.undo_glyph_push(None);
                 }
             } else {
                 return Err(format!("GlyphKvLayer::truncate state desync at drop_pos={drop_pos}"));
@@ -911,6 +1134,81 @@ impl GlyphKvLayer {
             }
         }
 
+        // 1.5 Evaluate Tier 1 Mid-Distance INT8 tokens `(out_m, m_m, l_m)` with per-64-dim scales.
+        let mut out_m = vec![0.0f32; self.n_heads * self.hd];
+        let mut m_m = vec![f32::NEG_INFINITY; self.n_heads];
+        let mut l_m = vec![0.0f32; self.n_heads];
+        let mut has_mid_contrib = false;
+
+        if !self.mid_pos.is_empty() {
+            let mut valid_mid: Vec<usize> = Vec::with_capacity(self.mid_pos.len());
+            for (idx, &p) in self.mid_pos.iter().enumerate() {
+                if p <= max_tt && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                    valid_mid.push(idx);
+                }
+            }
+            if !valid_mid.is_empty() {
+                has_mid_contrib = true;
+                let hd = self.hd;
+                let sc_head = hd / MID_SUBBLOCK_DIM;
+                let sc_stride = self.n_kv * sc_head;
+                let mut scores = vec![0.0f32; valid_mid.len()];
+                let (v_q8_buf, v_sc_buf) = if self.k_eq_v {
+                    (&self.k_mid_q8, &self.k_mid_sc)
+                } else {
+                    (&self.v_mid_q8, &self.v_mid_sc)
+                };
+                for kvh in 0..self.n_kv {
+                    let kvh_off = kvh * hd;
+                    let kvh_sc_off = kvh * sc_head;
+                    for g_idx in 0..gqa {
+                        let hq = kvh * gqa + g_idx;
+                        let qh = &q[hq * hd..(hq + 1) * hd];
+                        let mut m_max = f32::NEG_INFINITY;
+                        for (vi, &idx) in valid_mid.iter().enumerate() {
+                            let base = idx * stride + kvh_off;
+                            let sc_base = idx * sc_stride + kvh_sc_off;
+                            let s = dot_f32_mid_int8(
+                                qh,
+                                &self.k_mid_q8[base..base + hd],
+                                &self.k_mid_sc[sc_base..sc_base + sc_head],
+                            ) * attn_scale;
+                            scores[vi] = s;
+                            if s > m_max {
+                                m_max = s;
+                            }
+                        }
+                        m_m[hq] = m_max;
+                        let mut l_sum = 0.0f32;
+                        let acc = &mut out_m[hq * hd..(hq + 1) * hd];
+                        for (vi, &idx) in valid_mid.iter().enumerate() {
+                            let w = (scores[vi] - m_max).exp();
+                            l_sum += w;
+                            let base = idx * stride + kvh_off;
+                            let sc_base = idx * sc_stride + kvh_sc_off;
+                            let vq = &v_q8_buf[base..base + hd];
+                            let vsc = &v_sc_buf[sc_base..sc_base + sc_head];
+                            for ((dst_blk, vq_blk), &sc) in acc
+                                .chunks_exact_mut(MID_SUBBLOCK_DIM)
+                                .zip(vq.chunks_exact(MID_SUBBLOCK_DIM))
+                                .zip(vsc.iter())
+                            {
+                                let w_sc = w * sc;
+                                for (dst, &qv) in dst_blk.iter_mut().zip(vq_blk.iter()) {
+                                    *dst += w_sc * (qv as f32);
+                                }
+                            }
+                        }
+                        l_m[hq] = l_sum;
+                        let inv_l = if l_sum > 1e-30 { 1.0f32 / l_sum } else { 0.0f32 };
+                        for v in acc.iter_mut() {
+                            *v *= inv_l;
+                        }
+                    }
+                }
+            }
+        }
+
         // 2. Evaluate exact Dual-Road sink + rolling hot-tail tokens `(out_e, m_e, l_e)`
         //    using NEON-vectorizable 4-way FP32 dots and a single-pass softmax (zero per-token `out_e` rescaling).
         let mut out_e = vec![0.0f32; self.n_heads * self.hd];
@@ -979,24 +1277,50 @@ impl GlyphKvLayer {
             }
         }
 
-        // 3. Exact associative LSE merge: `(m_g, l_g, out_g) (+) (m_e, l_e, out_e)`.
-        if !has_glyph_contrib {
+        // 3. Exact associative 3-tier LSE merge across `(glyph, mid_int8, exact_fp32)`.
+        if !has_glyph_contrib && !has_mid_contrib {
             return Ok(out_e);
         }
-        if !has_exact_contrib {
+        if !has_mid_contrib && !has_exact_contrib {
             return Ok(out_g);
+        }
+        if !has_glyph_contrib && !has_exact_contrib {
+            return Ok(out_m);
         }
         let mut merged = vec![0.0f32; self.n_heads * self.hd];
         for hq in 0..self.n_heads {
-            let mj = m_g[hq].max(m_e[hq]);
-            let wg = if m_g[hq].is_finite() { l_g[hq] * (m_g[hq] - mj).exp() } else { 0.0 };
-            let we = if m_e[hq].is_finite() { l_e[hq] * (m_e[hq] - mj).exp() } else { 0.0 };
-            let denom = (wg + we).max(1e-30);
+            let mut mj = f32::NEG_INFINITY;
+            if has_glyph_contrib && m_g[hq] > mj {
+                mj = m_g[hq];
+            }
+            if has_mid_contrib && m_m[hq] > mj {
+                mj = m_m[hq];
+            }
+            if has_exact_contrib && m_e[hq] > mj {
+                mj = m_e[hq];
+            }
+            let wg = if has_glyph_contrib && m_g[hq].is_finite() {
+                l_g[hq] * (m_g[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let wm = if has_mid_contrib && m_m[hq].is_finite() {
+                l_m[hq] * (m_m[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let we = if has_exact_contrib && m_e[hq].is_finite() {
+                l_e[hq] * (m_e[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let denom = (wg + wm + we).max(1e-30);
             let ag = wg / denom;
+            let am = wm / denom;
             let ae = we / denom;
             let base = hq * self.hd;
             for d in 0..self.hd {
-                merged[base + d] = ag * out_g[base + d] + ae * out_e[base + d];
+                merged[base + d] = ag * out_g[base + d] + am * out_m[base + d] + ae * out_e[base + d];
             }
         }
         Ok(merged)
@@ -1006,12 +1330,34 @@ impl GlyphKvLayer {
     /// or reconstruct decoded FP32 KV sequence in chronological order `[0..total_seen]` when needed.
     pub fn materialize_chronological_kv(&self) -> (Vec<f32>, Vec<f32>) {
         let stride = self.n_kv * self.hd;
+        let sc_stride = self.n_kv * (self.hd / MID_SUBBLOCK_DIM);
         let head_stride = self.glyph_cap * self.head_glyph_bytes;
-        let mut entries: Vec<(usize, Vec<f32>, Vec<f32>)> = Vec::with_capacity(self.exact_len() + self.glyph_len);
+        let mut entries: Vec<(usize, Vec<f32>, Vec<f32>)> =
+            Vec::with_capacity(self.exact_len() + self.mid_pos.len() + self.glyph_len);
 
         for (i, &p) in self.sink_pos.iter().enumerate() {
             let k = self.k_sink[i * stride..(i + 1) * stride].to_vec();
             let v = if self.k_eq_v { k.clone() } else { self.v_sink[i * stride..(i + 1) * stride].to_vec() };
+            entries.push((p, k, v));
+        }
+        for (i, &p) in self.mid_pos.iter().enumerate() {
+            let mut k = vec![0.0f32; stride];
+            decode_mid_int8(
+                &self.k_mid_q8[i * stride..(i + 1) * stride],
+                &self.k_mid_sc[i * sc_stride..(i + 1) * sc_stride],
+                &mut k,
+            );
+            let v = if self.k_eq_v {
+                k.clone()
+            } else {
+                let mut vv = vec![0.0f32; stride];
+                decode_mid_int8(
+                    &self.v_mid_q8[i * stride..(i + 1) * stride],
+                    &self.v_mid_sc[i * sc_stride..(i + 1) * sc_stride],
+                    &mut vv,
+                );
+                vv
+            };
             entries.push((p, k, v));
         }
         for slot in 0..self.glyph_len {
@@ -1205,5 +1551,97 @@ mod tests {
             cos > 0.9999 && rel < 1e-3,
             "FFI vs Pure-Rust GlyphAttentionV2 parity mismatch: cos={cos} rel={rel} max_abs={max_abs}"
         );
+    }
+
+    #[test]
+    fn lod_three_tier_improves_mid_context_accuracy_and_handles_rollback() {
+        let n_heads = 4;
+        let n_kv = 2;
+        let hd = 256;
+        let seq_len = 280;
+        let mut two_tier = GlyphKvLayer::new(n_heads, n_kv, hd, false, None, 4, 32, 320).unwrap();
+        let mut lod_tier = GlyphKvLayer::new_with_lod(n_heads, n_kv, hd, false, None, 4, 32, 192, 320).unwrap();
+        let mut k_all = Vec::new();
+        let mut v_all = Vec::new();
+        for t in 0..seq_len {
+            let k = det_vec(n_kv * hd, 2000 + t as u64);
+            let v = det_vec(n_kv * hd, 6000 + t as u64);
+            two_tier.append_token(&k, &v, None).unwrap();
+            lod_tier.append_token(&k, &v, None).unwrap();
+            k_all.extend_from_slice(&k);
+            v_all.extend_from_slice(&v);
+        }
+        assert_eq!(lod_tier.total_seen(), seq_len);
+        assert_eq!(lod_tier.exact_len(), 36);
+        assert_eq!(lod_tier.mid_len(), 192);
+        assert_eq!(lod_tier.glyph_len(), 280 - 36 - 192);
+        let st = lod_tier.memory_stats();
+        assert_eq!(st.active_tokens, seq_len);
+        assert_eq!(st.mid_tokens, 192);
+
+        // Query aligned with mid-range token t=140 so softmax concentrates inside Tier 1 Mid INT8
+        let mut q = vec![0.0f32; n_heads * hd];
+        let mid_tok_k = &k_all[140 * (n_kv * hd)..(140 + 1) * (n_kv * hd)];
+        for hq in 0..n_heads {
+            let kvh = hq / (n_heads / n_kv);
+            for d in 0..hd {
+                q[hq * hd + d] = mid_tok_k[kvh * hd + d] * 0.45;
+            }
+        }
+        let ref_ctx = attn_decode_range(&q, &k_all, &v_all, seq_len - 1, seq_len - 1, seq_len - 1, n_heads, n_kv, hd, None);
+        let two_ctx = two_tier.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
+        let lod_ctx = lod_tier.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
+        let (cos_two, _, _) = cosine_and_rel_l2(&ref_ctx, &two_ctx);
+        let (cos_lod, _, _) = cosine_and_rel_l2(&ref_ctx, &lod_ctx);
+        assert!(cos_lod > 0.995, "expected 3-tier LOD mid cosine > 0.995, got {cos_lod}");
+        assert!(cos_lod > cos_two, "expected 3-tier LOD ({cos_lod}) > 2-tier ({cos_two})");
+
+        // 6-token speculative draft + truncate rollback must be bit-faithful
+        for d in 0..6 {
+            let dk = det_vec(n_kv * hd, 9000 + d as u64);
+            let dv = det_vec(n_kv * hd, 9500 + d as u64);
+            lod_tier.append_token(&dk, &dv, None).unwrap();
+        }
+        assert_eq!(lod_tier.total_seen(), seq_len + 6);
+        lod_tier.truncate(seq_len).unwrap();
+        assert_eq!(lod_tier.total_seen(), seq_len);
+        assert_eq!(lod_tier.mid_len(), 192);
+        assert_eq!(lod_tier.glyph_len(), 280 - 36 - 192);
+        let after_rb = lod_tier.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
+        let (rb_cos, rb_rel, _) = cosine_and_rel_l2(&lod_ctx, &after_rb);
+        assert!(rb_cos > 0.999999 && rb_rel < 1e-6, "LOD rollback mismatch: cos={rb_cos} rel={rb_rel}");
+
+        // materialize_chronological_kv preserves exact count and mid accuracy
+        let (mat_k, mat_v) = lod_tier.materialize_chronological_kv();
+        assert_eq!(mat_k.len(), seq_len * n_kv * hd);
+        assert_eq!(mat_v.len(), seq_len * n_kv * hd);
+        let (mcos, _, _) = cosine_and_rel_l2(mid_tok_k, &mat_k[140 * (n_kv * hd)..141 * (n_kv * hd)]);
+        assert!(mcos > 0.999, "expected materialized mid INT8 cosine > 0.999, got {mcos}");
+
+        // truncate(0) + refill produces identical attention output
+        lod_tier.truncate(0).unwrap();
+        assert_eq!(lod_tier.total_seen(), 0);
+        assert_eq!(lod_tier.mid_len(), 0);
+        assert_eq!(lod_tier.glyph_len(), 0);
+        for t in 0..seq_len {
+            let k = det_vec(n_kv * hd, 2000 + t as u64);
+            let v = det_vec(n_kv * hd, 6000 + t as u64);
+            lod_tier.append_token(&k, &v, None).unwrap();
+        }
+        let after_refill = lod_tier.attend_range(&q, seq_len - 1, seq_len - 1, seq_len - 1, 1.0, None, 1).unwrap();
+        let (rf_cos, rf_rel, _) = cosine_and_rel_l2(&lod_ctx, &after_refill);
+        assert!(rf_cos > 0.999999 && rf_rel < 1e-6, "LOD refill mismatch: cos={rf_cos} rel={rf_rel}");
+    }
+
+    #[test]
+    fn lod_128k_memory_shrink_exceeds_19x_vs_naive_bf16() {
+        // Gemma 4 31B global layer (32Q / 4KV / 512d, k_eq_v=true) with 4 sink + 32 tail + 192 mid + 130,844 glyphs
+        let glyph_bytes = 130_844usize * 4 * (2 * OPT5_BPG_OUTLIER);
+        let mid_bytes = 192usize * (4 * 512 + 4 * (512 / MID_SUBBLOCK_DIM) * 4);
+        let exact_bytes = 36usize * 4 * 512 * 4;
+        let resident = glyph_bytes + mid_bytes + exact_bytes;
+        let naive_bf16 = 131_072usize * 4 * 512 * 2 * 2;
+        let ratio = naive_bf16 as f64 / resident as f64;
+        assert!(ratio > 19.5 && ratio < 21.3, "expected >19.5x shrink at 128K with LOD mid tier, got {ratio:.3}x");
     }
 }

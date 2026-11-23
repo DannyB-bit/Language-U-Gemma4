@@ -1,0 +1,228 @@
+{
+  "suite": "Gemma 4 31B GTA Streaming + Distance-Based LOD Physical Pi 4 Proof",
+  "hardware": {
+    "device": "Raspberry Pi 4 Model B",
+    "cpu": "4x ARM Cortex-A72 (aarch64) @ 1.50 GHz",
+    "ram_total_gib": 7.62,
+    "storage": "USB 3.0 External SSD (/mnt/SHE-VAULT)",
+    "os": "Linux 6.6.74+rpt-rpi-v8 aarch64"
+  },
+  "target_model": {
+    "t16c": "/mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid.t16c",
+    "c8d": "/mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d",
+    "crtr": "/mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_router.crtr",
+    "assistant_v7": "/mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7_body_q2.t16c",
+    "assistant_v7_bhdr": "/mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_assistant_v7.bhdr",
+    "rust_unit_tests_passed": 91
+  },
+  "proof_1a_128k_kv_lod": {
+    "log_file": "bench_128k_glyph_vs_lod.log",
+    "seq_len": 131072,
+    "layers": 60,
+    "runs": {
+      "glyph_4_32_0": {
+        "lod_tiers": [4, 32, 0],
+        "fill_s": 13.13,
+        "ref512_cos": 0.62159,
+        "mid_tokens": 0,
+        "total_resident_mb": 1088.02,
+        "total_naive_bf16_mb": 11040.0,
+        "total_shrink_bf16": 10.15,
+        "total_60l_ms": 4767.61,
+        "vm_rss_kb": 1131528
+      },
+      "glyph_lod_4_32_192": {
+        "lod_tiers": [4, 32, 192],
+        "fill_s": 18.67,
+        "ref512_cos": 0.58094,
+        "mid_tokens": 11520,
+        "total_resident_mb": 1160.21,
+        "total_naive_bf16_mb": 11040.0,
+        "total_shrink_bf16": 9.52,
+        "total_60l_ms": 5978.34,
+        "vm_rss_kb": 1279272
+      },
+      "glyph_lod_4_32_512": {
+        "lod_tiers": [4, 32, 512],
+        "fill_s": 27.89,
+        "ref512_cos": 0.99995,
+        "mid_tokens": 30720,
+        "total_resident_mb": 1280.52,
+        "total_naive_bf16_mb": 11040.0,
+        "total_shrink_bf16": 8.62,
+        "total_60l_ms": 7460.19,
+        "vm_rss_kb": 1386592
+      }
+    }
+  },
+  "proof_1b_heldout_nll_kv_lod": {
+    "log_file": "nll_kv_lod.log",
+    "runs": {
+      "lod_4_32_192_heldout_systems_cache": {
+        "tokens": 92,
+        "eval_pos": 63,
+        "mean_nll": 10.12653,
+        "top1_acc": 0.1111,
+        "top1_agree": 0.1905,
+        "top5_agree": 0.2698,
+        "compressed_bytes": 86876160
+      },
+      "lod_4_32_192_heldout_numerical_pde": {
+        "tokens": 91,
+        "eval_pos": 54,
+        "mean_nll": 9.50013,
+        "top1_acc": 0.0926,
+        "top1_agree": 0.1481,
+        "top5_agree": 0.2593,
+        "compressed_bytes": 86397440
+      },
+      "lod_4_32_192_heldout_compiler_ir": {
+        "tokens": 76,
+        "eval_pos": 49,
+        "mean_nll": 11.84987,
+        "top1_acc": 0.0612,
+        "top1_agree": 0.1633,
+        "top5_agree": 0.2857,
+        "compressed_bytes": 79216640
+      },
+      "lod_3tier_4_16_32_heldout_systems_cache": {
+        "tokens": 92,
+        "eval_pos": 63,
+        "mean_nll": 10.12005,
+        "top1_acc": 0.0794,
+        "top1_agree": 0.1587,
+        "top5_agree": 0.2381,
+        "compressed_bytes": 48496640,
+        "glyph_tokens": 2600,
+        "mid_tokens": 1920,
+        "exact_tokens": 1000,
+        "shrink_vs_fp32": 3.42,
+        "shrink_vs_bf16": 1.71
+      },
+      "lod_3tier_4_16_32_heldout_numerical_pde": {
+        "tokens": 91,
+        "eval_pos": 54,
+        "mean_nll": 10.13649,
+        "top1_acc": 0.0741,
+        "top1_agree": 0.0926,
+        "top5_agree": 0.2222,
+        "compressed_bytes": 48412160,
+        "glyph_tokens": 2540,
+        "mid_tokens": 1920,
+        "exact_tokens": 1000,
+        "shrink_vs_fp32": 3.39,
+        "shrink_vs_bf16": 1.69
+      }
+    }
+  },
+  "proof_2_vision_ondemand_gta_zone": {
+    "text_log_file": "vision_ondemand_text.log",
+    "multimodal_log_file": "vision_ondemand_multimodal.log",
+    "text_2a_ondemand": {
+      "load_s": 10.71,
+      "evicted_vision_bytes": 233684992,
+      "prefill_s": 19.26,
+      "decode_s": 11.47,
+      "s_per_tok": 1.434,
+      "vm_rss_kb": 4680964,
+      "output_ids": [2021, 1586, 506, 1156, 4945, 529, 496, 2558],
+      "output_text": "To find the two numbers of a total"
+    },
+    "text_2a_resident": {
+      "load_s": 11.22,
+      "evicted_vision_bytes": 0,
+      "prefill_s": 19.44,
+      "decode_s": 11.45,
+      "s_per_tok": 1.431,
+      "vm_rss_kb": 4909180,
+      "output_ids": [2021, 1586, 506, 1156, 4945, 529, 496, 2558],
+      "output_text": "To find the two numbers of a total"
+    },
+    "rss_saved_kb_text": 228216,
+    "rss_saved_mib_text": 222.87,
+    "bit_identical_text_tokens": true,
+    "multimodal_2b_ondemand": {
+      "image": "/home/astronautshe/frame_01_coco.png",
+      "resolution": "640x480",
+      "n_soft_tokens": 266,
+      "warmed_vision_bytes": 235263936,
+      "evicted_vision_bytes_after_encode": 233684992,
+      "vm_rss_before_warm_kb": 4679644,
+      "vm_rss_during_encode_kb": 4962460,
+      "vm_rss_after_evict_kb": 4734252,
+      "rss_reclaimed_after_encode_kb": 228208,
+      "prefill_293_tok_s": 323.4,
+      "decode_8_tok_s": 15.91,
+      "output_ids": [236776, 2764, 5866, 563, 496, 3730, 236772, 529],
+      "output_text": "A black cat is a blue- of"
+    }
+  },
+  "proof_3_cold_mlp_colblock_streaming": {
+    "log_file": "cold_mlp_streaming_proof.log",
+    "repack_report_file": "repack_colblock_report.json",
+    "cold_layers": "6..53 (48 layers)",
+    "runs": {
+      "3a_pinned_crtr_035": {
+        "pinned_bytes": 3911770608,
+        "ssd_read_bytes": 0,
+        "prefill_s": 14.15,
+        "decode_s": 19.22,
+        "s_per_tok": 1.201,
+        "vm_rss_kb": 4691820,
+        "dram_saved_pct": 52.7,
+        "gate_saved_pct": 64.3,
+        "output_ids": [818, 3890, 529, 5213, 236778, 236770, 236761, 236778, 236771, 236771, 1018, 107, 140, 2063, 5062, 236800],
+        "output_text": "The answer of **21.200**\n    def __3"
+      },
+      "3b_cold_6_53_crtr_035_k1": {
+        "pinned_bytes": 3375288816,
+        "streamed_cold_bytes": 536481792,
+        "ssd_read_bytes": 3065610240,
+        "prefill_s": 14.98,
+        "decode_s": 29.96,
+        "s_per_tok": 1.873,
+        "vm_rss_kb": 4297388,
+        "dram_saved_pct": 54.4,
+        "gate_saved_pct": 64.3,
+        "bit_identical_to_3a_pinned": true,
+        "rss_saved_vs_3a_kb": 394432,
+        "ssd_io_reduction_vs_3c_dense": 2.8,
+        "decode_speedup_vs_3c_dense": 1.822,
+        "output_ids": [818, 3890, 529, 5213, 236778, 236770, 236761, 236778, 236771, 236771, 1018, 107, 140, 2063, 5062, 236800],
+        "output_text": "The answer of **21.200**\n    def __3"
+      },
+      "3c_cold_6_53_dense_100_k1": {
+        "pinned_bytes": 3375288816,
+        "streamed_cold_bytes": 536481792,
+        "ssd_read_bytes": 8583708672,
+        "prefill_s": 21.39,
+        "decode_s": 54.58,
+        "s_per_tok": 3.411,
+        "vm_rss_kb": 4408828,
+        "output_ids": [2021, 1586, 506, 1156, 4945, 529, 496, 2558, 1548, 529, 5213, 236778, 236761, 236828, 236829, 236770]
+      },
+      "3d_cold_6_53_crtr_035_ast_v7_k4": {
+        "assistant": "gemma4_31b_assistant_v7_body_q2.t16c + gemma4_31b_assistant_v7.bhdr",
+        "assistant_mb": 66.98,
+        "byte_head": true,
+        "ssd_read_bytes": 2682408960,
+        "ssd_bytes_saved_vs_k1_pct": 12.5,
+        "prefill_s": 14.66,
+        "decode_s": 40.94,
+        "s_per_tok": 2.729,
+        "vm_rss_kb": 4431676,
+        "rss_saved_vs_ast_v6_kb": 296672
+      },
+      "3e_cold_6_53_crtr_035_ast_v6_k4": {
+        "assistant": "gemma4_31b_assistant_v6.t16c",
+        "assistant_mb": 334.31,
+        "byte_head": false,
+        "ssd_read_bytes": 2682408960,
+        "prefill_s": 14.72,
+        "decode_s": 42.62,
+        "s_per_tok": 2.842,
+        "vm_rss_kb": 4728348
+      }
+    }
+  }
+}

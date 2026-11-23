@@ -21,13 +21,14 @@ use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_con
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
 use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDraftController, FastNGramProposalEngine};
+use run270_rust::t16c::T16CLoadPolicy;
 use run270_rust::tokenizer::Tokenizer;
 use run270_rust::tri_modal::{
     analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, render_tri_modal_rescue_canvas,
     ConsensusConfig, ConsensusMode, TriModalConsensusGate,
 };
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
@@ -471,6 +472,7 @@ enum KvQuantMode {
     Fp8E4M3,
     Glyph,
     GlyphPure,
+    GlyphLod,
 }
 
 impl KvQuantMode {
@@ -481,24 +483,40 @@ impl KvQuantMode {
             "fp8" | "e4m3" | "fp8_e4m3" => Ok(Self::Fp8E4M3),
             "glyph" | "glyph_v2" | "opt5" => Ok(Self::Glyph),
             "glyph-pure" | "glyph_pure" | "opt5-pure" => Ok(Self::GlyphPure),
-            other => Err(format!("invalid --kv-quant '{other}' (expected fp32|q8|fp8|glyph|glyph-pure)")),
+            "glyph-lod" | "glyph_lod" | "lod" => Ok(Self::GlyphLod),
+            other => Err(format!("invalid --kv-quant '{other}' (expected fp32|q8|fp8|glyph|glyph-pure|glyph-lod)")),
         }
     }
 
     fn is_glyph(self) -> bool {
-        matches!(self, Self::Glyph | Self::GlyphPure)
+        matches!(self, Self::Glyph | Self::GlyphPure | Self::GlyphLod)
     }
 }
 
-fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode) -> Result<Vec<Option<GlyphKvLayer>>, String> {
+fn resolve_kv_lod_caps(
+    kv_quant: KvQuantMode,
+    sink_ov: Option<usize>,
+    near_ov: Option<usize>,
+    mid_ov: Option<usize>,
+) -> (usize, usize, usize) {
+    let (d_sink, d_near, d_mid) = match kv_quant {
+        KvQuantMode::Glyph => (4usize, 32usize, 0usize),
+        KvQuantMode::GlyphPure => (0usize, 0usize, 0usize),
+        KvQuantMode::GlyphLod => (4usize, 32usize, 192usize),
+        _ => (0usize, 0usize, 0usize),
+    };
+    (
+        sink_ov.unwrap_or(d_sink),
+        near_ov.unwrap_or(d_near),
+        mid_ov.unwrap_or(d_mid),
+    )
+}
+
+fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode, lod_caps: (usize, usize, usize)) -> Result<Vec<Option<GlyphKvLayer>>, String> {
     if !kv_quant.is_glyph() {
         return Ok((0..cfg.n_layers).map(|_| None).collect());
     }
-    let (sink_cap, tail_cap) = match kv_quant {
-        KvQuantMode::Glyph => (4usize, 32usize),
-        KvQuantMode::GlyphPure => (0usize, 0usize),
-        _ => (0usize, 0usize),
-    };
+    let (sink_cap, tail_cap, mid_cap) = lod_caps;
     let mut out = Vec::with_capacity(cfg.n_layers);
     for l in 0..cfg.n_layers {
         let is_full = cfg.layer_full[l];
@@ -509,7 +527,7 @@ fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode) -> Result<Vec<Option<Gl
         // KV cache tensors (`K_post = RoPE(k_norm(W_k x))` != `V_post = RMSNorm(W_k x)`). Keep distinct K/V
         // glyph streams so live attention matches exact FP32 Gemma 4 mathematics.
         let k_eq_v = false;
-        out.push(Some(GlyphKvLayer::new(
+        out.push(Some(GlyphKvLayer::new_with_lod(
             cfg.n_heads,
             n_kv,
             hd,
@@ -517,6 +535,7 @@ fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode) -> Result<Vec<Option<Gl
             sw,
             sink_cap,
             tail_cap,
+            mid_cap,
             256,
         )?));
     }
@@ -615,6 +634,56 @@ fn parse_hybrid_qat_layers(spec: &str, n_layers: usize) -> Result<Vec<usize>, St
         }
     }
     out.sort_unstable();
+    Ok(out)
+}
+
+fn parse_layer_spec(spec: &str, n_layers: usize) -> Result<HashSet<usize>, String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err("empty layer spec".into());
+    }
+    let low = trimmed.to_ascii_lowercase();
+    if low == "none" {
+        return Ok(HashSet::new());
+    }
+    if low == "all" {
+        return Ok((0..n_layers).collect());
+    }
+    let mut out = HashSet::new();
+    for raw in trimmed.split(',') {
+        let t = raw.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some((a_s, b_s)) = t.split_once("..=") {
+            let a: usize = a_s.trim().parse().map_err(|_| format!("invalid range start '{a_s}' in '{t}'"))?;
+            let b: usize = b_s.trim().parse().map_err(|_| format!("invalid range end '{b_s}' in '{t}'"))?;
+            if a > b || b >= n_layers {
+                return Err(format!("layer range {a}..={b} out of bounds (n_layers={n_layers})"));
+            }
+            out.extend(a..=b);
+        } else if let Some((a_s, b_s)) = t.split_once("..") {
+            let a: usize = a_s.trim().parse().map_err(|_| format!("invalid range start '{a_s}' in '{t}'"))?;
+            let b: usize = b_s.trim().parse().map_err(|_| format!("invalid range end '{b_s}' in '{t}'"))?;
+            if a >= b || b > n_layers {
+                return Err(format!("layer range {a}..{b} out of bounds (n_layers={n_layers})"));
+            }
+            out.extend(a..b);
+        } else if let Some((a_s, b_s)) = t.split_once('-') {
+            let a: usize = a_s.trim().parse().map_err(|_| format!("invalid range start '{a_s}' in '{t}'"))?;
+            let b: usize = b_s.trim().parse().map_err(|_| format!("invalid range end '{b_s}' in '{t}'"))?;
+            if a > b || b >= n_layers {
+                return Err(format!("layer range {a}-{b} out of bounds (n_layers={n_layers})"));
+            }
+            out.extend(a..=b);
+        } else {
+            let idx: usize = t.parse().map_err(|_| format!("invalid layer id '{t}' in layer spec"))?;
+            if idx >= n_layers {
+                return Err(format!("layer {idx} >= n_layers {n_layers}"));
+            }
+            out.insert(idx);
+        }
+    }
     Ok(out)
 }
 
@@ -884,12 +953,13 @@ fn print_runtime_telemetry(rt: &Runtime31B, pinned_bytes: usize, embed_bytes: us
     if rt.kv_quant.is_glyph() {
         let st = rt.glyph_kv_total_stats();
         println!(
-            "KV31B mode={:?} raw_bytes={} naive_bf16_bytes={} compressed_bytes={} glyph_tokens={} exact_tokens={} shrink={:.2}x shrink_vs_bf16={:.2}x",
+            "KV31B mode={:?} raw_bytes={} naive_bf16_bytes={} compressed_bytes={} glyph_tokens={} mid_tokens={} exact_tokens={} shrink={:.2}x shrink_vs_bf16={:.2}x",
             rt.kv_quant,
             st.fp32_bytes,
             st.naive_bf16_bytes,
             st.resident_bytes,
             st.glyph_tokens,
+            st.mid_tokens,
             st.exact_tokens,
             st.shrink_vs_fp32(),
             st.shrink_vs_naive_bf16(),
@@ -1027,6 +1097,7 @@ impl Runtime31B {
             let s = g.memory_stats();
             tot.active_tokens += s.active_tokens;
             tot.glyph_tokens += s.glyph_tokens;
+            tot.mid_tokens += s.mid_tokens;
             tot.exact_tokens += s.exact_tokens;
             tot.resident_bytes += s.resident_bytes;
             tot.naive_bf16_bytes += s.naive_bf16_bytes;
@@ -1249,9 +1320,14 @@ impl Runtime31B {
         let glyph_kv = &mut self.glyph_kv;
         let threads = self.threads;
         let mut read_bytes = 0u64;
+        let mut cold_read_bytes = 0u64;
         let mut cs_skipped_step = 0u64;
         let mut mlp_sp_skipped_step = 0u64;
+        let mut cold_sp_skipped_step = 0u64;
         let mut mlp_sp_total_step = 0u64;
+        let mut cold_sp_total_step = 0u64;
+        let apply_c8d_proj = self.apply_c8d_proj;
+        let c8d_bank = &self.c8d_bank;
         let mut mod_skipped_step = 0u64;
         let mut mod_total_step = 0u64;
         let mut cortical_gate_skipped_step = 0u64;
@@ -1623,7 +1699,7 @@ impl Runtime31B {
                                 kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
                                     + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
                             }
-                            KvQuantMode::Glyph | KvQuantMode::GlyphPure => unreachable!(),
+                            KvQuantMode::Glyph | KvQuantMode::GlyphPure | KvQuantMode::GlyphLod => unreachable!(),
                         }
                         kv[l].k.extend_from_slice(&k_batch);
                         kv[l].v.extend_from_slice(&v_batch);
@@ -1828,7 +1904,7 @@ impl Runtime31B {
                             kv_cmp_step += quantize_dequant_kv_fp8_e4m3_inplace(&mut k_batch, hd, fp8_lut)
                                 + quantize_dequant_kv_fp8_e4m3_inplace(&mut v_batch, hd, fp8_lut);
                         }
-                        KvQuantMode::Glyph | KvQuantMode::GlyphPure => unreachable!(),
+                        KvQuantMode::Glyph | KvQuantMode::GlyphPure | KvQuantMode::GlyphLod => unreachable!(),
                     }
 
                     let base_t = kv[l].k.len() / (n_kv * hd);
@@ -1912,6 +1988,23 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                let cold_mlp_mats = t16c_mats.as_ref().and_then(|mats| {
+                    let gm = mats
+                        .get(&format!("{pfx}.mlp.gate_proj.weight"))
+                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.gate_proj.weight")));
+                    let um = mats
+                        .get(&format!("{pfx}.mlp.up_proj.weight"))
+                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.up_proj.weight")));
+                    let dm = mats
+                        .get(&format!("{pfx}.mlp.down_proj.weight"))
+                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.down_proj.weight")));
+                    match (gm, um, dm) {
+                        (Some(g), Some(u), Some(d)) if g.is_streamed() || u.is_streamed() || d.is_streamed() => {
+                            Some((g, u, d))
+                        }
+                        _ => None,
+                    }
+                });
                 let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
                     if let (Some(cr), Some(mats)) = (cortical_router.as_ref(), t16c_mats.as_ref()) {
                         let check_proj_blk = |suf: &str, l_key: &str| -> Option<usize> {
@@ -1919,8 +2012,8 @@ impl Runtime31B {
                             let k2 = format!("model.layers.{l}.{suf}.weight");
                             let k1_lb = format!("{k1}.{l_key}");
                             let m = mats.get(&k1).or_else(|| mats.get(&k2)).or_else(|| mats.get(&k1_lb))?;
-                            let eb = m.n_bits & 0x3F;
-                            if eb == 5 || eb == 8 { None } else { Some(m.block_size) }
+                            let eb = m.n_bits & 0x1F;
+                            if !m.is_streamed() && (eb == 5 || eb == 8) { None } else { Some(m.block_size) }
                         };
                         let gb = check_proj_blk("mlp.gate_proj", "lb_u");
                         let ub = check_proj_blk("mlp.up_proj", "lb_u");
@@ -1945,6 +2038,270 @@ impl Runtime31B {
                     None
                 };
 
+                let down: Vec<f32> = if let Some((gate_mat, up_mat, down_mat)) = cold_mlp_mats {
+                    let apply_c8db_cold = |proj_suffix: &str, x_in: &[f32], y_out: &mut [f32]| -> Result<(), String> {
+                        if apply_c8d_proj {
+                            if let Some(ref bank) = *c8d_bank {
+                                let k1 = format!("{pfx}.{proj_suffix}.weight");
+                                let k2 = format!("model.layers.{l}.{proj_suffix}.weight");
+                                if let Some(entry) = bank.entries.get(&k1).or_else(|| bank.entries.get(&k2)) {
+                                    entry.apply_batch_into(x_in, seq_len, y_out, bank.native.as_ref(), threads, None)?;
+                                }
+                            }
+                        }
+                        Ok(())
+                    };
+                    let rec_sparse = |mat: &run270_rust::t16c::T16CMat, sk: i64, tot_acc: &mut u64, sk_acc: &mut u64| {
+                        let n_tiles_m = mat.d_out.div_ceil(16) as u64;
+                        let n_blks_m = (mat.d_in / mat.block_size) as u64;
+                        let passes = (seq_len.div_ceil(4)).max(1) as u64;
+                        *tot_acc += n_tiles_m * n_blks_m * passes;
+                        if sk > 0 {
+                            *sk_acc += sk as u64;
+                        }
+                    };
+                    let build_gate_masks = |gg: &[f32]| -> Option<(Vec<u8>, Vec<u8>, usize)> {
+                        if mlp_top_p >= 0.9999 {
+                            return None;
+                        }
+                        let ue = up_mat.n_bits & 0x1F;
+                        let de = down_mat.n_bits & 0x1F;
+                        if (!up_mat.is_streamed() && (ue == 5 || ue == 8)) || (!down_mat.is_streamed() && (de == 5 || de == 8)) {
+                            return None;
+                        }
+                        let bsize = down_mat.block_size;
+                        let ff = cfg.ff;
+                        if bsize == 0 || ff % bsize != 0 || bsize % 16 != 0 {
+                            return None;
+                        }
+                        let n_blks = ff / bsize;
+                        let tiles_per_blk = bsize / 16;
+                        let mut scores: Vec<(usize, f32)> = Vec::with_capacity(n_blks);
+                        for b in 0..n_blks {
+                            let mut max_e = 0.0f32;
+                            for t in 0..seq_len {
+                                let sl = &gg[t * ff + b * bsize..t * ff + (b + 1) * bsize];
+                                let mut e = 0.0f32;
+                                for &g in sl {
+                                    e += g * g;
+                                }
+                                if e > max_e {
+                                    max_e = e;
+                                }
+                            }
+                            scores.push((b, max_e));
+                        }
+                        scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                        let keep = ((n_blks as f32 * mlp_top_p).ceil() as usize).clamp(1, n_blks);
+                        let mut col_mask = vec![0u8; n_blks];
+                        let mut row_mask = vec![0u8; ff.div_ceil(16)];
+                        for &(b, _) in &scores[..keep] {
+                            col_mask[b] = 1;
+                            let t0 = b * tiles_per_blk;
+                            for dt in 0..tiles_per_blk {
+                                if t0 + dt < row_mask.len() {
+                                    row_mask[t0 + dt] = 1;
+                                }
+                            }
+                        }
+                        Some((row_mask, col_mask, bsize))
+                    };
+                    let compute_act = |cm_opt: Option<(&[u8], usize)>, gg: &[f32], up: &[f32]| -> Vec<f32> {
+                        if let Some((cmask, bsize)) = cm_opt {
+                            let ff = cfg.ff;
+                            let mut out_a = vec![0.0f32; seq_len * ff];
+                            for t in 0..seq_len {
+                                let base = t * ff;
+                                for (b, &active) in cmask.iter().enumerate() {
+                                    if active != 0 {
+                                        let off = base + b * bsize;
+                                        for j in 0..bsize {
+                                            out_a[off + j] = gg[off + j] * up[off + j];
+                                        }
+                                    }
+                                }
+                            }
+                            out_a
+                        } else {
+                            gg.iter().zip(up.iter()).map(|(&a, &b)| a * b).collect()
+                        }
+                    };
+
+                    if let Some((ref rmask, ref cmask, bsize)) = predicted_masks {
+                        let slab_g = gate_mat.read_sparse_slab(Some(rmask), None)?;
+                        cold_read_bytes += slab_g.bytes_read;
+                        let (gelu_gate, slab_u) = std::thread::scope(|sc| -> Result<(Vec<f32>, run270_rust::t16c::StreamedSparseSlab), String> {
+                            let up_io = sc.spawn(|| up_mat.read_sparse_slab(Some(rmask), None));
+                            let (mut gg, sk_g) = gate_mat.eval_sparse_slab(
+                                &slab_g,
+                                &inp2,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                Some(rmask),
+                                None,
+                                true,
+                                true,
+                            )?;
+                            drop(slab_g);
+                            rec_sparse(gate_mat, sk_g, &mut cold_sp_total_step, &mut cold_sp_skipped_step);
+                            apply_c8db_cold("mlp.gate_proj", &inp2, &mut gg)?;
+                            if let Some(t0) = t_g0 {
+                                prof_gate_step += t0.elapsed().as_secs_f64();
+                            }
+                            let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                            let ff = cfg.ff;
+                            for t in 0..seq_len {
+                                let base = t * ff;
+                                for (b, &active) in cmask.iter().enumerate() {
+                                    if active != 0 {
+                                        for x in &mut gg[base + b * bsize..base + (b + 1) * bsize] {
+                                            *x = gelu_tanh_fast_f32(*x);
+                                        }
+                                    } else {
+                                        gg[base + b * bsize..base + (b + 1) * bsize].fill(0.0);
+                                    }
+                                }
+                            }
+                            if let Some(t0) = t_gl0 {
+                                prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                            }
+                            let su = up_io.join().map_err(|_| "cold up_proj read thread panicked".to_string())??;
+                            Ok((gg, su))
+                        })?;
+                        cold_read_bytes += slab_u.bytes_read;
+
+                        let t_u0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                        let (act, slab_d) = std::thread::scope(|sc| -> Result<(Vec<f32>, run270_rust::t16c::StreamedSparseSlab), String> {
+                            let down_io = sc.spawn(|| down_mat.read_sparse_slab(None, Some(cmask)));
+                            let (mut up, sk_u) = up_mat.eval_sparse_slab(
+                                &slab_u,
+                                &inp2,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                Some(rmask),
+                                None,
+                                true,
+                                false,
+                            )?;
+                            drop(slab_u);
+                            rec_sparse(up_mat, sk_u, &mut cold_sp_total_step, &mut cold_sp_skipped_step);
+                            apply_c8db_cold("mlp.up_proj", &inp2, &mut up)?;
+                            if let Some(t0) = t_u0 {
+                                prof_up_step += t0.elapsed().as_secs_f64();
+                            }
+                            let act_v = compute_act(Some((cmask, bsize)), &gelu_gate, &up);
+                            let sd = down_io.join().map_err(|_| "cold down_proj read thread panicked".to_string())??;
+                            Ok((act_v, sd))
+                        })?;
+                        drop(gelu_gate);
+                        cold_read_bytes += slab_d.bytes_read;
+
+                        let t_d0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                        let (mut down_out, sk_d) = down_mat.eval_sparse_slab(
+                            &slab_d,
+                            &act,
+                            seq_len,
+                            native_t16c.as_deref(),
+                            threads,
+                            None,
+                            Some(cmask),
+                            true,
+                            false,
+                        )?;
+                        drop(slab_d);
+                        rec_sparse(down_mat, sk_d, &mut cold_sp_total_step, &mut cold_sp_skipped_step);
+                        apply_c8db_cold("mlp.down_proj", &act, &mut down_out)?;
+                        if let Some(t0) = t_d0 {
+                            prof_down_step += t0.elapsed().as_secs_f64();
+                        }
+                        down_out
+                    } else {
+                        let slab_g = gate_mat.read_sparse_slab(None, None)?;
+                        cold_read_bytes += slab_g.bytes_read;
+                        let (mut gelu_gate, _) = gate_mat.eval_sparse_slab(
+                            &slab_g,
+                            &inp2,
+                            seq_len,
+                            native_t16c.as_deref(),
+                            threads,
+                            None,
+                            None,
+                            true,
+                            false,
+                        )?;
+                        drop(slab_g);
+                        apply_c8db_cold("mlp.gate_proj", &inp2, &mut gelu_gate)?;
+                        if let Some(t0) = t_g0 {
+                            prof_gate_step += t0.elapsed().as_secs_f64();
+                        }
+                        let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                        gelu_tanh_inplace_parallel(&mut gelu_gate, threads);
+                        if let Some(t0) = t_gl0 {
+                            prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                        }
+                        let sp_masks = build_gate_masks(&gelu_gate);
+                        let rm_opt = sp_masks.as_ref().map(|(r, _, _)| r.as_slice());
+                        let cm_opt = sp_masks.as_ref().map(|(_, c, _)| c.as_slice());
+                        let t_u0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                        let slab_u = up_mat.read_sparse_slab(rm_opt, None)?;
+                        cold_read_bytes += slab_u.bytes_read;
+                        let (act, slab_d) = std::thread::scope(|sc| -> Result<(Vec<f32>, run270_rust::t16c::StreamedSparseSlab), String> {
+                            let down_io = sc.spawn(|| down_mat.read_sparse_slab(None, cm_opt));
+                            let (mut up, sk_u) = up_mat.eval_sparse_slab(
+                                &slab_u,
+                                &inp2,
+                                seq_len,
+                                native_t16c.as_deref(),
+                                threads,
+                                rm_opt,
+                                None,
+                                true,
+                                false,
+                            )?;
+                            drop(slab_u);
+                            if rm_opt.is_some() {
+                                rec_sparse(up_mat, sk_u, &mut cold_sp_total_step, &mut cold_sp_skipped_step);
+                            }
+                            apply_c8db_cold("mlp.up_proj", &inp2, &mut up)?;
+                            if let Some(t0) = t_u0 {
+                                prof_up_step += t0.elapsed().as_secs_f64();
+                            }
+                            let act_v = compute_act(
+                                sp_masks.as_ref().map(|(_, c, bs)| (c.as_slice(), *bs)),
+                                &gelu_gate,
+                                &up,
+                            );
+                            let sd = down_io.join().map_err(|_| "cold down_proj read thread panicked".to_string())??;
+                            Ok((act_v, sd))
+                        })?;
+                        drop(gelu_gate);
+                        cold_read_bytes += slab_d.bytes_read;
+
+                        let t_d0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                        let (mut down_out, sk_d) = down_mat.eval_sparse_slab(
+                            &slab_d,
+                            &act,
+                            seq_len,
+                            native_t16c.as_deref(),
+                            threads,
+                            None,
+                            cm_opt,
+                            true,
+                            false,
+                        )?;
+                        drop(slab_d);
+                        if cm_opt.is_some() {
+                            rec_sparse(down_mat, sk_d, &mut cold_sp_total_step, &mut cold_sp_skipped_step);
+                        }
+                        apply_c8db_cold("mlp.down_proj", &act, &mut down_out)?;
+                        if let Some(t0) = t_d0 {
+                            prof_down_step += t0.elapsed().as_secs_f64();
+                        }
+                        down_out
+                    }
+                } else {
                 // V6.1 Predictive Cortical Column Routing (when --cortical-router is loaded) skips `(1 - mlp_top_p)`
                 // of `gate_proj` DRAM reads too; otherwise preserves exact 1-pass `gate_proj` routing unchanged.
                 let mut gelu_gate = if let Some((ref rmask, _, _)) = predicted_masks {
@@ -1988,8 +2345,8 @@ impl Runtime31B {
                         let kd1_lb = format!("{kd1}.lb_v");
                         let um = mats.get(&ku1).or_else(|| mats.get(&ku2)).or_else(|| mats.get(&ku1_lb))?;
                         let dm = mats.get(&kd1).or_else(|| mats.get(&kd2)).or_else(|| mats.get(&kd1_lb))?;
-                        let ue = um.n_bits & 0x3F;
-                        let de = dm.n_bits & 0x3F;
+                        let ue = um.n_bits & 0x1F;
+                        let de = dm.n_bits & 0x1F;
                         if ue == 5 || ue == 8 || de == 5 || de == 8 {
                             return None;
                         }
@@ -2073,6 +2430,8 @@ impl Runtime31B {
                     prof_down_step += t0.elapsed().as_secs_f64();
                 }
                 drop(act);
+                down
+                };
 
                 let t_n2 = if profile_components { Some(std::time::Instant::now()) } else { None };
                 let g_pff = get_norm(&format!("{pfx}.post_feedforward_layernorm.weight"))?;
@@ -2093,10 +2452,10 @@ impl Runtime31B {
             }
             Ok(())
         })?;
-        self.ssd_bytes_read += read_bytes;
+        self.ssd_bytes_read += read_bytes + cold_read_bytes;
         self.cs_skipped_blocks += cs_skipped_step;
-        self.mlp_sparse_skipped_blks += mlp_sp_skipped_step;
-        self.mlp_sparse_total_blks += mlp_sp_total_step;
+        self.mlp_sparse_skipped_blks += mlp_sp_skipped_step + cold_sp_skipped_step;
+        self.mlp_sparse_total_blks += mlp_sp_total_step + cold_sp_total_step;
         self.mod_skipped_layers += mod_skipped_step;
         self.mod_total_layers += mod_total_step;
         self.cortical_gate_skipped_blks += cortical_gate_skipped_step;
@@ -2242,6 +2601,7 @@ fn load_runtime_31b(
     embed_mode: EmbedMode31B,
     pin_layers: usize,
     kv_quant: KvQuantMode,
+    kv_lod_caps: (usize, usize, usize),
     threads: usize,
 ) -> Result<(Runtime31B, usize, usize), String> {
     let sf = SafeTensors::open(model_path)?;
@@ -2314,7 +2674,7 @@ fn load_runtime_31b(
     };
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
-    let glyph_kv = init_glyph_kv(&cfg, kv_quant)?;
+    let glyph_kv = init_glyph_kv(&cfg, kv_quant, kv_lod_caps)?;
     Ok((
         Runtime31B {
             cfg,
@@ -2375,10 +2735,12 @@ fn load_runtime_31b_t16c(
     cfg: Gemma4Cfg,
     embed_mode: EmbedMode31B,
     kv_quant: KvQuantMode,
+    kv_lod_caps: (usize, usize, usize),
     hybrid_qat_layers: &[usize],
+    t16c_policy: &T16CLoadPolicy,
     threads: usize,
 ) -> Result<(Runtime31B, usize, usize), String> {
-    let mut t16c = run270_rust::t16c::T16CModel::load(t16c_path, native_lib, disable_native)?;
+    let mut t16c = run270_rust::t16c::T16CModel::load_with_policy(t16c_path, native_lib, disable_native, t16c_policy)?;
     let native_t16c = t16c.native.take().map(std::sync::Arc::new);
     let sf_opt = match fallback_model {
         Some(mp) => Some(SafeTensors::open(mp)?),
@@ -2474,41 +2836,30 @@ fn load_runtime_31b_t16c(
         &mut t16c,
         run270_rust::vision::VisionCfg::gemma4_31b(),
     )?;
-    let vision_bytes = vision.as_ref().map_or(0usize, |vw| {
-        let pos_b = match &vw.pos_table {
-            run270_rust::vision::PosTableBackend::SplitMats { x, y } => x.total_bytes() + y.total_bytes(),
-            run270_rust::vision::PosTableBackend::NormF32(_) => 0,
-        };
-        let layer_b: usize = vw
-            .layers
-            .iter()
-            .map(|l| {
-                l.q_proj.total_bytes()
-                    + l.k_proj.total_bytes()
-                    + l.v_proj.total_bytes()
-                    + l.o_proj.total_bytes()
-                    + l.gate_proj.total_bytes()
-                    + l.up_proj.total_bytes()
-                    + l.down_proj.total_bytes()
-            })
-            .sum();
-        vw.input_proj.total_bytes() + pos_b + layer_b + vw.embed_proj.total_bytes()
-    });
-    let body_bytes: usize = t16c.mats.values().map(|m| m.total_bytes()).sum();
+    let vision_bytes = vision.as_ref().map_or(0usize, |vw| vw.total_bytes());
+    let vision_resident_bytes = if t16c_policy.defer_vision_fault { 0usize } else { vision_bytes };
+    let body_bytes: usize = t16c.mats.values().map(|m| m.resident_bytes()).sum();
+    let streamed_cold_bytes: usize = t16c
+        .mats
+        .values()
+        .map(|m| m.total_bytes().saturating_sub(m.resident_bytes()))
+        .sum();
     eprintln!(
-        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} vision_bytes={} norm_bytes={} embed_bytes={} hybrid_qat={:?} ({hybrid_bytes} B) kv_quant={kv_quant:?}",
+        "[run31b] weight_source=T16C native_ffi={} mats={} norms={} body_bytes={} streamed_cold_bytes={} vision_bytes={} vision_deferred={} norm_bytes={} embed_bytes={} hybrid_qat={:?} ({hybrid_bytes} B) kv_quant={kv_quant:?}",
         native_t16c.as_ref().map_or("disabled", |n| n.path.as_str()),
         t16c.mats.len(),
         t16c.norms.len(),
         body_bytes,
+        streamed_cold_bytes,
         vision_bytes,
+        t16c_policy.defer_vision_fault,
         norm_bytes,
         embed_bytes,
         hybrid_qat_layers
     );
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
-    let glyph_kv = init_glyph_kv(&cfg, kv_quant)?;
+    let glyph_kv = init_glyph_kv(&cfg, kv_quant, kv_lod_caps)?;
     Ok((
         Runtime31B {
             cfg,
@@ -2556,7 +2907,7 @@ fn load_runtime_31b_t16c(
             threads,
             ssd_bytes_read: 0,
         },
-        body_bytes + vision_bytes + norm_bytes + hybrid_bytes,
+        body_bytes + vision_resident_bytes + norm_bytes + hybrid_bytes,
         embed_bytes,
     ))
 }
@@ -2751,15 +3102,16 @@ fn run_bench_128k_kv(
     so_arg: Option<&str>,
     disable_native: bool,
     kv_quant: KvQuantMode,
+    kv_lod_caps: (usize, usize, usize),
     seq_len: usize,
     bench_k_eq_v: bool,
     threads: usize,
 ) -> Result<(), String> {
     let eff_mode = if kv_quant.is_glyph() { kv_quant } else { KvQuantMode::Glyph };
-    let (sink_cap, tail_cap) = match eff_mode {
-        KvQuantMode::Glyph => (4usize, 32usize),
-        KvQuantMode::GlyphPure => (0usize, 0usize),
-        _ => (4usize, 32usize),
+    let (sink_cap, tail_cap, mid_cap) = if kv_quant.is_glyph() {
+        kv_lod_caps
+    } else {
+        (4usize, 32usize, 0usize)
     };
     let native = if disable_native {
         None
@@ -2771,14 +3123,14 @@ fn run_bench_128k_kv(
     let native_ref = native.as_ref();
     let has_native_glyph = native_ref.is_some_and(|n| n.encode_kv_glyph_fn.is_some() && n.flash_glyph_attn_fn.is_some());
     eprintln!(
-        "[run31b] --bench-128k-kv mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} threads={threads} native_glyph_c={has_native_glyph}",
+        "[run31b] --bench-128k-kv mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} lod=({sink_cap},{tail_cap},{mid_cap}) threads={threads} native_glyph_c={has_native_glyph}",
         cfg.n_layers
     );
 
     // 1. Live accuracy verification against exact FP32 GQA (`attn_decode_range`) on a 512-token global layer
     //    using realistic post-qk_norm activation magnitudes (unit-variance QK dot products with sparse channel outliers).
     let ref_seq = 512usize.min(seq_len.max(64));
-    let mut ref_layer = GlyphKvLayer::new(
+    let mut ref_layer = GlyphKvLayer::new_with_lod(
         cfg.n_heads,
         cfg.n_global_kv,
         cfg.global_hd,
@@ -2786,6 +3138,7 @@ fn run_bench_128k_kv(
         None,
         sink_cap,
         tail_cap,
+        mid_cap,
         ref_seq,
     )?;
     let g_stride = cfg.n_global_kv * cfg.global_hd;
@@ -2869,9 +3222,10 @@ fn run_bench_128k_kv(
         let target_toks = if is_full { seq_len } else { seq_len.min(cfg.window) };
         let eff_sink = if is_full { sink_cap.min(target_toks) } else { 0 };
         let eff_tail = tail_cap.min(target_toks.saturating_sub(eff_sink));
-        let n_glyphs = target_toks.saturating_sub(eff_sink + eff_tail);
+        let eff_mid = mid_cap.min(target_toks.saturating_sub(eff_sink + eff_tail));
+        let n_glyphs = target_toks.saturating_sub(eff_sink + eff_mid + eff_tail);
 
-        let mut layer = GlyphKvLayer::new(
+        let mut layer = GlyphKvLayer::new_with_lod(
             cfg.n_heads,
             n_kv,
             hd,
@@ -2879,6 +3233,7 @@ fn run_bench_128k_kv(
             sw,
             eff_sink,
             eff_tail,
+            eff_mid,
             n_glyphs.max(64),
         )?;
         let tok_buf = if is_full { &tok_k_glob } else { &tok_k_slid };
@@ -2903,7 +3258,7 @@ fn run_bench_128k_kv(
             }
             rem -= take;
         }
-        for _ in 0..eff_tail {
+        for _ in 0..(eff_mid + eff_tail) {
             layer.append_token(tok_buf, if k_eq_v { &[][..] } else { tok_buf }, native_ref)?;
         }
         if is_full {
@@ -2926,6 +3281,7 @@ fn run_bench_128k_kv(
         let acc = |dst: &mut GlyphKvMemStats| {
             dst.active_tokens += s.active_tokens;
             dst.glyph_tokens += s.glyph_tokens;
+            dst.mid_tokens += s.mid_tokens;
             dst.exact_tokens += s.exact_tokens;
             dst.resident_bytes += s.resident_bytes;
             dst.naive_bf16_bytes += s.naive_bf16_bytes;
@@ -2962,8 +3318,9 @@ fn run_bench_128k_kv(
     let total_attn_ms = global_ms + sliding_ms;
     let (vm_hwm, vm_rss) = proc_status_kb();
     println!(
-        "KV128K_BENCH mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} global_layers={n_global} sliding_layers={n_sliding} native_glyph_c={has_native_glyph} fill_s={fill_s:.2} ref512_cos={ref_cos:.5} global_resident_mb={:.2} global_naive_bf16_mb={:.2} global_shrink_bf16={:.2}x total_resident_mb={:.2} total_naive_bf16_mb={:.2} total_shrink_bf16={:.2}x total_shrink_fp32={:.2}x global_10l_ms={global_ms:.2} sliding_50l_ms={sliding_ms:.2} total_60l_ms={total_attn_ms:.2} checksum={checksum:.5} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
+        "KV128K_BENCH mode={eff_mode:?} seq_len={seq_len} k_eq_v={bench_k_eq_v} layers={} global_layers={n_global} sliding_layers={n_sliding} native_glyph_c={has_native_glyph} fill_s={fill_s:.2} ref512_cos={ref_cos:.5} mid_tokens={} global_resident_mb={:.2} global_naive_bf16_mb={:.2} global_shrink_bf16={:.2}x total_resident_mb={:.2} total_naive_bf16_mb={:.2} total_shrink_bf16={:.2}x total_shrink_fp32={:.2}x global_10l_ms={global_ms:.2} sliding_50l_ms={sliding_ms:.2} total_60l_ms={total_attn_ms:.2} checksum={checksum:.5} vm_hwm_kb={vm_hwm:?} vm_rss_kb={vm_rss:?}",
         cfg.n_layers,
+        tot_all.mid_tokens,
         tot_global.resident_bytes as f64 / (1024.0 * 1024.0),
         tot_global.naive_bf16_bytes as f64 / (1024.0 * 1024.0),
         tot_global.shrink_vs_naive_bf16(),
@@ -2993,10 +3350,25 @@ fn run() -> Result<(), String> {
         None => std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4),
     };
     let kv_quant = KvQuantMode::parse(&get("--kv-quant").unwrap_or_else(|| "fp32".into()))?;
+    let kv_sinks_ov: Option<usize> = match get("--kv-sinks") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --kv-sinks '{s}'"))?),
+        None => None,
+    };
+    let kv_near_ov: Option<usize> = match get("--kv-near") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --kv-near '{s}'"))?),
+        None => None,
+    };
+    let kv_mid_ov: Option<usize> = match get("--kv-mid") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --kv-mid '{s}'"))?),
+        None => None,
+    };
+    let kv_lod_caps = resolve_kv_lod_caps(kv_quant, kv_sinks_ov, kv_near_ov, kv_mid_ov);
+    let keep_vision_resident = args.iter().any(|a| a == "--keep-vision-resident");
+    let cold_mlp_arg = get("--cold-mlp-layers");
     if bench_128k_kv {
         let cfgp = get("--config").ok_or("missing --config")?;
         let cfg = load_gemma4_cfg(Path::new(&cfgp))?;
-        return run_bench_128k_kv(&cfg, so_arg.as_deref(), disable_native, kv_quant, bench_128k_seq, bench_128k_k_eq_v, threads);
+        return run_bench_128k_kv(&cfg, so_arg.as_deref(), disable_native, kv_quant, kv_lod_caps, bench_128k_seq, bench_128k_k_eq_v, threads);
     }
 
     let t16c_arg = get("--t16c");
@@ -3130,9 +3502,37 @@ fn run() -> Result<(), String> {
         Some(s) => parse_hybrid_qat_layers(s, cfg.n_layers)?,
         None => Vec::new(),
     };
+    let cold_mlp_layers = match cold_mlp_arg.as_deref() {
+        Some(s) => parse_layer_spec(s, cfg.n_layers)?,
+        None => HashSet::new(),
+    };
+    let batch_prompts: Vec<String> = if let Some(ref pbf) = prompt_batch_arg {
+        let raw = fs::read_to_string(pbf).map_err(|e| format!("read --prompt-batch {pbf}: {e}"))?;
+        let lines: Vec<String> = raw
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect();
+        if lines.is_empty() {
+            return Err(format!("--prompt-batch {pbf} contains no active prompts"));
+        }
+        lines
+    } else {
+        vec![prompt_text.clone()]
+    };
+    let is_multi_prompt = batch_prompts.len() > 1;
+    let batch_has_images = batch_prompts.iter().any(|l| l.starts_with("IMAGE:"));
+    if is_multi_prompt && (dump_seq_logits.is_some() || eval_teacher_logits.is_some()) {
+        return Err("--dump-seq-logits and --eval-teacher-logits require a single prompt sequence".into());
+    }
+    let t16c_policy = T16CLoadPolicy {
+        defer_vision_fault: !keep_vision_resident,
+        cold_mlp_layers,
+    };
     eprintln!(
-        "[run31b] cfg d={} layers={} ff={} heads={}/{} global_kv={} hd={}/{} window={} softcap={:?} kv_quant={kv_quant:?}",
-        cfg.d, cfg.n_layers, cfg.ff, cfg.n_heads, cfg.n_kv, cfg.n_global_kv, cfg.hd, cfg.global_hd, cfg.window, cfg.final_softcap
+        "[run31b] cfg d={} layers={} ff={} heads={}/{} global_kv={} hd={}/{} window={} softcap={:?} kv_quant={kv_quant:?} kv_lod={kv_lod_caps:?} keep_vis={keep_vision_resident} cold_mlps={}",
+        cfg.d, cfg.n_layers, cfg.ff, cfg.n_heads, cfg.n_kv, cfg.n_global_kv, cfg.hd, cfg.global_hd, cfg.window, cfg.final_softcap, t16c_policy.cold_mlp_layers.len()
     );
 
     let t_load = std::time::Instant::now();
@@ -3145,11 +3545,13 @@ fn run() -> Result<(), String> {
             cfg,
             embed_mode,
             kv_quant,
+            kv_lod_caps,
             &hybrid_qat_layers,
+            &t16c_policy,
             threads,
         )?
     } else {
-        load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, kv_quant, threads)?
+        load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, kv_quant, kv_lod_caps, threads)?
     };
     if let Some(cp) = c8d_arg.as_deref() {
         let native_hint = so_arg
@@ -3285,10 +3687,13 @@ fn run() -> Result<(), String> {
 
     let mut vision_soft: Option<(usize, Vec<f32>)> = None;
     if image_arg.is_some() || optical_self_analyze {
+        let vm_before_vis = proc_status_kb();
         let vw = rt
             .vision
             .as_ref()
             .ok_or("Multimodal --image / --optical-self-analyze requires full .t16c with vision_tower")?;
+        let vis_warmed = if keep_vision_resident { 0 } else { vw.warm_pages() };
+        let vm_after_warm = proc_status_kb();
         let img = if optical_self_analyze {
             let mut layer_bits: Vec<u8> = Vec::with_capacity(rt.cfg.n_layers + vw.layers.len());
             if let Some(ref mats) = rt.t16c_mats {
@@ -3326,41 +3731,42 @@ fn run() -> Result<(), String> {
             rt.c8d_bank.as_ref(),
             rt.threads,
         )?;
+        let vm_after_enc = proc_status_kb();
         eprintln!(
-            "[run31b] vision encoded {}x{} -> n_soft={n_soft} in {:.2}s",
+            "[run31b] vision encoded {}x{} -> n_soft={n_soft} in {:.2}s warmed={} vm_before={vm_before_vis:?} vm_warm={vm_after_warm:?} vm_enc={vm_after_enc:?}",
             img.width,
             img.height,
-            t_vis.elapsed().as_secs_f64()
+            t_vis.elapsed().as_secs_f64(),
+            vis_warmed
         );
         if let Some(ref vp) = dump_vision_soft {
             let bytes: Vec<u8> = soft.iter().flat_map(|v| v.to_le_bytes()).collect();
             fs::write(vp, bytes).map_err(|e| format!("write {vp}: {e}"))?;
             eprintln!("[run31b] dumped {n_soft}x{} vision soft tokens to {vp}", rt.cfg.d);
         }
+        if !keep_vision_resident && !batch_has_images && !vision_only {
+            if let Some(vw_drop) = rt.vision.take() {
+                let ev = vw_drop.evict_pages();
+                drop(vw_drop);
+                eprintln!(
+                    "[run31b] vision on-demand evicted {ev} B after prefill (vm_after_evict={:?})",
+                    proc_status_kb()
+                );
+            }
+        }
         if vision_only {
             return Ok(());
         }
         vision_soft = Some((n_soft, soft));
-    }
-
-    let batch_prompts: Vec<String> = if let Some(ref pbf) = prompt_batch_arg {
-        let raw = fs::read_to_string(pbf).map_err(|e| format!("read --prompt-batch {pbf}: {e}"))?;
-        let lines: Vec<String> = raw
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| l.to_string())
-            .collect();
-        if lines.is_empty() {
-            return Err(format!("--prompt-batch {pbf} contains no active prompts"));
+    } else if !keep_vision_resident && !batch_has_images {
+        if let Some(vw_drop) = rt.vision.take() {
+            let ev = vw_drop.evict_pages();
+            drop(vw_drop);
+            eprintln!(
+                "[run31b] vision on-demand: text-only run evicted {ev} B (vm={:?})",
+                proc_status_kb()
+            );
         }
-        lines
-    } else {
-        vec![prompt_text.clone()]
-    };
-    let is_multi_prompt = batch_prompts.len() > 1;
-    if is_multi_prompt && (dump_seq_logits.is_some() || eval_teacher_logits.is_some()) {
-        return Err("--dump-seq-logits and --eval-teacher-logits require a single prompt sequence".into());
     }
 
     for (prompt_idx, raw_line) in batch_prompts.iter().enumerate() {
@@ -3391,6 +3797,7 @@ fn run() -> Result<(), String> {
                     .ok_or_else(|| format!("invalid IMAGE:<path>|<prompt> line: {raw_line}"))?;
                 let img = run270_rust::vision::load_rgb_image(Path::new(img_path_s.trim()))?;
                 let vw = rt.vision.as_ref().ok_or("IMAGE: batch line requires .t16c with vision weights")?;
+                let warmed = if keep_vision_resident { 0 } else { vw.warm_pages() };
                 let t_vis = std::time::Instant::now();
                 let (n_soft, soft) = vw.encode_image(
                     &img,
@@ -3398,12 +3805,14 @@ fn run() -> Result<(), String> {
                     rt.c8d_bank.as_ref(),
                     rt.threads,
                 )?;
+                let evicted = if keep_vision_resident { 0 } else { vw.evict_pages() };
                 eprintln!(
-                    "[run31b] batch vision encoded {} ({}x{}) -> n_soft={n_soft} in {:.2}s",
+                    "[run31b] batch vision encoded {} ({}x{}) -> n_soft={n_soft} in {:.2}s warmed={warmed} evicted={evicted} vm={:?}",
                     img_path_s.trim(),
                     img.width,
                     img.height,
-                    t_vis.elapsed().as_secs_f64()
+                    t_vis.elapsed().as_secs_f64(),
+                    proc_status_kb()
                 );
                 (p_txt.trim().to_string(), Some((n_soft, soft)))
             } else {
@@ -4252,9 +4661,13 @@ mod tests {
     fn glyph_kv_mode_and_optical_dma_integrate_in_run31b() {
         assert_eq!(KvQuantMode::parse("glyph").unwrap(), KvQuantMode::Glyph);
         assert_eq!(KvQuantMode::parse("glyph-pure").unwrap(), KvQuantMode::GlyphPure);
+        assert_eq!(KvQuantMode::parse("glyph-lod").unwrap(), KvQuantMode::GlyphLod);
         assert!(KvQuantMode::Glyph.is_glyph());
         assert!(KvQuantMode::GlyphPure.is_glyph());
+        assert!(KvQuantMode::GlyphLod.is_glyph());
         assert!(!KvQuantMode::Fp8E4M3.is_glyph());
+        assert_eq!(resolve_kv_lod_caps(KvQuantMode::GlyphLod, None, None, None), (4, 32, 192));
+        assert_eq!(resolve_kv_lod_caps(KvQuantMode::GlyphLod, Some(2), Some(16), Some(64)), (2, 16, 64));
 
         let cfg = Gemma4Cfg {
             d: 512,
@@ -4276,20 +4689,36 @@ mod tests {
             layer_full: vec![false, true],
             vocab: 262_144,
         };
-        let layers = init_glyph_kv(&cfg, KvQuantMode::Glyph).unwrap();
+        let layers = init_glyph_kv(&cfg, KvQuantMode::GlyphLod, (4, 32, 192)).unwrap();
         assert_eq!(layers.len(), 2);
         let l0 = layers[0].as_ref().unwrap();
         let l1 = layers[1].as_ref().unwrap();
         assert!(!l0.k_eq_v);
         assert_eq!(l0.sliding_window, Some(1024));
+        assert_eq!(l0.mid_cap, 192);
         assert!(!l1.k_eq_v);
         assert_eq!(l1.sliding_window, None);
+        assert_eq!(l1.mid_cap, 192);
 
         let prompt_ids = vec![2u32, 105, 2364, 107, 1841, 603, 506, 6037, 576, 7001, 236881];
         let (_frame, rec, stats) = optical_context_dma_roundtrip(&prompt_ids, 4).unwrap();
         assert_eq!(rec, prompt_ids);
         assert_eq!(stats.n_tokens, prompt_ids.len());
         assert!(stats.fps > 0.0);
+    }
+
+    #[test]
+    fn parse_layer_spec_handles_ranges_lists_and_rejects_oob() {
+        let s1 = parse_layer_spec("6-10, 20, 22..24", 60).unwrap();
+        assert_eq!(s1, [6usize, 7, 8, 9, 10, 20, 22, 23].into_iter().collect());
+        let s_all = parse_layer_spec("all", 4).unwrap();
+        assert_eq!(s_all, [0usize, 1, 2, 3].into_iter().collect());
+        let s_none = parse_layer_spec("none", 4).unwrap();
+        assert!(s_none.is_empty());
+        assert!(parse_layer_spec("", 60).is_err());
+        assert!(parse_layer_spec("5-60", 60).is_err());
+        assert!(parse_layer_spec("10-5", 60).is_err());
+        assert!(parse_layer_spec("6..6", 60).is_err());
     }
 
     #[test]

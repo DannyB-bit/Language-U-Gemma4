@@ -1,0 +1,70 @@
+--- 2a_ondemand (default, no --keep-vision-resident) ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.71s pinned_layers=60/60 pinned_bytes=3911770608 embed_bytes=539492352 vm=(Some(4741404), Some(4679664))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(4741404), Some(4679664)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.22s (pinned=true)
+[run31b] layer 14/60 done in 0.20s (pinned=true)
+[run31b] layer 29/60 done in 0.22s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 19.26s ssd_read_mb=0.0 vm=(Some(4741404), Some(4680964))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] decode step 0 in 1.64s vm=(Some(4741404), Some(4680964))
+[STEP 1] id=1586 text=" find"
+[run31b] decode step 1 in 1.63s vm=(Some(4741404), Some(4680964))
+[STEP 2] id=506 text=" the"
+[run31b] decode step 2 in 1.66s vm=(Some(4741404), Some(4680964))
+[STEP 3] id=1156 text=" two"
+[run31b] decode step 3 in 1.63s vm=(Some(4741404), Some(4680964))
+[STEP 4] id=4945 text=" numbers"
+[run31b] decode step 4 in 1.63s vm=(Some(4741404), Some(4680964))
+[STEP 5] id=529 text=" of"
+[run31b] decode step 5 in 1.66s vm=(Some(4741404), Some(4680964))
+[STEP 6] id=496 text=" a"
+[run31b] decode step 6 in 1.62s vm=(Some(4741404), Some(4680964))
+[STEP 7] id=2558 text=" total"
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558]
+GEN31B text="To find the two numbers of a total"
+KV31B mode=GlyphLod raw_bytes=50462720 naive_bf16_bytes=25231360 compressed_bytes=50462720 glyph_tokens=0 mid_tokens=0 exact_tokens=1680 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=3911770608 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=62652 prefill_s=19.26 decode_s=11.47 vm_hwm_kb=Some(4741404) vm_rss_kb=Some(4680964)
+
+--- 2a_resident (--keep-vision-resident) ---
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=true cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/neon_runner/libneon_stream_accelerator.so mats=690 norms=585 body_bytes=3905922112 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=false norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v6_1/gemma4_31b_v6_1_hybrid_c8d.c8d: entries=5 norms=1 payload_bytes=11852352 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.22s pinned_layers=60/60 pinned_bytes=4146219888 embed_bytes=539492352 vm=(Some(4969372), Some(4907880))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.27s (pinned=true)
+[run31b] layer 05/60 done in 0.22s (pinned=true)
+[run31b] layer 14/60 done in 0.21s (pinned=true)
+[run31b] layer 29/60 done in 0.21s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 19.44s ssd_read_mb=0.0 vm=(Some(4969372), Some(4909180))
+PREFILL_TOP5 [2021:"To"(25.741), 8291:"Here"(24.424), 818:"The"(23.396), 3810:"There"(23.311), 79629:"Depending"(22.170)]
+[STEP 0] id=2021 text="To"
+[run31b] decode step 0 in 1.65s vm=(Some(4969372), Some(4909180))
+[STEP 1] id=1586 text=" find"
+[run31b] decode step 1 in 1.61s vm=(Some(4969372), Some(4909180))
+[STEP 2] id=506 text=" the"
+[run31b] decode step 2 in 1.65s vm=(Some(4969372), Some(4909180))
+[STEP 3] id=1156 text=" two"
+[run31b] decode step 3 in 1.64s vm=(Some(4969372), Some(4909180))
+[STEP 4] id=4945 text=" numbers"
+[run31b] decode step 4 in 1.64s vm=(Some(4969372), Some(4909180))
+[STEP 5] id=529 text=" of"
+[run31b] decode step 5 in 1.63s vm=(Some(4969372), Some(4909180))
+[STEP 6] id=496 text=" a"
+[run31b] decode step 6 in 1.64s vm=(Some(4969372), Some(4909180))
+[STEP 7] id=2558 text=" total"
+GEN31B ids=[2021, 1586, 506, 1156, 4945, 529, 496, 2558]
+GEN31B text="To find the two numbers of a total"
+KV31B mode=GlyphLod raw_bytes=50462720 naive_bf16_bytes=25231360 compressed_bytes=50462720 glyph_tokens=0 mid_tokens=0 exact_tokens=1680 shrink=1.00x shrink_vs_bf16=0.50x
+MEM31B pinned_bytes=4146219888 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=62652 prefill_s=19.44 decode_s=11.45 vm_hwm_kb=Some(4969372) vm_rss_kb=Some(4909180)
