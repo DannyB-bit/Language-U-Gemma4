@@ -16,6 +16,35 @@ pub const CRTR_VERSION: u32 = 1;
 pub const CRTR_HEADER_BYTES: usize = 36;
 pub const CRTR_FLAG_MOD_GATE: u32 = 1 << 0;
 
+pub const DRTR_MAGIC: &[u8; 4] = b"DRTR";
+pub const DRTR_VERSION: u32 = 1;
+pub const DRTR_HEADER_BYTES: usize = 36;
+
+#[inline]
+fn dot_f32_4way(w: &[f32], x: &[f32]) -> f32 {
+    debug_assert_eq!(w.len(), x.len());
+    let n = w.len();
+    let chunks = n / 4;
+    let mut s0 = 0.0f32;
+    let mut s1 = 0.0f32;
+    let mut s2 = 0.0f32;
+    let mut s3 = 0.0f32;
+    let mut i = 0usize;
+    for _ in 0..chunks {
+        s0 += w[i] * x[i];
+        s1 += w[i + 1] * x[i + 1];
+        s2 += w[i + 2] * x[i + 2];
+        s3 += w[i + 3] * x[i + 3];
+        i += 4;
+    }
+    let mut s = (s0 + s1) + (s2 + s3);
+    while i < n {
+        s += w[i] * x[i];
+        i += 1;
+    }
+    s
+}
+
 #[inline]
 fn sigmoid_f32(x: f32) -> f32 {
     1.0f32 / (1.0f32 + (-x.clamp(-60.0f32, 60.0f32)).exp())
@@ -473,6 +502,349 @@ impl CorticalRouterBank {
     }
 }
 
+/// Per-layer V7.5 / V8.0 Spatial Semantic District Router (`DRTR` v1).
+///
+/// Maps the prompt/sequence mean normalized activation `xm` (`[d_model]`) plus optional
+/// V8.0 32D 6-Sense Player POV features (`sense_dim = 32`, `SEE + HEAR + FEEL + SMELL + TASTE + CUNEIFORM_S7`)
+/// to per-district logits `[n_districts]` and selects the active Top-`K` high-resolution
+/// 2-bit GTA-LOD districts (`lod_d0..lod_d{M-1}.t16c`) alongside `Zone 0 Shared Core` (`lod_shared.t16c`).
+#[derive(Clone, Debug)]
+pub struct DistrictRouterLayer {
+    pub d_model: usize,
+    pub ff: usize,
+    pub n_districts: usize,
+    pub rank: usize,
+    pub sense_dim: usize,
+    pub shared_slice: (usize, usize),
+    pub district_slices: Vec<(usize, usize)>,
+    pub down_w: Vec<f32>,
+    pub up_w: Vec<f32>,
+    pub up_b: Vec<f32>,
+    pub sense_proj_w: Option<Vec<f32>>,
+    pub sense_proj_b: Option<Vec<f32>>,
+    pub sense_gate_w: Option<Vec<f32>>,
+    pub sense_gate_b: Option<Vec<f32>>,
+}
+
+impl DistrictRouterLayer {
+    pub fn byte_len(&self) -> usize {
+        let slice_bytes = (1 + self.n_districts) * 8;
+        let base_w_bytes = (self.rank * self.d_model + self.n_districts * self.rank + self.n_districts) * 4;
+        let sense_bytes = if self.sense_dim > 0 {
+            2 * (self.rank * self.sense_dim + self.rank) * 4
+        } else {
+            0
+        };
+        slice_bytes + base_w_bytes + sense_bytes
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.d_model == 0 || self.ff == 0 || self.n_districts == 0 || self.rank == 0 {
+            return Err("DRTR layer has zero dimension".into());
+        }
+        if self.district_slices.len() != self.n_districts {
+            return Err(format!(
+                "DRTR district_slices len {} != n_districts {}",
+                self.district_slices.len(),
+                self.n_districts
+            ));
+        }
+        if self.shared_slice.0 > self.shared_slice.1 || self.shared_slice.1 > self.ff {
+            return Err(format!(
+                "DRTR invalid shared_slice {:?} for ff={}",
+                self.shared_slice, self.ff
+            ));
+        }
+        for (di, &(s, e)) in self.district_slices.iter().enumerate() {
+            if s >= e || e > self.ff || (e - s) % 16 != 0 {
+                return Err(format!("DRTR invalid district_{di} slice ({s}, {e}) for ff={}", self.ff));
+            }
+        }
+        if self.down_w.len() != self.rank * self.d_model {
+            return Err("DRTR down_w length mismatch".into());
+        }
+        if self.up_w.len() != self.n_districts * self.rank || self.up_b.len() != self.n_districts {
+            return Err("DRTR up_w/up_b length mismatch".into());
+        }
+        if self
+            .down_w
+            .iter()
+            .chain(self.up_w.iter())
+            .chain(self.up_b.iter())
+            .any(|v| !v.is_finite())
+        {
+            return Err("DRTR non-finite weight in down/up".into());
+        }
+        if self.sense_dim > 0 {
+            let spw = self.sense_proj_w.as_ref().ok_or("DRTR missing sense_proj_w")?;
+            let spb = self.sense_proj_b.as_ref().ok_or("DRTR missing sense_proj_b")?;
+            let sgw = self.sense_gate_w.as_ref().ok_or("DRTR missing sense_gate_w")?;
+            let sgb = self.sense_gate_b.as_ref().ok_or("DRTR missing sense_gate_b")?;
+            if spw.len() != self.rank * self.sense_dim
+                || spb.len() != self.rank
+                || sgw.len() != self.rank * self.sense_dim
+                || sgb.len() != self.rank
+            {
+                return Err("DRTR sense_proj/sense_gate dimension mismatch".into());
+            }
+            if spw
+                .iter()
+                .chain(spb.iter())
+                .chain(sgw.iter())
+                .chain(sgb.iter())
+                .any(|v| !v.is_finite())
+            {
+                return Err("DRTR non-finite weight in sense_proj/sense_gate".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Predict per-district logits `[n_districts]` and the sorted Top-`K` active district indices.
+    /// matches `DistrictRouterNet.forward` in `run_v8_0_player_pov_spatial_a100.py`.
+    pub fn predict_active_districts(
+        &self,
+        x_batch: &[f32],
+        seq_len: usize,
+        sense_feat: Option<&[f32]>,
+        top_k: usize,
+    ) -> Result<(Vec<usize>, Vec<f32>), String> {
+        if seq_len == 0 {
+            return Err("predict_active_districts: seq_len == 0".into());
+        }
+        if x_batch.len() != seq_len * self.d_model {
+            return Err(format!(
+                "predict_active_districts: x_batch len {} != {}*{}",
+                x_batch.len(),
+                seq_len,
+                self.d_model
+            ));
+        }
+        let inv_t = 1.0f32 / (seq_len as f32);
+        let mut xm = vec![0.0f32; self.d_model];
+        for t in 0..seq_len {
+            let row = &x_batch[t * self.d_model..(t + 1) * self.d_model];
+            for (dst, &v) in xm.iter_mut().zip(row.iter()) {
+                *dst += v * inv_t;
+            }
+        }
+
+        let mut h = vec![0.0f32; self.rank];
+        for k in 0..self.rank {
+            let drow = &self.down_w[k * self.d_model..(k + 1) * self.d_model];
+            h[k] = gelu_tanh_fast_f32(dot_f32_4way(drow, &xm));
+        }
+
+        if self.sense_dim > 0 {
+            let auto_s;
+            let sf: &[f32] = match sense_feat {
+                Some(s) => {
+                    if s.len() != self.sense_dim {
+                        return Err(format!("sense_feat len {} != {}", s.len(), self.sense_dim));
+                    }
+                    s
+                }
+                None => {
+                    auto_s = crate::tri_modal::extract_6sense_pov_features(x_batch, seq_len, self.d_model, 64)?;
+                    &auto_s.features
+                }
+            };
+            let spw = self.sense_proj_w.as_ref().unwrap();
+            let spb = self.sense_proj_b.as_ref().unwrap();
+            let sgw = self.sense_gate_w.as_ref().unwrap();
+            let sgb = self.sense_gate_b.as_ref().unwrap();
+            for k in 0..self.rank {
+                let p_row = &spw[k * self.sense_dim..(k + 1) * self.sense_dim];
+                let g_row = &sgw[k * self.sense_dim..(k + 1) * self.sense_dim];
+                let h_sense = gelu_tanh_fast_f32(dot_f32_4way(p_row, sf) + spb[k]);
+                let g_sense = sigmoid_f32(dot_f32_4way(g_row, sf) + sgb[k]);
+                h[k] = h[k] * (0.5 + g_sense) + h_sense;
+            }
+        }
+
+        let mut logits = vec![0.0f32; self.n_districts];
+        for d in 0..self.n_districts {
+            let urow = &self.up_w[d * self.rank..(d + 1) * self.rank];
+            logits[d] = dot_f32_4way(urow, &h) + self.up_b[d];
+        }
+        let mut ranked: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+        ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        let k_eff = top_k.clamp(1, self.n_districts);
+        let mut top_idx: Vec<usize> = ranked[..k_eff].iter().map(|&(i, _)| i).collect();
+        top_idx.sort_unstable();
+        Ok((top_idx, logits))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DistrictRouterBank {
+    pub n_layers: usize,
+    pub d_model: usize,
+    pub ff: usize,
+    pub n_districts: usize,
+    pub rank: usize,
+    pub sense_dim: usize,
+    pub base_top_k: usize,
+    pub layers: Vec<DistrictRouterLayer>,
+}
+
+impl DistrictRouterBank {
+    pub fn byte_len(&self) -> usize {
+        DRTR_HEADER_BYTES + self.layers.iter().map(|l| l.byte_len()).sum::<usize>()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.n_layers == 0 || self.d_model == 0 || self.ff == 0 || self.n_districts == 0 || self.rank == 0 {
+            return Err("DRTR header has zero dimension".into());
+        }
+        if self.sense_dim != 0 && self.sense_dim != crate::tri_modal::SIX_SENSE_DIM {
+            return Err(format!("DRTR unsupported sense_dim {}", self.sense_dim));
+        }
+        if self.layers.len() != self.n_layers {
+            return Err(format!("DRTR layers len {} != {}", self.layers.len(), self.n_layers));
+        }
+        for (idx, l) in self.layers.iter().enumerate() {
+            if l.d_model != self.d_model
+                || l.ff != self.ff
+                || l.n_districts != self.n_districts
+                || l.rank != self.rank
+                || l.sense_dim != self.sense_dim
+            {
+                return Err(format!("DRTR layer {idx} header dimension mismatch"));
+            }
+            l.validate().map_err(|e| format!("DRTR layer {idx}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn save(&self, path: &Path) -> Result<usize, String> {
+        self.validate()?;
+        let f = File::create(path).map_err(|e| format!("DRTR create {}: {e}", path.display()))?;
+        let mut w = BufWriter::new(f);
+        w.write_all(DRTR_MAGIC).map_err(|e| format!("DRTR write magic: {e}"))?;
+        for &val in &[
+            DRTR_VERSION,
+            self.n_layers as u32,
+            self.d_model as u32,
+            self.ff as u32,
+            self.n_districts as u32,
+            self.rank as u32,
+            self.sense_dim as u32,
+            self.base_top_k as u32,
+        ] {
+            w.write_all(&val.to_le_bytes())
+                .map_err(|e| format!("DRTR write hdr: {e}"))?;
+        }
+        for l in &self.layers {
+            for &(s, e) in std::iter::once(&l.shared_slice).chain(l.district_slices.iter()) {
+                w.write_all(&(s as u32).to_le_bytes())
+                    .map_err(|e| format!("DRTR write slice: {e}"))?;
+                w.write_all(&(e as u32).to_le_bytes())
+                    .map_err(|e| format!("DRTR write slice: {e}"))?;
+            }
+            write_f32_slice(&mut w, &l.down_w)?;
+            write_f32_slice(&mut w, &l.up_w)?;
+            write_f32_slice(&mut w, &l.up_b)?;
+            if self.sense_dim > 0 {
+                write_f32_slice(&mut w, l.sense_proj_w.as_ref().unwrap())?;
+                write_f32_slice(&mut w, l.sense_proj_b.as_ref().unwrap())?;
+                write_f32_slice(&mut w, l.sense_gate_w.as_ref().unwrap())?;
+                write_f32_slice(&mut w, l.sense_gate_b.as_ref().unwrap())?;
+            }
+        }
+        w.flush().map_err(|e| format!("DRTR flush {}: {e}", path.display()))?;
+        Ok(self.byte_len())
+    }
+
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let f = File::open(path).map_err(|e| format!("DRTR open {}: {e}", path.display()))?;
+        let file_len = f
+            .metadata()
+            .map_err(|e| format!("DRTR metadata {}: {e}", path.display()))?
+            .len() as usize;
+        if file_len < DRTR_HEADER_BYTES {
+            return Err(format!("DRTR file {} truncated ({file_len} B)", path.display()));
+        }
+        let mut r = BufReader::new(f);
+        let mut magic = [0u8; 4];
+        r.read_exact(&mut magic)
+            .map_err(|e| format!("DRTR read magic: {e}"))?;
+        if &magic != DRTR_MAGIC {
+            return Err(format!("DRTR invalid magic {:?}", magic));
+        }
+        let ver = read_u32_le(&mut r)?;
+        if ver != DRTR_VERSION {
+            return Err(format!("DRTR unsupported version {ver}"));
+        }
+        let n_layers = read_u32_le(&mut r)? as usize;
+        let d_model = read_u32_le(&mut r)? as usize;
+        let ff = read_u32_le(&mut r)? as usize;
+        let n_districts = read_u32_le(&mut r)? as usize;
+        let rank = read_u32_le(&mut r)? as usize;
+        let sense_dim = read_u32_le(&mut r)? as usize;
+        let base_top_k = read_u32_le(&mut r)? as usize;
+
+        let mut layers = Vec::with_capacity(n_layers);
+        for l in 0..n_layers {
+            let sh_s = read_u32_le(&mut r)? as usize;
+            let sh_e = read_u32_le(&mut r)? as usize;
+            let mut district_slices = Vec::with_capacity(n_districts);
+            for _ in 0..n_districts {
+                let ds = read_u32_le(&mut r)? as usize;
+                let de = read_u32_le(&mut r)? as usize;
+                district_slices.push((ds, de));
+            }
+            let down_w = read_f32_vec(&mut r, rank * d_model, &format!("DRTR L{l}.down_w"))?;
+            let up_w = read_f32_vec(&mut r, n_districts * rank, &format!("DRTR L{l}.up_w"))?;
+            let up_b = read_f32_vec(&mut r, n_districts, &format!("DRTR L{l}.up_b"))?;
+            let (sense_proj_w, sense_proj_b, sense_gate_w, sense_gate_b) = if sense_dim > 0 {
+                (
+                    Some(read_f32_vec(&mut r, rank * sense_dim, &format!("DRTR L{l}.spw"))?),
+                    Some(read_f32_vec(&mut r, rank, &format!("DRTR L{l}.spb"))?),
+                    Some(read_f32_vec(&mut r, rank * sense_dim, &format!("DRTR L{l}.sgw"))?),
+                    Some(read_f32_vec(&mut r, rank, &format!("DRTR L{l}.sgb"))?),
+                )
+            } else {
+                (None, None, None, None)
+            };
+            layers.push(DistrictRouterLayer {
+                d_model,
+                ff,
+                n_districts,
+                rank,
+                sense_dim,
+                shared_slice: (sh_s, sh_e),
+                district_slices,
+                down_w,
+                up_w,
+                up_b,
+                sense_proj_w,
+                sense_proj_b,
+                sense_gate_w,
+                sense_gate_b,
+            });
+        }
+        let bank = Self {
+            n_layers,
+            d_model,
+            ff,
+            n_districts,
+            rank,
+            sense_dim,
+            base_top_k,
+            layers,
+        };
+        if file_len != bank.byte_len() {
+            return Err(format!(
+                "DRTR byte len mismatch: file={file_len} != expected={}",
+                bank.byte_len()
+            ));
+        }
+        bank.validate()?;
+        Ok(bank)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,5 +1091,62 @@ mod tests {
             max_err = max_err.max((a - b).abs());
         }
         assert!(max_err < 1e-5, "Gate 6 FP32 parity max_err={max_err}");
+    }
+
+    #[test]
+    fn gate7_district_router_v8_6sense_roundtrip_and_topk_routing() {
+        let d_model = 64usize;
+        let ff = 256usize;
+        let n_districts = 4usize;
+        let rank = 8usize;
+        let sense_dim = 32usize;
+        let mut down_w = vec![0.0f32; rank * d_model];
+        let mut up_w = vec![0.0f32; n_districts * rank];
+        for d in 0..n_districts {
+            for j in 0..16 {
+                down_w[d * d_model + d * 16 + j] = 0.25;
+            }
+            up_w[d * rank + d] = 2.0;
+        }
+        let layer = DistrictRouterLayer {
+            d_model,
+            ff,
+            n_districts,
+            rank,
+            sense_dim,
+            shared_slice: (0, 64),
+            district_slices: vec![(64, 112), (112, 160), (160, 208), (208, 256)],
+            down_w,
+            up_w,
+            up_b: vec![0.0; n_districts],
+            sense_proj_w: Some(vec![0.01; rank * sense_dim]),
+            sense_proj_b: Some(vec![0.0; rank]),
+            sense_gate_w: Some(vec![0.01; rank * sense_dim]),
+            sense_gate_b: Some(vec![0.0; rank]),
+        };
+        let bank = DistrictRouterBank {
+            n_layers: 1,
+            d_model,
+            ff,
+            n_districts,
+            rank,
+            sense_dim,
+            base_top_k: 2,
+            layers: vec![layer],
+        };
+        let p = temp_crtr_path("drtr_v8");
+        let nb = bank.save(&p).unwrap();
+        assert_eq!(nb, bank.byte_len());
+        let loaded = DistrictRouterBank::load(&p).unwrap();
+        let _ = std::fs::remove_file(&p);
+
+        let mut x = vec![0.01f32; 2 * d_model];
+        // Activate districts 1 and 3
+        for t in 0..2 {
+            x[t * d_model + 16..t * d_model + 32].fill(2.5);
+            x[t * d_model + 48..t * d_model + 64].fill(2.2);
+        }
+        let (top2, logits) = loaded.layers[0].predict_active_districts(&x, 2, None, 2).unwrap();
+        assert_eq!(top2, vec![1, 3], "expected top2=[1, 3], got {top2:?} (logits={logits:?})");
     }
 }

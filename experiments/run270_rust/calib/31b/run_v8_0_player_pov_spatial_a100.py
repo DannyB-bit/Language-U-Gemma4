@@ -826,6 +826,50 @@ def fit_district_router(
     }
 
 
+def export_district_router_drtr(router_obj: Dict[str, object], out_path: Path, ff: int = 21504) -> int:
+    """
+    Export V7.5 / V8.0 Spatial District Router dictionary to standalone binary `DRTR` v1 format
+    for zero-Python native Rust loading (`run270_rust::cortical_router::DistrictRouterBank::load`).
+    """
+    layers_dict = router_obj["layers"]
+    n_layers = int(router_obj.get("n_layers", len(layers_dict)))
+    n_districts = int(router_obj.get("n_districts", N_DISTRICTS))
+    base_top_k = int(router_obj.get("top_k", TOP_K_DISTRICTS))
+    l0 = layers_dict[0] if 0 in layers_dict else layers_dict[str(0)]
+    sd0 = l0["state_dict"]
+    dw0 = sd0["down.weight"].float()
+    rank, d_model = int(dw0.shape[0]), int(dw0.shape[1])
+    has_sense = "sense_proj.weight" in sd0
+    sense_dim = int(sd0["sense_proj.weight"].shape[1]) if has_sense else 0
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_p = out_path.with_suffix(out_path.suffix + ".tmp")
+    with open(tmp_p, "wb") as fp:
+        fp.write(struct.pack("<4s8I", b"DRTR", 1, n_layers, d_model, int(ff), n_districts, rank, sense_dim, base_top_k))
+        for li in range(n_layers):
+            le = layers_dict[li] if li in layers_dict else layers_dict[str(li)]
+            sd = le["state_dict"]
+            slices = le["district_slices"]
+            sh_sl = [(int(s), int(e)) for nm, s, e in slices if nm == "shared_core"]
+            ns_sl = [(int(s), int(e)) for nm, s, e in slices if nm != "shared_core"]
+            sh_s, sh_e = sh_sl[0] if sh_sl else (0, 0)
+            assert len(ns_sl) == n_districts, f"L{li} ns_sl {len(ns_sl)} != {n_districts}"
+            fp.write(struct.pack("<2I", sh_s, sh_e))
+            for ds, de in ns_sl:
+                fp.write(struct.pack("<2I", ds, de))
+            for k_w in ("down.weight", "up.weight", "up.bias"):
+                arr = np.ascontiguousarray(sd[k_w].detach().cpu().float().numpy(), dtype="<f4").ravel()
+                fp.write(arr.tobytes())
+            if sense_dim > 0:
+                for k_s in ("sense_proj.weight", "sense_proj.bias", "sense_gate.weight", "sense_gate.bias"):
+                    arr = np.ascontiguousarray(sd[k_s].detach().cpu().float().numpy(), dtype="<f4").ravel()
+                    fp.write(arr.tobytes())
+        fp.flush()
+        os.fsync(fp.fileno())
+    os.replace(tmp_p, out_path)
+    return int(out_path.stat().st_size)
+
+
 def _compute_district_capture_stats(
     seq_energy: np.ndarray,
     district_slices: Sequence[Tuple[str, int, int]],
@@ -2874,9 +2918,11 @@ def run_pipeline() -> Dict[str, object]:
         )
 
     crtr_sz = crtr.export_crtr([crtr_layers[l] for l in range(N_LAYERS)], OUT_CRTR)
-    v70._atomic_torch_save({"version": "V8.0-6SENSE-POV", "n_layers": N_LAYERS, "n_districts": N_DISTRICTS, "block_size": BLOCK_SIZE, "top_k": TOP_K_DISTRICTS, "sense_dim": SENSE_DIM, "sense_names": list(SENSE_NAMES), "layers": district_routers}, OUT_DISTRICT_ROUTER)
+    dr_obj = {"version": "V8.0-6SENSE-POV", "n_layers": N_LAYERS, "n_districts": N_DISTRICTS, "block_size": BLOCK_SIZE, "top_k": TOP_K_DISTRICTS, "sense_dim": SENSE_DIM, "sense_names": list(SENSE_NAMES), "layers": district_routers}
+    v70._atomic_torch_save(dr_obj, OUT_DISTRICT_ROUTER)
+    drtr_sz = export_district_router_drtr(dr_obj, OUT_DISTRICT_ROUTER.with_suffix(".drtr"), ff=21504)
     OUT_DISTRICT_MANIFEST.write_text(json.dumps({"version": "V8.0-6SENSE-POV", "sense_names": list(SENSE_NAMES), "layers": district_manifest}, indent=2), encoding="utf-8")
-    print(f"[Stage 3 DONE] Base={base_sz/1024**3:.3f} GiB + 13 COLBLOCK LOD shards | CRTR={crtr_sz:,} B", flush=True)
+    print(f"[Stage 3 DONE] Base={base_sz/1024**3:.3f} GiB + 13 COLBLOCK LOD shards | CRTR={crtr_sz:,} B | DRTR={drtr_sz:,} B", flush=True)
 
     # Clean checkpoints before Stages 4A/4B
     for rmp in (VIS_CKPT_PATH, VIS_META_PATH, VLM_SOFT_CACHE, STAGE3_CKPT, CRTR_CKPT, D_ROUTER_CKPT, CKPT_X_TEACH, CKPT_X_STUD):
@@ -3421,7 +3467,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Gemma 4 31B V8.0 60-Layer 6-Sense Player POV + Spatial Districts + GTA LOD Calibrator")
     ap.add_argument("--selftest", action="store_true", help="Run 6-gate CPU self-verification battery and exit.")
     ap.add_argument("--run", action="store_true", help="Run full 60-layer G4/A100/L4 Max-VRAM calibration & packaging.")
+    ap.add_argument("--export-drtr", nargs=2, metavar=("IN_PT", "OUT_DRTR"), help="Convert a V7.5/V8.0 district_router.pt file to binary .drtr for Rust run31b.")
     args = ap.parse_args()
+    if args.export_drtr:
+        in_p, out_p = Path(args.export_drtr[0]), Path(args.export_drtr[1])
+        obj = torch.load(in_p, map_location="cpu", weights_only=False)
+        sz = export_district_router_drtr(obj, out_p)
+        print(f"[DRTR Exported] {in_p} -> {out_p} ({sz:,} bytes)")
+        return 0
     if args.selftest or (not args.run and not torch.cuda.is_available()):
         return run_selftest()
     run_pipeline()

@@ -630,6 +630,427 @@ pub fn pearson_r(xs: &[f64], ys: &[f64]) -> Result<f64, String> {
     Ok(if den > 1e-18 { num / den } else { 0.0 })
 }
 
+/// Dimension of the V8.0 6-Sense Player Point-of-Perspective (POV) sensory cortex vector.
+pub const SIX_SENSE_DIM: usize = 32;
+
+/// 32-dimensional V8.0 6-Sense Player Point-of-Perspective (POV) sensory feature vector:
+///   - `0..4`:   `SEE` (`[rms_log, crest_norm, tile_cv, edge_ratio]`)
+///   - `4..10`:  `HEAR` (`[band_low, band_mid1, band_mid2, band_high, hf_ratio_norm, spectral_entropy]`)
+///   - `10..14`: `FEEL` (`[token_velocity, kinematic_jerk, anisotropy, surface_roughness]`)
+///   - `14..18`: `SMELL` (`[kurtosis_trace, signed_skew, top1pct_concentration, rare_trace_ratio]`)
+///   - `18..24`: `TASTE` (`[sweet_pos, bitter_neg, sour_sharp, salty_dense, umami_coherent, valence_balance]`)
+///   - `24..32`: `CUNEIFORM_S7` (`g_hat = normalize(u_bar @ H8)` in `S^7`)
+#[derive(Clone, Debug, PartialEq)]
+pub struct SixSensePovFeatures {
+    pub features: [f32; SIX_SENSE_DIM],
+}
+
+impl SixSensePovFeatures {
+    pub fn see_4d(&self) -> &[f32] {
+        &self.features[0..4]
+    }
+    pub fn hear_6d(&self) -> &[f32] {
+        &self.features[4..10]
+    }
+    pub fn feel_4d(&self) -> &[f32] {
+        &self.features[10..14]
+    }
+    pub fn smell_4d(&self) -> &[f32] {
+        &self.features[14..18]
+    }
+    pub fn taste_6d(&self) -> &[f32] {
+        &self.features[18..24]
+    }
+    pub fn cuneiform_8d(&self) -> &[f32] {
+        &self.features[24..32]
+    }
+}
+
+/// Per-layer / per-sequence V8.0 6-Sense Player POV consensus gate decision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SixSenseConsensusDecision {
+    pub mode: ConsensusMode,
+    pub consensus_score: f32,
+    pub see_health: f32,
+    pub hear_health: f32,
+    pub feel_health: f32,
+    pub smell_health: f32,
+    pub taste_health: f32,
+    pub cuneiform_s7_health: f32,
+    pub dyn_top_k: usize,
+    pub dyn_draft_k: usize,
+    pub adaptive_crtr_top_p: f32,
+    pub adaptive_mod_q: f32,
+}
+
+/// Extract the 32D 6-Sense Player POV sensory vector from `[seq_len, d_model]` layer hidden states,
+/// matching `run_v8_0_player_pov_spatial_a100.py::extract_6sense_pov_features`.
+pub fn extract_6sense_pov_features(
+    x_seq: &[f32],
+    seq_len: usize,
+    d_model: usize,
+    tile_w: usize,
+) -> Result<SixSensePovFeatures, String> {
+    if seq_len == 0 || d_model < 8 || d_model % 8 != 0 {
+        return Err(format!(
+            "extract_6sense_pov_features invalid dims seq_len={seq_len} d_model={d_model}"
+        ));
+    }
+    if x_seq.len() != seq_len * d_model {
+        return Err(format!(
+            "extract_6sense_pov_features x_seq len {} != {seq_len}*{d_model}",
+            x_seq.len()
+        ));
+    }
+    validate_finite_slice(x_seq, "extract_6sense_pov_features")?;
+
+    // Prompt mean POV position xm[0..d_model]
+    let inv_t = 1.0f32 / (seq_len as f32);
+    let mut xm = vec![0.0f32; d_model];
+    for t in 0..seq_len {
+        let row = &x_seq[t * d_model..(t + 1) * d_model];
+        for (dst, &v) in xm.iter_mut().zip(row.iter()) {
+            *dst += v * inv_t;
+        }
+    }
+
+    let mut tw = tile_w.min(d_model).max(8);
+    while d_model % tw != 0 && tw > 8 {
+        tw /= 2;
+    }
+    let n_tiles = d_model / tw;
+
+    // 1. SEE (4D Visual / Spatial Tile Geometry)
+    let mut sq_global = 0.0f64;
+    let mut peak_global = 0.0f32;
+    let mut l1_tot = 0.0f64;
+    let mut sum_x = 0.0f64;
+    for &v in &xm {
+        let av = v.abs();
+        if av > peak_global {
+            peak_global = av;
+        }
+        sq_global += (v as f64) * (v as f64);
+        l1_tot += av as f64;
+        sum_x += v as f64;
+    }
+    let rms_global = ((sq_global / d_model as f64) + 1e-8).sqrt() as f32;
+    let mut tile_rms = Vec::with_capacity(n_tiles);
+    let mut max_tr = 0.0f32;
+    for tile in xm.chunks_exact(tw) {
+        let s2: f64 = tile.iter().map(|&v| (v as f64) * (v as f64)).sum();
+        let tr = ((s2 / tw as f64) + 1e-8).sqrt() as f32;
+        if tr > max_tr {
+            max_tr = tr;
+        }
+        tile_rms.push(tr);
+    }
+    let mean_tr = (tile_rms.iter().map(|&v| v as f64).sum::<f64>() / n_tiles as f64).max(1e-6) as f32;
+    let var_tr = tile_rms
+        .iter()
+        .map(|&v| {
+            let d = (v - mean_tr) as f64;
+            d * d
+        })
+        .sum::<f64>()
+        / n_tiles as f64;
+    let rms_log = rms_global.ln_1p().tanh();
+    let crest_norm = ((peak_global / rms_global.max(1e-6)) / 8.0).clamp(0.0, 1.5);
+    let tile_cv = ((var_tr.sqrt() as f32) / mean_tr).clamp(0.0, 1.5);
+    let edge_ratio = if n_tiles > 1 {
+        let diff_s: f64 = tile_rms.windows(2).map(|w| (w[1] - w[0]).abs() as f64).sum();
+        (((diff_s / (n_tiles - 1) as f64) as f32) / mean_tr).clamp(0.0, 1.5)
+    } else {
+        0.0
+    };
+
+    // 2. HEAR (6D Auditory / Walsh-Hadamard 4-Band Sequency Spectrum)
+    let bsize_h = if d_model >= 64 { 64usize } else { 8usize };
+    let d_h = (d_model / bsize_h) * bsize_h;
+    let n_blks_h = (d_h / bsize_h).max(1);
+    let mut spec_buf = xm[..d_h].to_vec();
+    fwht_block_inplace(&mut spec_buf, bsize_h)?;
+    let log2_b = bsize_h.trailing_zeros();
+    let mut bands = [0.0f64; 4];
+    for blk in spec_buf.chunks_exact(bsize_h) {
+        for (i, &v) in blk.iter().enumerate() {
+            let seq = walsh_sequency(i, log2_b);
+            let q = (seq * 4) / bsize_h;
+            bands[q.min(3)] += ((v as f64) * (v as f64)) / (n_blks_h as f64);
+        }
+    }
+    let bands_sum = (bands[0] + bands[1] + bands[2] + bands[3]).max(1e-8);
+    let mut bands_prob = [0.0f32; 4];
+    let mut ent = 0.0f64;
+    for k in 0..4 {
+        let p = (bands[k] / bands_sum) as f32;
+        bands_prob[k] = p;
+        let pc = p.max(1e-8) as f64;
+        ent -= (p as f64) * pc.ln();
+    }
+    let hf_ratio_norm = ((bands_prob[2] + bands_prob[3]) / (bands_prob[0] + bands_prob[1] + 1e-5)).tanh();
+    let spec_ent = (ent / 4.0f64.ln()).clamp(0.0, 1.0) as f32;
+
+    // 3. FEEL (4D Tactile / Proprioceptive Trajectory Mechanics & Surface Roughness)
+    let (vel, acc, coherence) = if seq_len >= 3 {
+        let mut vel_sum = 0.0f64;
+        let mut coh_sum = 0.0f64;
+        for t in 0..(seq_len - 1) {
+            let r0 = &x_seq[t * d_model..(t + 1) * d_model];
+            let r1 = &x_seq[(t + 1) * d_model..(t + 2) * d_model];
+            let mut d2 = 0.0f64;
+            let mut dot = 0.0f64;
+            let mut n0 = 0.0f64;
+            let mut n1 = 0.0f64;
+            for j in 0..d_model {
+                let df = (r1[j] - r0[j]) as f64;
+                d2 += df * df;
+                dot += (r1[j] as f64) * (r0[j] as f64);
+                n0 += (r0[j] as f64) * (r0[j] as f64);
+                n1 += (r1[j] as f64) * (r1[j] as f64);
+            }
+            vel_sum += ((d2 / d_model as f64) + 1e-8).sqrt();
+            coh_sum += dot / (n0.sqrt().max(1e-12) * n1.sqrt().max(1e-12));
+        }
+        let mut acc_sum = 0.0f64;
+        for t in 0..(seq_len - 2) {
+            let r0 = &x_seq[t * d_model..(t + 1) * d_model];
+            let r1 = &x_seq[(t + 1) * d_model..(t + 2) * d_model];
+            let r2 = &x_seq[(t + 2) * d_model..(t + 3) * d_model];
+            let mut a2 = 0.0f64;
+            for j in 0..d_model {
+                let aj = (r2[j] - 2.0 * r1[j] + r0[j]) as f64;
+                a2 += aj * aj;
+            }
+            acc_sum += ((a2 / d_model as f64) + 1e-8).sqrt();
+        }
+        let v_m = (vel_sum / (seq_len - 1) as f64) as f32 / rms_global.max(1e-6);
+        let a_m = (acc_sum / (seq_len - 2) as f64) as f32 / rms_global.max(1e-6);
+        let c_m = ((coh_sum / (seq_len - 1) as f64) as f32).clamp(-1.0, 1.0);
+        (v_m, a_m, c_m)
+    } else if seq_len == 2 {
+        let r0 = &x_seq[0..d_model];
+        let r1 = &x_seq[d_model..2 * d_model];
+        let mut d2 = 0.0f64;
+        let mut dot = 0.0f64;
+        let mut n0 = 0.0f64;
+        let mut n1 = 0.0f64;
+        for j in 0..d_model {
+            let df = (r1[j] - r0[j]) as f64;
+            d2 += df * df;
+            dot += (r1[j] as f64) * (r0[j] as f64);
+            n0 += (r0[j] as f64) * (r0[j] as f64);
+            n1 += (r1[j] as f64) * (r1[j] as f64);
+        }
+        let v_m = (((d2 / d_model as f64) + 1e-8).sqrt() as f32) / rms_global.max(1e-6);
+        let c_m = ((dot / (n0.sqrt().max(1e-12) * n1.sqrt().max(1e-12))) as f32).clamp(-1.0, 1.0);
+        (v_m, v_m * 0.5, c_m)
+    } else {
+        (edge_ratio, tile_cv, 0.5f32)
+    };
+    let vel_norm = vel.tanh();
+    let jerk_norm = acc.tanh();
+    let anisotropy = ((max_tr / mean_tr) / 4.0).clamp(0.0, 1.5);
+    let diff_xm: f64 = xm.windows(2).map(|w| (w[1] - w[0]).abs() as f64).sum();
+    let roughness = (((diff_xm / (d_model - 1).max(1) as f64) as f32) / rms_global.max(1e-6)).clamp(0.0, 1.5);
+
+    // 4. SMELL (4D Olfactory / Heavy-Tail Outlier & Volatility Trace)
+    let mean_x = (sum_x / d_model as f64) as f32;
+    let var_x = xm
+        .iter()
+        .map(|&v| {
+            let d = (v - mean_x) as f64;
+            d * d
+        })
+        .sum::<f64>()
+        / d_model as f64;
+    let std_x = (var_x + 1e-8).sqrt() as f32;
+    let mut z_vec = Vec::with_capacity(d_model);
+    let mut z4_sum = 0.0f64;
+    let mut z3_sum = 0.0f64;
+    let mut rare_cnt = 0usize;
+    let mut salty_cnt = 0usize;
+    let mut pos_sum = 0.0f64;
+    let mut neg_sum = 0.0f64;
+    let mut pos_sq = 0.0f64;
+    let mut neg_sq = 0.0f64;
+    for &v in &xm {
+        let z = (v - mean_x) / std_x;
+        let z64 = z as f64;
+        let z2 = z64 * z64;
+        z3_sum += z2 * z64;
+        z4_sum += z2 * z2;
+        if z.abs() > 2.2 {
+            rare_cnt += 1;
+        }
+        if z.abs() > 0.75 {
+            salty_cnt += 1;
+        }
+        if z > 0.0 {
+            pos_sum += z64;
+            pos_sq += z2;
+        } else if z < 0.0 {
+            let nz = -z64;
+            neg_sum += nz;
+            neg_sq += z2;
+        }
+        z_vec.push(z);
+    }
+    let kurt_trace = (((z4_sum / d_model as f64) / 12.0) as f32).tanh();
+    let signed_skew = (((z3_sum / d_model as f64) / 3.0) as f32).tanh();
+    let k_top = (d_model / 64).max(1);
+    let mut abs_vals: Vec<f32> = xm.iter().map(|v| v.abs()).collect();
+    abs_vals.sort_unstable_by(|a, b| b.total_cmp(a));
+    let top_sum: f64 = abs_vals[..k_top].iter().map(|&v| v as f64).sum();
+    let top1pct_conc = (((top_sum / l1_tot.max(1e-6)) * 8.0) as f32).clamp(0.0, 1.5);
+    let rare_trace = (((rare_cnt as f32) / (d_model as f32)) * 10.0).clamp(0.0, 1.5);
+
+    // 5. TASTE (6D Gustatory / 5-Receptor Channel Valence Profile)
+    let sweet_pos = (((pos_sum / d_model as f64) * 2.0) as f32).tanh();
+    let bitter_neg = (((neg_sum / d_model as f64) * 2.0) as f32).tanh();
+    let sign_flips = z_vec.windows(2).filter(|w| w[1] * w[0] < 0.0).count();
+    let sour_sharp = (((sign_flips as f32) / ((d_model - 1).max(1) as f32)) * 1.5).tanh();
+    let salty_dense = ((salty_cnt as f32) / (d_model as f32)).clamp(0.0, 1.0);
+    let umami_coherent = (0.5 * (coherence + 1.0)).clamp(0.0, 1.0);
+    let valence_bal = ((((pos_sq - neg_sq) / d_model as f64) * 2.0) as f32).tanh();
+
+    // 6. CUNEIFORM_S7 (8D Walsh-Hadamard S^7 Unit Radical Signature)
+    let kb8 = d_model / 8;
+    let mut u_bar = [0.0f32; 8];
+    for blk8 in xm[..kb8 * 8].chunks_exact(8) {
+        for j in 0..8 {
+            u_bar[j] += blk8[j] / (kb8 as f32);
+        }
+    }
+    fwht_block_inplace(&mut u_bar, 8)?;
+    let norm_u = u_bar
+        .iter()
+        .map(|&v| (v as f64) * (v as f64))
+        .sum::<f64>()
+        .sqrt()
+        .max(1e-8) as f32;
+    for v in &mut u_bar {
+        *v /= norm_u;
+    }
+
+    let mut features = [0.0f32; SIX_SENSE_DIM];
+    features[0..4].copy_from_slice(&[rms_log, crest_norm, tile_cv, edge_ratio]);
+    features[4..8].copy_from_slice(&bands_prob);
+    features[8] = hf_ratio_norm;
+    features[9] = spec_ent;
+    features[10..14].copy_from_slice(&[vel_norm, jerk_norm, anisotropy, roughness]);
+    features[14..18].copy_from_slice(&[kurt_trace, signed_skew, top1pct_conc, rare_trace]);
+    features[18..24].copy_from_slice(&[
+        sweet_pos,
+        bitter_neg,
+        sour_sharp,
+        salty_dense,
+        umami_coherent,
+        valence_bal,
+    ]);
+    features[24..32].copy_from_slice(&u_bar);
+    for v in &mut features {
+        if v.is_nan() {
+            *v = 0.0;
+        } else {
+            *v = v.clamp(-1.5, 1.5);
+        }
+    }
+
+    Ok(SixSensePovFeatures { features })
+}
+
+/// Evaluate V8.0 6-Sense Player POV consensus gate on a 32D sensory feature vector,
+/// matching `run_v8_0_player_pov_spatial_a100.py::evaluate_6sense_consensus_gate_batch`.
+pub fn evaluate_6sense_consensus_gate(
+    s32: &SixSensePovFeatures,
+    caution_thresh: f32,
+    rescue_thresh: f32,
+    base_top_k: usize,
+    base_top_p: f32,
+    base_mod_q: f32,
+    base_draft_k: usize,
+) -> SixSenseConsensusDecision {
+    let f = &s32.features;
+    let (see_crest, see_cv, see_edge) = (f[1], f[2], f[3]);
+    let (hear_b0, hear_b1, hear_hf, hear_ent) = (f[4], f[5], f[8], f[9]);
+    let (feel_vel, feel_jerk, feel_rough) = (f[10], f[11], f[13]);
+    let (smell_kurt, smell_top1, smell_rare) = (f[14], f[16], f[17]);
+    let (taste_sour, taste_umami, taste_bal) = (f[20], f[22], f[23]);
+    let c8d_s7 = &f[24..32];
+
+    let s_see = (1.0
+        - 0.45 * ((see_crest - 0.55) / 0.75).clamp(0.0, 1.0)
+        - 0.35 * ((see_cv - 0.45) / 0.75).clamp(0.0, 1.0)
+        - 0.20 * (see_edge / 1.2).clamp(0.0, 1.0))
+    .clamp(0.0, 1.0);
+    let s_hear = (0.65 * (hear_b0 + hear_b1).clamp(0.0, 1.0)
+        + 0.35 * (1.0 - 0.75 * hear_hf.clamp(0.0, 1.0) - 0.25 * hear_ent.clamp(0.0, 1.0)))
+    .clamp(0.0, 1.0);
+    let s_feel = (1.0
+        - 0.45 * (feel_jerk / 1.1).clamp(0.0, 1.0)
+        - 0.30 * (feel_rough / 1.2).clamp(0.0, 1.0)
+        - 0.25 * (feel_vel - 0.85).max(0.0))
+    .clamp(0.0, 1.0);
+    let s_smell = (1.0
+        - 0.45 * ((smell_kurt - 0.35) / 0.85).clamp(0.0, 1.0)
+        - 0.30 * ((smell_rare - 0.35) / 0.90).clamp(0.0, 1.0)
+        - 0.25 * ((smell_top1 - 0.65) / 0.85).clamp(0.0, 1.0))
+    .clamp(0.0, 1.0);
+    let s_taste = (0.55 * taste_umami.clamp(0.0, 1.0)
+        + 0.25 * (1.0 - taste_sour.clamp(0.0, 1.0))
+        + 0.20 * (1.0 - taste_bal.abs().clamp(0.0, 1.0)))
+    .clamp(0.0, 1.0);
+    let max_c8d = c8d_s7.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+    let s_c8d = (max_c8d / 0.85).clamp(0.25, 1.0);
+
+    let consensus = (0.22 * s_see
+        + 0.22 * s_hear
+        + 0.16 * s_feel
+        + 0.14 * s_smell
+        + 0.14 * s_taste
+        + 0.12 * s_c8d)
+        .clamp(0.0, 1.0);
+
+    let is_rescue = consensus < rescue_thresh || s_see < 0.30 || s_hear < 0.30;
+    let is_caution = !is_rescue
+        && (consensus < caution_thresh
+            || s_see < 0.52
+            || s_hear < 0.52
+            || s_feel < 0.45
+            || s_smell < 0.42);
+    let (mode, dyn_top_k, dyn_draft_k, caut_f, resc_f) = if is_rescue {
+        (ConsensusMode::Rescue, base_top_k + 2, 1, 0.0f32, 1.0f32)
+    } else if is_caution {
+        (
+            ConsensusMode::Caution,
+            base_top_k + 1,
+            (base_draft_k / 2).max(1),
+            1.0f32,
+            0.0f32,
+        )
+    } else {
+        (ConsensusMode::Clean, base_top_k, base_draft_k.max(1), 0.0f32, 0.0f32)
+    };
+    let adaptive_crtr_top_p = (base_top_p + 0.15 * caut_f + 0.30 * resc_f).clamp(0.05, 1.0);
+    let adaptive_mod_q = (base_mod_q * (1.0 - 0.40 * caut_f - 0.75 * resc_f)).max(0.0);
+
+    SixSenseConsensusDecision {
+        mode,
+        consensus_score: consensus,
+        see_health: s_see,
+        hear_health: s_hear,
+        feel_health: s_feel,
+        smell_health: s_smell,
+        taste_health: s_taste,
+        cuneiform_s7_health: s_c8d,
+        dyn_top_k,
+        dyn_draft_k,
+        adaptive_crtr_top_p,
+        adaptive_mod_q,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,5 +1221,49 @@ mod tests {
         let see_spike = analyze_see_spatial(&x_spiky, 64).unwrap();
         let d2 = gate.evaluate(&read_confident, &hear, &see_spike, true);
         assert_ne!(d2.mode, ConsensusMode::Clean);
+    }
+
+    #[test]
+    fn six_sense_pov_features_and_consensus_gate_separate_clean_from_noisy() {
+        // Smooth low-sequency 3-token trajectory across d_model=128
+        let seq_len = 3usize;
+        let d_model = 128usize;
+        let mut clean = vec![0.0f32; seq_len * d_model];
+        for t in 0..seq_len {
+            for j in 0..d_model {
+                clean[t * d_model + j] =
+                    ((j as f32) * 0.05 + (t as f32) * 0.02).sin() + 0.5 * ((j as f32) * 0.025).cos();
+            }
+        }
+        let s_clean = extract_6sense_pov_features(&clean, seq_len, d_model, 64).unwrap();
+        assert!(s_clean.features.iter().all(|v| v.is_finite()));
+        let n_s7: f32 = s_clean.cuneiform_8d().iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((n_s7 - 1.0).abs() < 1e-4, "expected unit S^7 norm, got {n_s7}");
+        let dec_clean = evaluate_6sense_consensus_gate(&s_clean, 0.72, 0.48, 2, 0.30, 0.20, 4);
+        assert_eq!(dec_clean.mode, ConsensusMode::Clean);
+        assert_eq!(dec_clean.dyn_top_k, 2);
+        assert_eq!(dec_clean.dyn_draft_k, 4);
+
+        // High-sequency alternating static + heavy-tail outlier spike + erratic jerk
+        let mut noisy = clean.clone();
+        for t in 0..seq_len {
+            let sgn_t = if t % 2 == 0 { 1.0f32 } else { -1.5f32 };
+            for j in 0..d_model {
+                let alt = if j % 2 == 0 { 3.5f32 } else { -3.5f32 };
+                noisy[t * d_model + j] += sgn_t * alt;
+            }
+        }
+        noisy[7] = 65.0;
+        let s_noisy = extract_6sense_pov_features(&noisy, seq_len, d_model, 64).unwrap();
+        let dec_noisy = evaluate_6sense_consensus_gate(&s_noisy, 0.72, 0.48, 2, 0.30, 0.20, 4);
+        assert!(
+            dec_noisy.consensus_score + 0.15 < dec_clean.consensus_score,
+            "noisy consensus {} not lower than clean {}",
+            dec_noisy.consensus_score,
+            dec_clean.consensus_score
+        );
+        assert_ne!(dec_noisy.mode, ConsensusMode::Clean);
+        assert!(dec_noisy.dyn_top_k >= 3);
+        assert!(dec_noisy.adaptive_crtr_top_p > 0.30);
     }
 }

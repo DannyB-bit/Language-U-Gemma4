@@ -10,7 +10,7 @@
 use run270_rust::assistant::AssistantRuntime;
 use run270_rust::byte_head::BpePrefixTrie;
 use run270_rust::codec::{bf16_to_f32, f32_to_bf16};
-use run270_rust::cortical_router::CorticalRouterBank;
+use run270_rust::cortical_router::{CorticalRouterBank, DistrictRouterBank};
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{
@@ -24,8 +24,9 @@ use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDr
 use run270_rust::t16c::T16CLoadPolicy;
 use run270_rust::tokenizer::Tokenizer;
 use run270_rust::tri_modal::{
-    analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, render_tri_modal_rescue_canvas,
-    ConsensusConfig, ConsensusMode, TriModalConsensusGate,
+    analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, evaluate_6sense_consensus_gate,
+    extract_6sense_pov_features, render_tri_modal_rescue_canvas, ConsensusConfig, ConsensusMode,
+    TriModalConsensusGate,
 };
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
 use std::collections::{HashMap, HashSet};
@@ -1000,6 +1001,25 @@ fn print_runtime_telemetry(rt: &Runtime31B, pinned_bytes: usize, embed_bytes: us
             rt.mod_thresh, rt.mod_skipped_layers, rt.mod_total_layers, pct
         );
     }
+    if rt.lod_total_districts_sum > 0 {
+        let skipped_d = rt.lod_total_districts_sum.saturating_sub(rt.lod_active_districts_sum);
+        let pct = 100.0 * (skipped_d as f64) / (rt.lod_total_districts_sum as f64);
+        println!(
+            "GTALOD31B active_districts={} total_districts={} district_dram_saved_pct={:.1}%",
+            rt.lod_active_districts_sum, rt.lod_total_districts_sum, pct
+        );
+    }
+    if rt.pov_layers_evaluated > 0 {
+        let mean_c = rt.pov_consensus_sum / (rt.pov_layers_evaluated as f64);
+        println!(
+            "POV6SENSE31B layers_eval={} mean_consensus={:.4} clean={} caution={} rescue={}",
+            rt.pov_layers_evaluated,
+            mean_c,
+            rt.pov_clean_layers,
+            rt.pov_caution_layers,
+            rt.pov_rescue_layers
+        );
+    }
     if rt.profile_components && rt.prof_steps > 0 {
         let n = rt.prof_steps as f64;
         println!(
@@ -1030,6 +1050,17 @@ struct Runtime31B {
     pinned: Vec<PinnedLayer>,
     hybrid_pinned: HashMap<usize, PinnedLayer>,
     t16c_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
+    lod_shared_mats: Option<HashMap<String, run270_rust::t16c::T16CMat>>,
+    lod_district_mats: Vec<HashMap<String, run270_rust::t16c::T16CMat>>,
+    district_router: Option<DistrictRouterBank>,
+    player_pov_6sense: bool,
+    pov_consensus_sum: f64,
+    pov_layers_evaluated: u64,
+    pov_clean_layers: u64,
+    pov_caution_layers: u64,
+    pov_rescue_layers: u64,
+    lod_active_districts_sum: u64,
+    lod_total_districts_sum: u64,
     native_t16c: Option<std::sync::Arc<run270_rust::t16c::NativeTile16Kernel>>,
     c8d_bank: Option<run270_rust::cuneiform_tbi::CuneiformBank>,
     apply_c8d_proj: bool,
@@ -1305,6 +1336,10 @@ impl Runtime31B {
         let scalars = &self.scalars;
         let pinned = &self.pinned;
         let t16c_mats = &self.t16c_mats;
+        let lod_shared_mats = &self.lod_shared_mats;
+        let lod_district_mats = &self.lod_district_mats;
+        let district_router = &self.district_router;
+        let player_pov_6sense = self.player_pov_6sense;
         let all_pinned = t16c_mats.is_some();
         let native_t16c = &self.native_t16c;
         let hybrid_pinned = &self.hybrid_pinned;
@@ -1332,6 +1367,13 @@ impl Runtime31B {
         let mut mod_total_step = 0u64;
         let mut cortical_gate_skipped_step = 0u64;
         let mut cortical_gate_total_step = 0u64;
+        let mut pov_consensus_step = 0.0f64;
+        let mut pov_layers_step = 0u64;
+        let mut pov_clean_step = 0u64;
+        let mut pov_caution_step = 0u64;
+        let mut pov_rescue_step = 0u64;
+        let mut lod_active_d_step = 0u64;
+        let mut lod_total_d_step = 0u64;
         let mut prof_attn_step = 0.0f64;
         let mut prof_gate_step = 0.0f64;
         let mut prof_up_step = 0.0f64;
@@ -1988,24 +2030,79 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let cold_mlp_mats = t16c_mats.as_ref().and_then(|mats| {
-                    let gm = mats
-                        .get(&format!("{pfx}.mlp.gate_proj.weight"))
-                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.gate_proj.weight")));
-                    let um = mats
-                        .get(&format!("{pfx}.mlp.up_proj.weight"))
-                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.up_proj.weight")));
-                    let dm = mats
-                        .get(&format!("{pfx}.mlp.down_proj.weight"))
-                        .or_else(|| mats.get(&format!("model.layers.{l}.mlp.down_proj.weight")));
-                    match (gm, um, dm) {
-                        (Some(g), Some(u), Some(d)) if g.is_streamed() || u.is_streamed() || d.is_streamed() => {
-                            Some((g, u, d))
-                        }
-                        _ => None,
+                let need_6sense = player_pov_6sense
+                    || district_router.as_ref().is_some_and(|dr| dr.sense_dim > 0);
+                let pov_s32_opt = if need_6sense {
+                    let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let s32 = extract_6sense_pov_features(&inp, seq_len, d, 64)?;
+                    if let Some(t0) = tr0 {
+                        prof_router_step += t0.elapsed().as_secs_f64();
                     }
+                    Some(s32)
+                } else {
+                    None
+                };
+                let base_top_k_l = district_router.as_ref().map_or(2usize, |dr| dr.base_top_k.max(1));
+                let pov_decision_opt = pov_s32_opt.as_ref().map(|s32| {
+                    let dec = evaluate_6sense_consensus_gate(
+                        s32,
+                        0.72,
+                        0.48,
+                        base_top_k_l,
+                        if mlp_top_p < 0.9999 { mlp_top_p } else { 0.30 },
+                        mod_thresh,
+                        4,
+                    );
+                    pov_layers_step += 1;
+                    pov_consensus_step += dec.consensus_score as f64;
+                    match dec.mode {
+                        ConsensusMode::Clean => pov_clean_step += 1,
+                        ConsensusMode::Caution => pov_caution_step += 1,
+                        ConsensusMode::Rescue => pov_rescue_step += 1,
+                    }
+                    dec
                 });
-                let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if mlp_top_p < 0.9999 {
+                let eff_mlp_top_p = if player_pov_6sense && mlp_top_p < 0.9999 {
+                    pov_decision_opt
+                        .as_ref()
+                        .map_or(mlp_top_p, |dec| dec.adaptive_crtr_top_p)
+                } else {
+                    mlp_top_p
+                };
+                let gta_lod_shared_l = lod_shared_mats.as_ref().and_then(|sh| {
+                    let g = sh
+                        .get(&format!("{pfx}.mlp.gate_proj.weight"))
+                        .or_else(|| sh.get(&format!("model.layers.{l}.mlp.gate_proj.weight")))?;
+                    let u = sh
+                        .get(&format!("{pfx}.mlp.up_proj.weight"))
+                        .or_else(|| sh.get(&format!("model.layers.{l}.mlp.up_proj.weight")))?;
+                    let dm = sh
+                        .get(&format!("{pfx}.mlp.down_proj.weight"))
+                        .or_else(|| sh.get(&format!("model.layers.{l}.mlp.down_proj.weight")))?;
+                    Some((g, u, dm))
+                });
+                let cold_mlp_mats = if gta_lod_shared_l.is_some() {
+                    None
+                } else {
+                    t16c_mats.as_ref().and_then(|mats| {
+                        let gm = mats
+                            .get(&format!("{pfx}.mlp.gate_proj.weight"))
+                            .or_else(|| mats.get(&format!("model.layers.{l}.mlp.gate_proj.weight")));
+                        let um = mats
+                            .get(&format!("{pfx}.mlp.up_proj.weight"))
+                            .or_else(|| mats.get(&format!("model.layers.{l}.mlp.up_proj.weight")));
+                        let dm = mats
+                            .get(&format!("{pfx}.mlp.down_proj.weight"))
+                            .or_else(|| mats.get(&format!("model.layers.{l}.mlp.down_proj.weight")));
+                        match (gm, um, dm) {
+                            (Some(g), Some(u), Some(d)) if g.is_streamed() || u.is_streamed() || d.is_streamed() => {
+                                Some((g, u, d))
+                            }
+                            _ => None,
+                        }
+                    })
+                };
+                let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if eff_mlp_top_p < 0.9999 {
                     if let (Some(cr), Some(mats)) = (cortical_router.as_ref(), t16c_mats.as_ref()) {
                         let check_proj_blk = |suf: &str, l_key: &str| -> Option<usize> {
                             let k1 = format!("model.language_model.layers.{l}.{suf}.weight");
@@ -2021,7 +2118,7 @@ impl Runtime31B {
                         let bsize = cr.block_size;
                         if gb == Some(bsize) && ub == Some(bsize) && db == Some(bsize) && bsize > 0 && cfg.ff % bsize == 0 {
                             let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                            let (rmask, cmask, blk_sz) = cr.layers[l].predict_masks(&inp2, seq_len, mlp_top_p)?;
+                            let (rmask, cmask, blk_sz) = cr.layers[l].predict_masks(&inp2, seq_len, eff_mlp_top_p)?;
                             if let Some(t0) = tr0 {
                                 prof_router_step += t0.elapsed().as_secs_f64();
                             }
@@ -2038,7 +2135,179 @@ impl Runtime31B {
                     None
                 };
 
-                let down: Vec<f32> = if let Some((gate_mat, up_mat, down_mat)) = cold_mlp_mats {
+                let down: Vec<f32> = if let Some((sh_gate, sh_up, sh_down)) = gta_lod_shared_l {
+                    let ff = cfg.ff;
+                    let n_dist_shards = lod_district_mats.len();
+                    let active_top_k = pov_decision_opt
+                        .as_ref()
+                        .map_or(base_top_k_l, |dec| dec.dyn_top_k)
+                        .clamp(1, n_dist_shards.max(1));
+                    let (sh_slice, active_d_slices): ((usize, usize), Vec<(usize, (usize, usize))>) =
+                        if let Some(ref dr) = *district_router {
+                            let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                            let dl = &dr.layers[l];
+                            let s_ref = pov_s32_opt.as_ref().map(|s| &s.features[..]);
+                            let (top_idx, _) = dl.predict_active_districts(&inp, seq_len, s_ref, active_top_k)?;
+                            if let Some(t0) = tr0 {
+                                prof_router_step += t0.elapsed().as_secs_f64();
+                            }
+                            let act_s = top_idx
+                                .into_iter()
+                                .filter(|&di| di < dl.district_slices.len() && di < n_dist_shards)
+                                .map(|di| (di, dl.district_slices[di]))
+                                .collect();
+                            (dl.shared_slice, act_s)
+                        } else {
+                            let sh_end = sh_gate.d_out.min(ff);
+                            let rem = ff.saturating_sub(sh_end);
+                            let d_w = if n_dist_shards > 0 { rem / n_dist_shards } else { 0 };
+                            let mut act_s = Vec::new();
+                            for di in 0..active_top_k.min(n_dist_shards) {
+                                let ds = sh_end + di * d_w;
+                                let de = (ds + d_w).min(ff);
+                                if de > ds {
+                                    act_s.push((di, (ds, de)));
+                                }
+                            }
+                            ((0, sh_end), act_s)
+                        };
+                    lod_total_d_step += n_dist_shards as u64;
+                    lod_active_d_step += active_d_slices.len() as u64;
+
+                    let rm_ref = predicted_masks.as_ref().map(|(r, _, _)| r.as_slice());
+                    let cm_ref = predicted_masks.as_ref().map(|(_, c, _)| c.as_slice());
+                    let mut gelu_gate = run_proj_masked(l, "mlp.gate_proj", &inp2, rm_ref, None, true)?;
+                    let mut add_lod_rows = |mat: &run270_rust::t16c::T16CMat, s0: usize, s1: usize, dst: &mut [f32]| -> Result<(), String> {
+                        let w_sl = s1.saturating_sub(s0);
+                        if w_sl == 0 || mat.d_out != w_sl {
+                            return Err(format!("GTA-LOD row slice ({s0}..{s1}) mismatch vs mat {} d_out={}", mat.name, mat.d_out));
+                        }
+                        if mat.is_streamed() {
+                            cold_read_bytes += mat.packed_bytes_len as u64;
+                        }
+                        let delta = mat.project_batch(&inp2, seq_len, native_t16c.as_deref(), threads)?;
+                        for t in 0..seq_len {
+                            let d_row = &delta[t * w_sl..(t + 1) * w_sl];
+                            let y_row = &mut dst[t * ff + s0..t * ff + s1];
+                            for (yv, &dv) in y_row.iter_mut().zip(d_row.iter()) {
+                                *yv += dv;
+                            }
+                        }
+                        Ok(())
+                    };
+                    if sh_slice.1 > sh_slice.0 {
+                        add_lod_rows(sh_gate, sh_slice.0, sh_slice.1, &mut gelu_gate)?;
+                    }
+                    for &(di, (ds, de)) in &active_d_slices {
+                        let d_map = &lod_district_mats[di];
+                        if let Some(gm_d) = d_map
+                            .get(&format!("{pfx}.mlp.gate_proj.weight"))
+                            .or_else(|| d_map.get(&format!("model.layers.{l}.mlp.gate_proj.weight")))
+                        {
+                            add_lod_rows(gm_d, ds, de, &mut gelu_gate)?;
+                        }
+                    }
+                    if let Some(t0) = t_g0 {
+                        prof_gate_step += t0.elapsed().as_secs_f64();
+                    }
+
+                    let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    if let Some((_, ref cmask, bsize)) = predicted_masks {
+                        for t in 0..seq_len {
+                            let base = t * ff;
+                            for (b, &active) in cmask.iter().enumerate() {
+                                if active != 0 {
+                                    for x in &mut gelu_gate[base + b * bsize..base + (b + 1) * bsize] {
+                                        *x = gelu_tanh_fast_f32(*x);
+                                    }
+                                } else {
+                                    gelu_gate[base + b * bsize..base + (b + 1) * bsize].fill(0.0);
+                                }
+                            }
+                        }
+                    } else {
+                        gelu_tanh_inplace_parallel(&mut gelu_gate, threads);
+                    }
+                    if let Some(t0) = t_gl0 {
+                        prof_norm_kv_step += t0.elapsed().as_secs_f64();
+                    }
+
+                    let t_u0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let mut up = run_proj_masked(l, "mlp.up_proj", &inp2, rm_ref, None, true)?;
+                    if sh_slice.1 > sh_slice.0 {
+                        add_lod_rows(sh_up, sh_slice.0, sh_slice.1, &mut up)?;
+                    }
+                    for &(di, (ds, de)) in &active_d_slices {
+                        let d_map = &lod_district_mats[di];
+                        if let Some(um_d) = d_map
+                            .get(&format!("{pfx}.mlp.up_proj.weight"))
+                            .or_else(|| d_map.get(&format!("model.layers.{l}.mlp.up_proj.weight")))
+                        {
+                            add_lod_rows(um_d, ds, de, &mut up)?;
+                        }
+                    }
+                    if let Some(t0) = t_u0 {
+                        prof_up_step += t0.elapsed().as_secs_f64();
+                    }
+
+                    let act: Vec<f32> = if let Some((_, ref cmask, bsize)) = predicted_masks {
+                        let mut out_a = vec![0.0f32; seq_len * ff];
+                        for t in 0..seq_len {
+                            let base = t * ff;
+                            for (b, &active) in cmask.iter().enumerate() {
+                                if active != 0 {
+                                    let off = base + b * bsize;
+                                    for j in 0..bsize {
+                                        out_a[off + j] = gelu_gate[off + j] * up[off + j];
+                                    }
+                                }
+                            }
+                        }
+                        out_a
+                    } else {
+                        gelu_gate.iter().zip(up.iter()).map(|(&a, &b)| a * b).collect()
+                    };
+                    drop(gelu_gate);
+                    drop(up);
+
+                    let t_d0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let mut down_out = run_proj_masked(l, "mlp.down_proj", &act, None, cm_ref, true)?;
+                    let mut add_lod_cols = |mat: &run270_rust::t16c::T16CMat, s0: usize, s1: usize, dst: &mut [f32]| -> Result<(), String> {
+                        let w_sl = s1.saturating_sub(s0);
+                        if w_sl == 0 || mat.d_in != w_sl || mat.d_out != d {
+                            return Err(format!("GTA-LOD col slice ({s0}..{s1}) mismatch vs mat {} ({}x{})", mat.name, mat.d_out, mat.d_in));
+                        }
+                        let mut act_sub = Vec::with_capacity(seq_len * w_sl);
+                        for t in 0..seq_len {
+                            act_sub.extend_from_slice(&act[t * ff + s0..t * ff + s1]);
+                        }
+                        if mat.is_streamed() {
+                            cold_read_bytes += mat.packed_bytes_len as u64;
+                        }
+                        let delta = mat.project_batch(&act_sub, seq_len, native_t16c.as_deref(), threads)?;
+                        for (yv, &dv) in dst.iter_mut().zip(delta.iter()) {
+                            *yv += dv;
+                        }
+                        Ok(())
+                    };
+                    if sh_slice.1 > sh_slice.0 {
+                        add_lod_cols(sh_down, sh_slice.0, sh_slice.1, &mut down_out)?;
+                    }
+                    for &(di, (ds, de)) in &active_d_slices {
+                        let d_map = &lod_district_mats[di];
+                        if let Some(dm_d) = d_map
+                            .get(&format!("{pfx}.mlp.down_proj.weight"))
+                            .or_else(|| d_map.get(&format!("model.layers.{l}.mlp.down_proj.weight")))
+                        {
+                            add_lod_cols(dm_d, ds, de, &mut down_out)?;
+                        }
+                    }
+                    if let Some(t0) = t_d0 {
+                        prof_down_step += t0.elapsed().as_secs_f64();
+                    }
+                    drop(act);
+                    down_out
+                } else if let Some((gate_mat, up_mat, down_mat)) = cold_mlp_mats {
                     let apply_c8db_cold = |proj_suffix: &str, x_in: &[f32], y_out: &mut [f32]| -> Result<(), String> {
                         if apply_c8d_proj {
                             if let Some(ref bank) = *c8d_bank {
@@ -2460,6 +2729,13 @@ impl Runtime31B {
         self.mod_total_layers += mod_total_step;
         self.cortical_gate_skipped_blks += cortical_gate_skipped_step;
         self.cortical_gate_total_blks += cortical_gate_total_step;
+        self.pov_consensus_sum += pov_consensus_step;
+        self.pov_layers_evaluated += pov_layers_step;
+        self.pov_clean_layers += pov_clean_step;
+        self.pov_caution_layers += pov_caution_step;
+        self.pov_rescue_layers += pov_rescue_step;
+        self.lod_active_districts_sum += lod_active_d_step;
+        self.lod_total_districts_sum += lod_total_d_step;
         if profile_components {
             self.prof_attn_s += prof_attn_step;
             self.prof_gate_s += prof_gate_step;
@@ -2685,6 +2961,17 @@ fn load_runtime_31b(
             pinned,
             hybrid_pinned: HashMap::new(),
             t16c_mats: None,
+            lod_shared_mats: None,
+            lod_district_mats: Vec::new(),
+            district_router: None,
+            player_pov_6sense: false,
+            pov_consensus_sum: 0.0,
+            pov_layers_evaluated: 0,
+            pov_clean_layers: 0,
+            pov_caution_layers: 0,
+            pov_rescue_layers: 0,
+            lod_active_districts_sum: 0,
+            lod_total_districts_sum: 0,
             native_t16c: None,
             c8d_bank: None,
             apply_c8d_proj: true,
@@ -2870,6 +3157,17 @@ fn load_runtime_31b_t16c(
             pinned: Vec::new(),
             hybrid_pinned,
             t16c_mats: Some(t16c.mats),
+            lod_shared_mats: None,
+            lod_district_mats: Vec::new(),
+            district_router: None,
+            player_pov_6sense: false,
+            pov_consensus_sum: 0.0,
+            pov_layers_evaluated: 0,
+            pov_clean_layers: 0,
+            pov_caution_layers: 0,
+            pov_rescue_layers: 0,
+            lod_active_districts_sum: 0,
+            lod_total_districts_sum: 0,
             native_t16c,
             c8d_bank: None,
             apply_c8d_proj: true,
@@ -3432,6 +3730,10 @@ fn run() -> Result<(), String> {
         return Err(format!("--mlp-top-p must be finite in (0.0, 1.0], got {mlp_top_p}"));
     }
     let cortical_router_arg = get("--cortical-router");
+    let lod_shared_arg = get("--lod-shared");
+    let lod_district_dir_arg = get("--lod-district-dir");
+    let district_router_arg = get("--district-router");
+    let player_pov_6sense = args.iter().any(|a| a == "--player-pov-6sense");
     let mod_thresh: f32 = match get("--mod-thresh") {
         Some(s) => parse_mod_thresh(&s)?,
         None => 0.0,
@@ -3606,6 +3908,71 @@ fn run() -> Result<(), String> {
             cr.byte_len() as f64 / (1024.0 * 1024.0)
         );
         rt.cortical_router = Some(cr);
+    }
+    if let Some(ref lsh_p) = lod_shared_arg {
+        let sh_m = run270_rust::t16c::T16CModel::load(Path::new(lsh_p), None, true)?;
+        eprintln!(
+            "[run31b] loaded GTA-LOD Zone 0 Shared Core {}: mats={} ({:.2} MiB pinned)",
+            lsh_p,
+            sh_m.mats.len(),
+            sh_m.total_mat_bytes as f64 / (1024.0 * 1024.0)
+        );
+        rt.lod_shared_mats = Some(sh_m.mats);
+    }
+    if let Some(ref ldd_p) = lod_district_dir_arg {
+        let base_p = Path::new(ldd_p);
+        let cold_all = T16CLoadPolicy {
+            defer_vision_fault: true,
+            cold_mlp_layers: (0..rt.cfg.n_layers).collect(),
+        };
+        let mut d_shards = Vec::new();
+        for di in 0..16 {
+            let cand1 = base_p.join(format!("gemma4_31b_v8_0_lod_d{di}.t16c"));
+            let cand2 = base_p.join(format!("gemma4_31b_v7_5_lod_d{di}.t16c"));
+            let cand3 = Path::new(&format!("{ldd_p}_d{di}.t16c")).to_path_buf();
+            let chosen = [cand1, cand2, cand3].into_iter().find(|p| p.is_file());
+            if let Some(cp) = chosen {
+                let dm = run270_rust::t16c::T16CModel::load_with_policy(&cp, None, true, &cold_all)?;
+                d_shards.push(dm.mats);
+            } else if di == 0 {
+                return Err(format!("--lod-district-dir {ldd_p}: could not find lod_d0.t16c shard"));
+            } else {
+                break;
+            }
+        }
+        eprintln!(
+            "[run31b] mapped {} GTA-LOD Spatial District shards from {} (on-demand COLBLOCK streaming)",
+            d_shards.len(),
+            ldd_p
+        );
+        rt.lod_district_mats = d_shards;
+    }
+    if let Some(ref drp) = district_router_arg {
+        let dr = DistrictRouterBank::load(Path::new(drp))?;
+        if dr.n_layers != rt.cfg.n_layers || dr.d_model != rt.cfg.d || dr.ff != rt.cfg.ff {
+            return Err(format!(
+                "district router {} dims (L={} d={} ff={}) incompatible with model (L={} d={} ff={})",
+                drp, dr.n_layers, dr.d_model, dr.ff, rt.cfg.n_layers, rt.cfg.d, rt.cfg.ff
+            ));
+        }
+        eprintln!(
+            "[run31b] loaded DistrictRouter {}: layers={} districts={} rank={} sense_dim={} base_top_k={} ({:.2} MB)",
+            drp,
+            dr.n_layers,
+            dr.n_districts,
+            dr.rank,
+            dr.sense_dim,
+            dr.base_top_k,
+            dr.byte_len() as f64 / (1024.0 * 1024.0)
+        );
+        if dr.sense_dim > 0 {
+            rt.player_pov_6sense = true;
+        }
+        rt.district_router = Some(dr);
+    }
+    if player_pov_6sense {
+        rt.player_pov_6sense = true;
+        eprintln!("[run31b] enabled V8.0 32D 6-Sense Player POV Cortex + Active Consensus Gate");
     }
     if mod_thresh > 0.0 {
         let cr = rt
