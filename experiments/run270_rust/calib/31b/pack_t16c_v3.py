@@ -20,6 +20,9 @@ import numpy as np
 
 T16C_MAGIC = b"T16C"
 T16C_VERSION = 1
+T16C_GAUSS_BIT = 0x80
+T16C_ROWMAJOR_BIT = 0x40
+T16C_COLBLOCK_BIT = 0x20
 ARCH_FLAGS = 3  # ARCH_FLAG_GEMMA4 | ARCH_FLAG_TIED_HEAD
 
 # Mapping from fast_quant.c quantize mode_i -> (t16c n_bits, is_asym)
@@ -49,9 +52,9 @@ def tile16_blk_bytes(block_size: int, n_bits: int, is_asym: bool) -> int:
     """Return packed byte count of a single `16 x block_size` tile-block."""
     if block_size not in (64, 128, 256):
         raise ValueError(f"Unsupported block_size={block_size}")
-    eff_bits = n_bits & 0x3F
-    gauss = (n_bits & 0x80) != 0
-    rowmajor = (n_bits & 0x40) != 0
+    eff_bits = n_bits & 0x1F
+    gauss = (n_bits & T16C_GAUSS_BIT) != 0
+    rowmajor = (n_bits & T16C_ROWMAJOR_BIT) != 0
     if gauss and eff_bits not in (2, 3):
         raise ValueError(f"T16C_GAUSS_BIT (0x80) requires eff_bits in (2, 3), got n_bits={n_bits}")
     if rowmajor and not (1 <= eff_bits <= 4):
