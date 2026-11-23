@@ -649,6 +649,16 @@ fn parse_mod_thresh(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
+fn default_assistant_min_margin(has_assistant: bool, has_byte_head: bool) -> f32 {
+    if has_byte_head {
+        0.25
+    } else if has_assistant {
+        0.75
+    } else {
+        0.0
+    }
+}
+
 const LGT1_MAGIC: &[u8; 4] = b"LGT1";
 const LGT1_VERSION: u32 = 1;
 const LGT1_HEADER_BYTES: usize = 24;
@@ -3030,7 +3040,7 @@ fn run() -> Result<(), String> {
     let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos");
     let assistant_min_margin: f32 = match get("--assistant-min-margin") {
         Some(s) => s.parse().map_err(|_| format!("invalid --assistant-min-margin '{s}'"))?,
-        None => if spec_assistant_arg.is_some() { 0.75 } else { 0.0 },
+        None => default_assistant_min_margin(spec_assistant_arg.is_some(), spec_byte_head_arg.is_some()),
     };
     if !assistant_min_margin.is_finite() || assistant_min_margin < 0.0 {
         return Err(format!("--assistant-min-margin must be finite and >= 0.0, got {assistant_min_margin}"));
@@ -4290,6 +4300,14 @@ mod tests {
         assert!(parse_mod_thresh("1.0").is_err());
         assert!(parse_mod_thresh("NaN").is_err());
         assert!(parse_mod_thresh("bad").is_err());
+    }
+
+    #[test]
+    fn default_assistant_min_margin_matches_head_scale() {
+        assert!((default_assistant_min_margin(false, false) - 0.0).abs() < 1e-6);
+        assert!((default_assistant_min_margin(true, false) - 0.75).abs() < 1e-6);
+        assert!((default_assistant_min_margin(true, true) - 0.25).abs() < 1e-6);
+        assert!((default_assistant_min_margin(false, true) - 0.25).abs() < 1e-6);
     }
 
     #[test]
