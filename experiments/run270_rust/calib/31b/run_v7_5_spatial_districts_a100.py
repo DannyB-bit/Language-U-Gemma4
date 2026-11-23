@@ -103,39 +103,36 @@ PROGRESS_JSON = CKPT_DIR / "progress.json"
 # ---------------------------------------------------------------------------
 # Hardware & A100 Max-Utilization Configuration
 # ---------------------------------------------------------------------------
-def configure_a100_max_utilization(gpu_vram_gb: float, has_cuda: bool) -> Dict[str, object]:
+def configure_a100_max_utilization(
+    gpu_vram_gb: float, has_cuda: bool, *, respect_env: bool = True
+) -> Dict[str, object]:
     """Configure TF32, cudnn, HBM residency, micro-batch size, and async I/O pools across G4/A100/L4."""
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
-    force_max = os.environ.get("V7_5_A100_MAX_UTIL", "1").strip() == "1"
+    force_max = (os.environ.get("V7_5_A100_MAX_UTIL", "1").strip() == "1") if respect_env else True
     is_big_gpu = gpu_vram_gb >= 64.0
-    resident_env = os.environ.get("V7_5_RESIDENT_GPU", "").strip()
+    resident_env = os.environ.get("V7_5_RESIDENT_GPU", "").strip() if respect_env else ""
     resident_gpu = (resident_env == "1") if resident_env else (is_big_gpu and force_max and has_cuda)
 
     if gpu_vram_gb >= 88.0:
-        default_bs = 128
-        default_ev = 4096
+        default_bs, default_ev, distill_bs, ast_bs, bh_bs = 256, 4096, 64, 16, 512
         profile = "G4-96GB-MAX"
     elif is_big_gpu:
-        default_bs = 128
-        default_ev = 4096
+        default_bs, default_ev, distill_bs, ast_bs, bh_bs = 192, 4096, 64, 16, 512
         profile = "A100-80GB-MAX"
     elif gpu_vram_gb >= 36.0:
-        default_bs = 64
-        default_ev = 3072
+        default_bs, default_ev, distill_bs, ast_bs, bh_bs = 128, 4096, 48, 12, 512
         profile = "HIGH-VRAM-GPU"
     elif has_cuda:
-        default_bs = 48
-        default_ev = 2048
+        default_bs, default_ev, distill_bs, ast_bs, bh_bs = 96, 4096, 32, 8, 512
         profile = "L4-22GB-MAX"
     else:
-        default_bs = 16
-        default_ev = 512
+        default_bs, default_ev, distill_bs, ast_bs, bh_bs = 16, 512, 8, 4, 128
         profile = "CPU-SELFTEST"
 
-    bs_override = os.environ.get("V7_5_BATCH_SEQ", "").strip()
-    batch_seq = int(bs_override) if bs_override else default_bs
-    ev_override = os.environ.get("V7_5_ALS_EV", "").strip()
-    als_ev_toks = int(ev_override) if ev_override else default_ev
+    bs_override = os.environ.get("V7_5_BATCH_SEQ", "").strip() if respect_env else ""
+    batch_seq = (max(int(bs_override), default_bs) if force_max else int(bs_override)) if bs_override else default_bs
+    ev_override = os.environ.get("V7_5_ALS_EV", "").strip() if respect_env else ""
+    als_ev_toks = (max(int(ev_override), default_ev) if force_max else int(ev_override)) if ev_override else default_ev
 
     if has_cuda:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -150,6 +147,9 @@ def configure_a100_max_utilization(gpu_vram_gb: float, has_cuda: bool) -> Dict[s
         "resident_gpu": bool(resident_gpu),
         "batch_seq": max(1, batch_seq),
         "als_ev_toks": max(64, als_ev_toks),
+        "distill_bs": distill_bs,
+        "ast_bs": ast_bs,
+        "bh_bs": bh_bs,
         "tf32": bool(has_cuda),
         "distill_enabled": os.environ.get("V7_5_DISTRICT_DISTILL", "1").strip() == "1",
         "distill_thresh": float(os.environ.get("V7_5_DISTILL_THRESH", "0.72")),
@@ -161,9 +161,25 @@ def _gpu_vram_stats_gb(device: torch.device) -> Tuple[float, float, float]:
     if device.type != "cuda" or not torch.cuda.is_available():
         return 0.0, 0.0, 0.0
     alloc = torch.cuda.memory_allocated(device) / (1024**3)
-    resv = torch.cuda.memory_reserved(device) / (1024**3)
+    peak = torch.cuda.max_memory_allocated(device) / (1024**3)
     tot = torch.cuda.get_device_properties(device).total_memory / (1024**3)
-    return round(alloc, 2), round(resv, 2), round(tot, 2)
+    return round(alloc, 2), round(peak, 2), round(tot, 2)
+
+
+def symmetrize_matrix_inplace(h: torch.Tensor, tile: int = 1024) -> torch.Tensor:
+    """In-place tiled matrix symmetrization without allocating a second `[N, N]` tensor."""
+    n = h.shape[0]
+    for i in range(0, n, tile):
+        i2 = min(i + tile, n)
+        blk = h[i:i2, i:i2]
+        blk.add_(blk.T.clone()).mul_(0.5)
+        for j in range(i + tile, n, tile):
+            j2 = min(j + tile, n)
+            b_ij, b_ji = h[i:i2, j:j2], h[j:j2, i:i2]
+            avg = (b_ij + b_ji.T) * 0.5
+            b_ij.copy_(avg)
+            b_ji.copy_(avg.T)
+    return h
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +539,7 @@ def distill_district_locality(
     lr: float = 2e-4,
     l1_coeff: float = 0.05,
     max_rel_mse_drift: float = 0.05,
+    batch_size: Optional[int] = None,
     device: torch.device = torch.device("cpu"),
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, object]]:
     """
@@ -564,7 +581,7 @@ def distill_district_locality(
 
     opt = torch.optim.AdamW([wg, wu, wd], lr=lr, weight_decay=1e-4)
     n_seq = hm_t.shape[0]
-    bs = min(32, n_seq)
+    bs = min(int(batch_size or 32), n_seq)
     loss0 = loss1 = None
     for st in range(steps):
         perm_b = torch.randperm(n_seq, device=device)[:bs]
@@ -672,8 +689,7 @@ def split_and_pack_lod_matrix(
                     try:
                         h_inv = torch.cholesky_inverse(L)
                         del L
-                        v70_sym = h_inv  # symmetrize on device
-                        h_inv = 0.5 * (v70_sym + v70_sym.T)
+                        symmetrize_matrix_inplace(h_inv)
                         U_chol = torch.linalg.cholesky(h_inv, upper=True).contiguous()
                         del h_inv
                     except Exception:
@@ -769,15 +785,23 @@ def forward_geglu_lod_batch(
     compute_dt = hm.dtype
     m = active_col_mask.unsqueeze(1)  # [B, 1, ff]
     g_1b = F.linear(hm, wg_1b.to(compute_dt))
-    u_1b = F.linear(hm, wu_1b.to(compute_dt))
     g_hi = F.linear(hm, (wg_full - wg_1b).to(compute_dt))
-    u_hi = F.linear(hm, (wu_full - wu_1b).to(compute_dt))
     g_tot = g_1b + torch.where(m, g_hi, torch.zeros_like(g_hi))
+    del g_1b, g_hi
+    u_1b = F.linear(hm, wu_1b.to(compute_dt))
+    u_hi = F.linear(hm, (wu_full - wu_1b).to(compute_dt))
     u_tot = u_1b + torch.where(m, u_hi, torch.zeros_like(u_hi))
+    del u_1b, u_hi
     act = F.gelu(g_tot.float(), approximate="tanh") * u_tot.float()
+    del g_tot, u_tot
     act_1b = act.to(compute_dt)
+    y_out = F.linear(act_1b, wd_1b.to(compute_dt)).float()
+    del act_1b
     act_hi = torch.where(m, act, torch.zeros_like(act)).to(compute_dt)
-    return F.linear(act_1b, wd_1b.to(compute_dt)).float() + F.linear(act_hi, (wd_full - wd_1b).to(compute_dt)).float()
+    del act
+    y_out.add_(F.linear(act_hi, (wd_full - wd_1b).to(compute_dt)).float())
+    del act_hi
+    return y_out
 
 
 # ---------------------------------------------------------------------------
@@ -1037,19 +1061,20 @@ def run_selftest() -> int:
         sdc.cluster_spatial_districts(np.ones((4, 300)), n_districts=2, shared_frac=0.25, block_size=256)
     except ValueError:
         caught_misalign = True
-    a100_cfg = configure_a100_max_utilization(80.0, has_cuda=False)
-    g4_cfg = configure_a100_max_utilization(96.0, has_cuda=False)
-    l4_cfg = configure_a100_max_utilization(22.5, has_cuda=True)
+    a100_cfg = configure_a100_max_utilization(80.0, has_cuda=False, respect_env=False)
+    g4_cfg = configure_a100_max_utilization(96.0, has_cuda=False, respect_env=False)
+    l4_cfg = configure_a100_max_utilization(22.5, has_cuda=True, respect_env=False)
     gate(
         "Gate 6: Holdout disjointness, fail-closed checks & G4/A100/L4 config",
         dj["overlap_4grams"] == 0
         and caught_misalign
         and g4_cfg["profile"] == "G4-96GB-MAX"
-        and g4_cfg["batch_seq"] == 128
+        and g4_cfg["batch_seq"] == 256
         and a100_cfg["profile"] == "A100-80GB-MAX"
-        and a100_cfg["batch_seq"] == 128
+        and a100_cfg["batch_seq"] == 192
         and l4_cfg["profile"] == "L4-22GB-MAX"
-        and l4_cfg["batch_seq"] == 48,
+        and l4_cfg["batch_seq"] == 96
+        and l4_cfg["als_ev_toks"] == 4096,
         f"overlap={dj['overlap_4grams']} misaligned_caught={caught_misalign} "
         f"g4={g4_cfg['profile']}/bs={g4_cfg['batch_seq']} a100={a100_cfg['profile']}/bs={a100_cfg['batch_seq']} l4={l4_cfg['profile']}/bs={l4_cfg['batch_seq']}",
     )
@@ -1148,19 +1173,7 @@ def run_pipeline() -> Dict[str, object]:
     def fwht_gpu(t: torch.Tensor, bsize: int) -> torch.Tensor:
         return (t.reshape(-1, bsize) @ get_h_gpu(bsize, t.device)).reshape(t.shape)
 
-    def symmetrize_inplace_(h: torch.Tensor, tile: int = 1024) -> torch.Tensor:
-        n = h.shape[0]
-        for i in range(0, n, tile):
-            i2 = min(i + tile, n)
-            blk = h[i:i2, i:i2]
-            blk.add_(blk.T.clone()).mul_(0.5)
-            for j in range(i + tile, n, tile):
-                j2 = min(j + tile, n)
-                b_ij, b_ji = h[i:i2, j:j2], h[j:j2, i:i2]
-                avg = (b_ij + b_ji.T) * 0.5
-                b_ij.copy_(avg)
-                b_ji.copy_(avg.T)
-        return h
+    symmetrize_inplace_ = symmetrize_matrix_inplace
 
     def fwht_2sided_gpu(h_in: torch.Tensor, inv_s_gpu: Optional[torch.Tensor], bsize: int, consume: bool) -> torch.Tensor:
         h = h_in if consume else h_in.clone()
@@ -1841,6 +1854,10 @@ def run_pipeline() -> Dict[str, object]:
 
     MB_FWD = int(hw_cfg["batch_seq"])
     RES_GPU = bool(hw_cfg["resident_gpu"])
+    _PIN_CPU = (not RES_GPU) and torch.cuda.is_available()
+
+    def _alloc_act_store(shape: Tuple[int, ...], dev: torch.device) -> torch.Tensor:
+        return torch.empty(shape, dtype=torch.float16, device=dev, pin_memory=(dev.type == "cpu" and _PIN_CPU))
 
     def _to_store(t_gpu: torch.Tensor) -> torch.Tensor:
         return t_gpu if RES_GPU else t_gpu.cpu()
@@ -1899,7 +1916,7 @@ def run_pipeline() -> Dict[str, object]:
             rep = NH // nkv
             lsc = float(ng["lsc"])
             n_items = X_store.shape[0]
-            out_store = torch.empty((n_items, SEQ_LEN, D_MOD), dtype=torch.float16, device=X_store.device)
+            out_store = _alloc_act_store((n_items, SEQ_LEN, D_MOD), X_store.device)
             seq_e = np.empty((n_items, 21504), dtype=np.float32) if ret_seq_energy else None
             with torch.no_grad():
                 for b0 in range(0, n_items, MB_FWD):
@@ -2079,7 +2096,7 @@ def run_pipeline() -> Dict[str, object]:
                             bridge_cache["kt59"] = (inpt @ w_teach["k_proj"].to(device).T).to(torch.float16).cpu()
                         del inpt, X_teach_store
 
-                ctx_all = torch.empty((N_SEQ, SEQ_LEN, NH * hd), dtype=torch.float16, device=device if RES_GPU else "cpu")
+                ctx_all = _alloc_act_store((N_SEQ, SEQ_LEN, NH * hd), device if RES_GPU else torch.device("cpu"))
                 do_o, di_o = w_teach["o_proj"].shape
                 h_o, xsq_o, x_ev_o = torch.zeros((di_o, di_o), device=device, dtype=torch.float32), torch.zeros((di_o,), device=device, dtype=torch.float32), []
                 with torch.no_grad():
@@ -2125,7 +2142,7 @@ def run_pipeline() -> Dict[str, object]:
                         seq_inp_mean[b0:b1] = rmsn_gpu(X_stud_store[b0:b1].to(device, dtype=compute_dtype), ng["in"]).float().mean(dim=1)
 
                 h_mlp, xsq_mlp, x_ev_m = torch.zeros((D_MOD, D_MOD), device=device, dtype=torch.float32), torch.zeros((D_MOD,), device=device, dtype=torch.float32), []
-                xm_all = torch.empty((N_SEQ, SEQ_LEN, D_MOD), dtype=torch.float16, device=device if RES_GPU else "cpu")
+                xm_all = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), device if RES_GPU else torch.device("cpu"))
                 with torch.no_grad():
                     for b0 in range(0, N_SEQ, MB_FWD):
                         b1 = min(b0 + MB_FWD, N_SEQ)
@@ -2154,7 +2171,7 @@ def run_pipeline() -> Dict[str, object]:
                         hm_d_va = rmsn_gpu(xm_all[torch.from_numpy(sub_va).long().to(xm_all.device)].to(device, dtype=compute_dtype), ng["pf"]).cpu()
                     wg_n, wu_n, wd_n, distill_met = distill_district_locality(
                         hm_d_tr, hm_d_va, w_teach["gate_proj"], w_teach["up_proj"], w_teach["down_proj"],
-                        slices_np, top_k=TOP_K_DISTRICTS, steps=int(hw_cfg["distill_steps"]), lr=1.5e-4, device=device,
+                        slices_np, top_k=TOP_K_DISTRICTS, steps=int(hw_cfg["distill_steps"]), lr=1.5e-4, batch_size=int(hw_cfg["distill_bs"]), device=device,
                     )
                     w_teach["gate_proj"], w_teach["up_proj"], w_teach["down_proj"] = wg_n, wu_n, wd_n
                     del hm_d_tr, hm_d_va
@@ -2256,7 +2273,7 @@ def run_pipeline() -> Dict[str, object]:
                         H_stud_eval = ((H_stud_eval_mid.float() + rmsn_gpu(_he_out.to(compute_dtype), ng["pff"]).float()) * lsc).to(torch.float16).to(device if RES_GPU else "cpu")
                         del _hm_he, _he_inp, _rnet, _top_he, _m_he, _he_out, H_stud_eval_mid
 
-                    X_stud_next = torch.empty((N_SEQ, SEQ_LEN, D_MOD), dtype=torch.float16, device=device if RES_GPU else "cpu")
+                    X_stud_next = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), device if RES_GPU else torch.device("cpu"))
                     with torch.no_grad():
                         for b0 in range(0, N_SEQ, MB_FWD):
                             b1 = min(b0 + MB_FWD, N_SEQ)
@@ -2308,7 +2325,7 @@ def run_pipeline() -> Dict[str, object]:
                         _hact = (F.gelu(F.linear(rmsn_gpu(H_stud_eval_mid, ng["pf"]), wg_cr).float(), approximate="tanh") * F.linear(rmsn_gpu(H_stud_eval_mid, ng["pf"]), wu_cr).float()).to(compute_dtype)
                         H_stud_eval = ((H_stud_eval_mid.float() + rmsn_gpu(F.linear(_hact, w_d_c), ng["pff"]).float()) * lsc).to(torch.float16).to(device if RES_GPU else "cpu")
                         del H_stud_eval_mid, _hact
-                    X_stud_next = torch.empty((N_SEQ, SEQ_LEN, D_MOD), dtype=torch.float16, device=device if RES_GPU else "cpu")
+                    X_stud_next = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), device if RES_GPU else torch.device("cpu"))
                     with torch.no_grad():
                         for b0 in range(0, N_SEQ, MB_FWD):
                             b1 = min(b0 + MB_FWD, N_SEQ)
@@ -2370,11 +2387,11 @@ def run_pipeline() -> Dict[str, object]:
                     gc.collect()
 
                 save_progress({"stage": f"L{l_idx:02d}_done", "next_layer": l_idx + 1, "txt_cos": round(cos_l_txt, 5), "vlm_cos": round(cos_l_vlm, 5)})
-                va_gb, vr_gb, vt_gb = _gpu_vram_stats_gb(device)
+                va_gb, vp_gb, vt_gb = _gpu_vram_stats_gb(device)
                 print(
                     f"  [V7.5 L{l_idx:02d}/59 {'F' if is_f else 'S'}{'*' if l_idx in LOD_LAYERS else ''}] "
                     f"txt_cos={cos_l_txt:.5f} vlm_cos={cos_l_vlm:.5f} | cap={cap_native:.3f} r_rec={dr_met['val_top2_recall_after']:.3f} "
-                    f"crtr={cm['val_recall_after']:.3f} | vram={va_gb}/{vt_gb}GiB | dt={time.perf_counter()-tl:.1f}s",
+                    f"crtr={cm['val_recall_after']:.3f} | vram={va_gb}/peak={vp_gb}/{vt_gb}GiB | dt={time.perf_counter()-tl:.1f}s",
                     flush=True,
                 )
 
@@ -2761,7 +2778,7 @@ def run_pipeline() -> Dict[str, object]:
     opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2.5e-4, weight_decay=1e-4)
     sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=300, eta_min=2e-5)
     best_aagr, best_asd = aagr0, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
-    ast_bs = 16 if hw_cfg["resident_gpu"] else 4
+    ast_bs = int(hw_cfg["ast_bs"])
     for st in range(300):
         opt_a.zero_grad()
         bais = np.random.choice(112, size=ast_bs, replace=False).tolist()
@@ -2841,7 +2858,7 @@ def run_pipeline() -> Dict[str, object]:
     torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
     bh_rpt = bhmod.train_from_activations(
         act_bundle, tok_path, OUT_BHDR,
-        d_byte=384, max_bytes=48, steps=2400, batch_size=512 if hw_cfg["resident_gpu"] else 256, lr=3e-3, device=str(device),
+        d_byte=384, max_bytes=48, steps=2400, batch_size=int(hw_cfg["bh_bs"]), lr=3e-3, device=str(device),
     )
     act_bundle.unlink(missing_ok=True)
     bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)

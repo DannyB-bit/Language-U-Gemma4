@@ -91,6 +91,66 @@ PROGRESS_JSON = CKPT_DIR / "progress.json"
 MAX_T16C_BYTES = 6_174_015_488  # 5.75 GiB hard Pi 4 headroom guard
 
 
+def configure_v7_0_max_vram(
+    gpu_vram_gb: float, has_cuda: bool, *, respect_env: bool = True
+) -> Dict[str, object]:
+    """Configure TF32, cudnn, HBM residency, micro-batch size & ALS token count for G4/A100/L4."""
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:512")
+    force_max = (os.environ.get("V7_MAX_VRAM", "1").strip() == "1") if respect_env else True
+    is_big_gpu = gpu_vram_gb >= 64.0
+    resident_env = os.environ.get("V7_RESIDENT_GPU", "").strip() if respect_env else ""
+    resident_gpu = (resident_env == "1") if resident_env else (is_big_gpu and force_max and has_cuda)
+
+    if gpu_vram_gb >= 88.0:
+        default_bs, default_ev, ast_bs, bh_bs = 256, 4096, 16, 512
+        profile = "G4-96GB-MAX"
+    elif is_big_gpu:
+        default_bs, default_ev, ast_bs, bh_bs = 192, 4096, 16, 512
+        profile = "A100-80GB-MAX"
+    elif gpu_vram_gb >= 36.0:
+        default_bs, default_ev, ast_bs, bh_bs = 128, 4096, 12, 512
+        profile = "HIGH-VRAM-GPU"
+    elif has_cuda:
+        default_bs, default_ev, ast_bs, bh_bs = 96, 4096, 8, 512
+        profile = "L4-22GB-MAX"
+    else:
+        default_bs, default_ev, ast_bs, bh_bs = 16, 512, 4, 128
+        profile = "CPU-SELFTEST"
+
+    bs_ov = os.environ.get("V7_BATCH_SEQ", "").strip() if respect_env else ""
+    batch_seq = (max(int(bs_ov), default_bs) if force_max else int(bs_ov)) if bs_ov else default_bs
+    ev_ov = os.environ.get("V7_ALS_EV", "").strip() if respect_env else ""
+    als_ev = (max(int(ev_ov), default_ev) if force_max else int(ev_ov)) if ev_ov else default_ev
+
+    if has_cuda:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
+
+    return {
+        "profile": profile,
+        "gpu_vram_gb": round(float(gpu_vram_gb), 2),
+        "resident_gpu": bool(resident_gpu),
+        "batch_seq": max(1, batch_seq),
+        "als_ev_toks": max(64, als_ev),
+        "ast_bs": ast_bs,
+        "bh_bs": bh_bs,
+        "tf32": bool(has_cuda),
+    }
+
+
+def _v70_gpu_vram_stats_gb(device: torch.device) -> Tuple[float, float, float]:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return 0.0, 0.0, 0.0
+    return (
+        round(torch.cuda.memory_allocated(device) / (1024**3), 2),
+        round(torch.cuda.max_memory_allocated(device) / (1024**3), 2),
+        round(torch.cuda.get_device_properties(device).total_memory / (1024**3), 2),
+    )
+
+
 def host_ram_gb() -> Tuple[float, float]:
     try:
         info: Dict[str, int] = {}
@@ -762,14 +822,25 @@ def run_selftest() -> int:
             f"mats={vm} hole_caught={hole_ok} refused={refused} synced={synced}",
         )
 
-    # Gate 6: Holdout prompt disjointness + blacklist audit
+    # Gate 6: Holdout prompt disjointness + blacklist audit + G4/A100/L4 max-VRAM config
     dj = spmod.assert_holdouts_disjoint()
     all_t_low = " ".join(spmod.HELDOUT_CHAT_QUESTIONS + [p[1] for p in spmod.HELDOUT_NLL_PASSAGES]).lower()
     bl_hits = [b for b in ALL_BLACKLIST if b in all_t_low]
+    g4_cfg = configure_v7_0_max_vram(96.0, has_cuda=False, respect_env=False)
+    a100_cfg = configure_v7_0_max_vram(80.0, has_cuda=False, respect_env=False)
+    l4_cfg = configure_v7_0_max_vram(22.5, has_cuda=True, respect_env=False)
     gate(
-        "Gate 6: Held-out disjointness & extended blacklist clean",
-        dj["overlap_4grams"] == 0 and not bl_hits,
-        f"passages={dj['passages']} overlap_4grams={dj['overlap_4grams']} blacklist_hits={bl_hits}",
+        "Gate 6: Held-out disjointness, blacklist & G4/A100/L4 max-VRAM config",
+        dj["overlap_4grams"] == 0
+        and not bl_hits
+        and g4_cfg["profile"] == "G4-96GB-MAX"
+        and g4_cfg["batch_seq"] == 256
+        and a100_cfg["profile"] == "A100-80GB-MAX"
+        and a100_cfg["batch_seq"] == 192
+        and l4_cfg["profile"] == "L4-22GB-MAX"
+        and l4_cfg["batch_seq"] == 96
+        and l4_cfg["als_ev_toks"] == 4096,
+        f"passages={dj['passages']} overlap_4grams={dj['overlap_4grams']} g4={g4_cfg['profile']}/bs={g4_cfg['batch_seq']} a100={a100_cfg['profile']}/bs={a100_cfg['batch_seq']} l4={l4_cfg['profile']}/bs={l4_cfg['batch_seq']}",
     )
 
     print(f"V7_0_SELFTEST: {6 - failures}/6 gates passed", flush=True)
@@ -789,9 +860,10 @@ def run_pipeline() -> Dict[str, object]:
     t0_all = time.perf_counter()
     device = torch.device("cuda:0")
     compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:512"
     gpu_name = torch.cuda.get_device_name(0)
     gpu_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    hw_cfg = configure_v7_0_max_vram(gpu_vram_gb, has_cuda=True)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -809,8 +881,9 @@ def run_pipeline() -> Dict[str, object]:
             shutil.copy2(partial_t16c, OUT_T16C)
 
     print(
-        f"[V7.0 INIT] GPU={gpu_name} ({gpu_vram_gb:.1f} GiB) | dtype={compute_dtype} "
-        f"| RAM={host_ram_gb()} | DRIVE={DRIVE_DIR}",
+        f"[V7.0 INIT] GPU={gpu_name} ({gpu_vram_gb:.1f} GiB) | profile={hw_cfg['profile']} "
+        f"| resident_gpu={hw_cfg['resident_gpu']} | micro_batch={hw_cfg['batch_seq']} "
+        f"| als_ev={hw_cfg['als_ev_toks']} | dtype={compute_dtype} | RAM={host_ram_gb()} | DRIVE={DRIVE_DIR}",
         flush=True,
     )
 
@@ -1048,7 +1121,7 @@ def run_pipeline() -> Dict[str, object]:
         low_rank = None
         if lr_rank > 0 and x_eval_gpu is not None and x_eval_gpu.shape[0] >= lr_rank * 2:
             with torch.no_grad():
-                n_ev = min(x_eval_gpu.shape[0], 2048)
+                n_ev = min(x_eval_gpu.shape[0], int(hw_cfg["als_ev_toks"]))
                 xv = x_eval_gpu[:n_ev].to(device, dtype=torch.float32)
                 y_err = (xv @ w_gpu.T) - (xv @ w_eff_gpu.T)
                 del w_gpu
@@ -1488,16 +1561,17 @@ def run_pipeline() -> Dict[str, object]:
         heldout_ids_list.append(ct[:SEQ_LEN]); heldout_ans_starts.append(ast); heldout_ans_lens.append(alen)
     heldout_seq_ids = np.array(heldout_ids_list, dtype=np.int32)
 
-    def make_sliding_mask(seq_indices: Sequence[int], spans: Dict[int, Tuple[int, int]]) -> Optional[torch.Tensor]:
-        if not any(si in spans for si in seq_indices):
+    def _build_mask_tensor(n_items: int, spans: Dict[int, Tuple[int, int]]) -> Optional[torch.Tensor]:
+        if not spans:
             return None
-        mb = len(seq_indices)
-        mask = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device=device, dtype=torch.bool)).unsqueeze(0).expand(mb, -1, -1).clone()
-        for lo, gi in enumerate(seq_indices):
-            sp = spans.get(gi)
-            if sp is not None:
-                mask[lo, sp[0] : sp[1], sp[0] : sp[1]] = True
+        mask = torch.tril(torch.ones((SEQ_LEN, SEQ_LEN), device=device, dtype=torch.bool)).unsqueeze(0).expand(n_items, -1, -1).clone()
+        for gi, (s0, s1) in spans.items():
+            if 0 <= gi < n_items:
+                mask[gi, s0:s1, s0:s1] = True
         return mask.unsqueeze(1)
+
+    vlm_full_mask_gpu = _build_mask_tensor(N_SEQ, vlm_spans)
+    heldout_full_mask_gpu = _build_mask_tensor(len(heldout_captions), heldout_spans)
 
     pos_1d = torch.arange(SEQ_LEN, device=device, dtype=torch.float32)
 
@@ -1535,6 +1609,14 @@ def run_pipeline() -> Dict[str, object]:
     _va_lin = np.linspace(0, len(va_seq_idx) * SEQ_LEN - 1, 4096, dtype=int)
     va_crtr_s, va_crtr_t = va_seq_idx[_va_lin // SEQ_LEN], _va_lin % SEQ_LEN
 
+    MB_FWD = int(hw_cfg["batch_seq"])
+    RES_GPU = bool(hw_cfg["resident_gpu"])
+    ALS_EV = int(hw_cfg["als_ev_toks"])
+    _PIN_CPU = (not RES_GPU) and torch.cuda.is_available()
+
+    def _alloc_act_store(shape: Tuple[int, ...], dev: torch.device) -> torch.Tensor:
+        return torch.empty(shape, dtype=torch.float16, device=dev, pin_memory=(dev.type == "cpu" and _PIN_CPU))
+
     with safe_open(sf_path, framework="pt", device="cpu") as sf:
         lm_norms: Dict[str, np.ndarray] = {}
         for _l in range(N_LAYERS):
@@ -1554,19 +1636,19 @@ def run_pipeline() -> Dict[str, object]:
             sh = torch.arange(0, 32, 4, device=device, dtype=torch.int32)
             return ((((wp.unsqueeze(-1) >> sh) & 0xF) - 8).to(torch.float32).reshape(wp.shape[0], -1, 32) * ws.unsqueeze(-1)).reshape(wp.shape[0], -1).cpu()
 
-        def teacher_layer_step(X_c: torch.Tensor, w_f16: Dict[str, torch.Tensor], ng: Dict[str, torch.Tensor], li: int, spans: Optional[Dict[int, Tuple[int, int]]], ret_energy: bool = False):
+        def teacher_layer_step(X_c: torch.Tensor, w_f16: Dict[str, torch.Tensor], ng: Dict[str, torch.Tensor], li: int, mask_full: Optional[torch.Tensor], ret_energy: bool = False):
             is_f = LAYER_TYPES[li] == "full_attention"
             nkv, hd = (NKV_F, HD_F) if is_f else (NKV_S, HD_S)
             rot_d = int(round(hd * (PART_G if is_f else PART_L)))
             cr, sr = make_rope(THETA_G if is_f else THETA_L, rot_d, hd)
             rep = NH // nkv
             lsc = float(ng["lsc"])
-            out_c = torch.empty_like(X_c)
+            out_c = _alloc_act_store(tuple(X_c.shape), X_c.device)
             neuron_e = torch.zeros((21504,), device=device, dtype=torch.float64) if ret_energy else None
             with torch.no_grad():
-                for b0 in range(0, X_c.shape[0], 32):
-                    b1 = min(b0 + 32, X_c.shape[0])
-                    xb = X_c[b0:b1].to(device)
+                for b0 in range(0, X_c.shape[0], MB_FWD):
+                    b1 = min(b0 + MB_FWD, X_c.shape[0])
+                    xb = X_c[b0:b1].to(device, non_blocking=True)
                     inp = rmsn_gpu(xb, ng["in"])
                     q = F.linear(inp, w_f16["q_proj"]).view(b1 - b0, SEQ_LEN, NH, hd)
                     k = F.linear(inp, w_f16["k_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
@@ -1574,14 +1656,14 @@ def run_pipeline() -> Dict[str, object]:
                     qn = apply_rope(rmsn_gpu(q, ng["qn"]), cr, sr, rot_d, hd).transpose(1, 2)
                     kn = apply_rope(rmsn_gpu(k, ng["kn"]), cr, sr, rot_d, hd).transpose(1, 2)
                     vn = rmsn_gpu(v, None).transpose(1, 2)
-                    am = None if (is_f or not spans) else make_sliding_mask(list(range(b0, b1)), spans)
+                    am = None if (is_f or mask_full is None) else mask_full[b0:b1]
                     ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(rep, 1), vn.repeat_interleave(rep, 1), attn_mask=am, is_causal=(am is None), scale=1.0)
                     xm = xb + rmsn_gpu(F.linear(ctx.transpose(1, 2).contiguous().view(b1 - b0, SEQ_LEN, NH * hd), w_f16["o_proj"]), ng["pa"])
                     hm = rmsn_gpu(xm, ng["pf"])
                     act = F.gelu(F.linear(hm, w_f16["gate_proj"]).float(), approximate="tanh") * F.linear(hm, w_f16["up_proj"]).float()
                     if neuron_e is not None:
                         neuron_e.add_((act * act).reshape(-1, 21504).double().sum(dim=0))
-                    out_c[b0:b1] = ((xm.float() + rmsn_gpu(F.linear(act.to(torch.float16), w_f16["down_proj"]), ng["pff"]).float()) * lsc).to(torch.float16).cpu()
+                    out_c[b0:b1] = ((xm.float() + rmsn_gpu(F.linear(act.to(torch.float16), w_f16["down_proj"]), ng["pff"]).float()) * lsc).to(torch.float16).to(out_c.device)
             return out_c, neuron_e
 
         crtr_layers: Dict[int, dict] = {}
@@ -1594,10 +1676,11 @@ def run_pipeline() -> Dict[str, object]:
             t16c_pos = int(lc["t16c_pos"])
             lm_mats_count = int(lc["lm_mats_count"])
             bridge_cache: Dict[str, torch.Tensor] = lc["bridge_cache"]
-            H_teach_eval, H_stud_eval = lc["H_teach_eval"], lc["H_stud_eval"]
+            H_teach_eval = lc["H_teach_eval"].to(device if RES_GPU else "cpu", dtype=torch.float16)
+            H_stud_eval = lc["H_stud_eval"].to(device if RES_GPU else "cpu", dtype=torch.float16)
             layer_cos_log: List[dict] = lc["layer_cos_log"]
-            X_teach_cpu = torch.load(CKPT_X_TEACH, map_location="cpu", weights_only=True)
-            X_stud_cpu = torch.load(CKPT_X_STUD, map_location="cpu", weights_only=True)
+            X_teach_cpu = torch.load(CKPT_X_TEACH, map_location="cpu", weights_only=True).to(device if RES_GPU else "cpu")
+            X_stud_cpu = torch.load(CKPT_X_STUD, map_location="cpu", weights_only=True).to(device if RES_GPU else "cpu")
             del lc
             if OUT_T16C.stat().st_size < t16c_pos:
                 raise RuntimeError(f"FAIL-CLOSED Resume: {OUT_T16C} size={OUT_T16C.stat().st_size:,} < ckpt pos={t16c_pos:,}")
@@ -1609,19 +1692,19 @@ def run_pipeline() -> Dict[str, object]:
             start_layer, lm_mats_count, bridge_cache, layer_cos_log = 0, 1, {}, []
             emb_bf16 = sf.get_tensor("model.language_model.embed_tokens.weight")
             ids_t, eids_t = torch.from_numpy(all_seq_ids).long(), torch.from_numpy(heldout_seq_ids).long()
-            X_teach_cpu = (emb_bf16[ids_t].float() * ESCALE).to(torch.float16)
-            H_teach_eval = (emb_bf16[eids_t].float() * ESCALE).to(torch.float16)
+            X_teach_cpu = (emb_bf16[ids_t].float() * ESCALE).to(torch.float16).to(device if RES_GPU else "cpu")
+            H_teach_eval = (emb_bf16[eids_t].float() * ESCALE).to(torch.float16).to(device if RES_GPU else "cpu")
             for vi in range(N_VLM_SEQ):
-                s0, s1 = vlm_spans[N_TEXT_SEQ + vi]; X_teach_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_teach_soft[vi]
+                s0, s1 = vlm_spans[N_TEXT_SEQ + vi]; X_teach_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_teach_soft[vi].to(X_teach_cpu.device)
             for hi in range(len(heldout_captions)):
-                s0, s1 = heldout_spans[hi]; H_teach_eval[hi, s0:s1] = heldout_teach_soft[hi]
-            pb_e, inv_e, lr_e, emb_deq = pack_matrix_gpu_gptq(emb_bf16, None, None, mode=4, bsize=256, lr_rank=0)
-            X_stud_cpu = (emb_deq[ids_t] * ESCALE).to(torch.float16)
-            H_stud_eval = (emb_deq[eids_t] * ESCALE).to(torch.float16)
+                s0, s1 = heldout_spans[hi]; H_teach_eval[hi, s0:s1] = heldout_teach_soft[hi].to(H_teach_eval.device)
+            pb_e, inv_e, lr_e, emb_deq = pack_matrix_gpu_gptq(emb_bf16, None, None, mode=4, bsize=256, lr_rank=0, out_device=torch.device("cpu"))
+            X_stud_cpu = (emb_deq[ids_t] * ESCALE).to(torch.float16).to(device if RES_GPU else "cpu")
+            H_stud_eval = (emb_deq[eids_t] * ESCALE).to(torch.float16).to(device if RES_GPU else "cpu")
             for vi in range(N_VLM_SEQ):
-                s0, s1 = vlm_spans[N_TEXT_SEQ + vi]; X_stud_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_stud_soft[vi]
+                s0, s1 = vlm_spans[N_TEXT_SEQ + vi]; X_stud_cpu[N_TEXT_SEQ + vi, s0:s1] = vlm_stud_soft[vi].to(X_stud_cpu.device)
             for hi in range(len(heldout_captions)):
-                s0, s1 = heldout_spans[hi]; H_stud_eval[hi, s0:s1] = heldout_stud_soft[hi]
+                s0, s1 = heldout_spans[hi]; H_stud_eval[hi, s0:s1] = heldout_stud_soft[hi].to(H_stud_eval.device)
             del emb_bf16, emb_deq, ids_t, eids_t
             t16c_fp = open(OUT_T16C, "wb")
             t16c_fp.write(struct.pack("<4s5I", p3.T16C_MAGIC, p3.T16C_VERSION, p3.ARCH_FLAGS, n_all_norms, total_mats, 0))
@@ -1655,8 +1738,8 @@ def run_pipeline() -> Dict[str, object]:
                 }
                 w_teach = {pn: unpack_qat(f"{p}{'self_attn' if pn in ('q_proj','k_proj','v_proj','o_proj') else 'mlp'}.{pn}") for pn in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj") if not (is_f and K_EQ_V and pn == "v_proj")}
                 w_f16 = {k: v.to(device, dtype=torch.float16) for k, v in w_teach.items()}
-                X_teach_next, neuron_e = teacher_layer_step(X_teach_cpu, w_f16, ng, l_idx, vlm_spans, ret_energy=True)
-                H_teach_eval, _ = teacher_layer_step(H_teach_eval, w_f16, ng, l_idx, heldout_spans, ret_energy=False)
+                X_teach_next, neuron_e = teacher_layer_step(X_teach_cpu, w_f16, ng, l_idx, vlm_full_mask_gpu, ret_energy=True)
+                H_teach_eval, _ = teacher_layer_step(H_teach_eval, w_f16, ng, l_idx, heldout_full_mask_gpu, ret_energy=False)
                 del w_f16
                 if l_idx < 58:
                     del X_teach_cpu
@@ -1668,8 +1751,8 @@ def run_pipeline() -> Dict[str, object]:
                 del neuron_e
 
                 if l_idx == 58:
-                    _atomic_torch_save(X_stud_cpu, Path("/tmp/v7_x_stud_pre58.pt"))
-                    _atomic_torch_save(H_stud_eval, Path("/tmp/v7_h_eval_pre58.pt"))
+                    _atomic_torch_save(X_stud_cpu.cpu(), Path("/tmp/v7_x_stud_pre58.pt"))
+                    _atomic_torch_save(H_stud_eval.cpu(), Path("/tmp/v7_h_eval_pre58.pt"))
 
                 n_tok_l = N_SEQ * SEQ_LEN
                 w_stud: Dict[str, torch.Tensor] = {}
@@ -1677,12 +1760,12 @@ def run_pipeline() -> Dict[str, object]:
                 xsq_in = torch.zeros((D_MOD,), device=device, dtype=torch.float32)
                 x_ev_in = []
                 with torch.no_grad():
-                    for b0 in range(0, N_SEQ, 64):
-                        inp = rmsn_gpu(X_stud_cpu[b0 : min(b0 + 64, N_SEQ)].to(device), ng["in"]).reshape(-1, D_MOD).float()
+                    for b0 in range(0, N_SEQ, MB_FWD):
+                        inp = rmsn_gpu(X_stud_cpu[b0 : min(b0 + MB_FWD, N_SEQ)].to(device, non_blocking=True), ng["in"]).reshape(-1, D_MOD).float()
                         accum_hess(h_in, xsq_in, inp)
                         if (len(x_ev_in) < 3 or b0 >= N_TEXT_SEQ) and len(x_ev_in) < 4:
-                            x_ev_in.append(inp[:512].clone())
-                xrms_in, xev_in = torch.sqrt((xsq_in / n_tok_l).clamp(min=1e-8)), torch.cat(x_ev_in, 0)[:2048]
+                            x_ev_in.append(inp[:1024].clone())
+                xrms_in, xev_in = torch.sqrt((xsq_in / n_tok_l).clamp(min=1e-8)), torch.cat(x_ev_in, 0)[:ALS_EV]
                 for pn in (["q_proj", "k_proj"] if (is_f and K_EQ_V) else ["q_proj", "k_proj", "v_proj"]):
                     mi, bsi, rki, trm = get_lm_spec_v7_0(l_idx, pn)
                     nb, asy = spec_to_t16c_bits(mi, trm)
@@ -1694,10 +1777,12 @@ def run_pipeline() -> Dict[str, object]:
 
                 if l_idx in (58, 59):
                     sub_idx = np.concatenate([np.linspace(0, N_TEXT_SEQ - 1, 96, dtype=int), np.linspace(N_TEXT_SEQ, N_SEQ - 1, 32, dtype=int)])
+                    sub_t_t = torch.from_numpy(sub_idx).long().to(X_teach_cpu.device)
+                    sub_t_s = torch.from_numpy(sub_idx).long().to(X_stud_cpu.device)
                     with torch.no_grad():
-                        inpt = rmsn_gpu(X_teach_cpu[sub_idx].to(device), ng["in"]).reshape(-1, D_MOD).float()
+                        inpt = rmsn_gpu(X_teach_cpu[sub_t_t].to(device, non_blocking=True), ng["in"]).reshape(-1, D_MOD).float()
                         if l_idx == 58:
-                            inps = rmsn_gpu(X_stud_cpu[sub_idx].to(device), ng["in"]).reshape(-1, D_MOD).float()
+                            inps = rmsn_gpu(X_stud_cpu[sub_t_s].to(device, non_blocking=True), ng["in"]).reshape(-1, D_MOD).float()
                             bridge_cache["in_58_stud"] = inps.to(torch.float16).cpu()
                             bridge_cache["kt58"] = (inpt @ w_teach["k_proj"].to(device).T).to(torch.float16).cpu()
                             bridge_cache["ks58_base"] = (inps @ w_stud["k_proj"].float().T).to(torch.float16).cpu()
@@ -1708,27 +1793,27 @@ def run_pipeline() -> Dict[str, object]:
                             bridge_cache["kt59"] = (inpt @ w_teach["k_proj"].to(device).T).to(torch.float16).cpu()
                         del inpt, X_teach_cpu
 
-                ctx_all = torch.empty((N_SEQ, SEQ_LEN, NH * hd), dtype=torch.float16)
+                ctx_all = _alloc_act_store((N_SEQ, SEQ_LEN, NH * hd), device if RES_GPU else torch.device("cpu"))
                 do_o, di_o = w_teach["o_proj"].shape
                 h_o, xsq_o, x_ev_o = torch.zeros((di_o, di_o), device=device, dtype=torch.float32), torch.zeros((di_o,), device=device, dtype=torch.float32), []
                 with torch.no_grad():
-                    for b0 in range(0, N_SEQ, 32):
-                        b1 = min(b0 + 32, N_SEQ)
-                        inp = rmsn_gpu(X_stud_cpu[b0:b1].to(device), ng["in"])
+                    for b0 in range(0, N_SEQ, MB_FWD):
+                        b1 = min(b0 + MB_FWD, N_SEQ)
+                        inp = rmsn_gpu(X_stud_cpu[b0:b1].to(device, non_blocking=True), ng["in"])
                         q = F.linear(inp, w_stud["q_proj"]).view(b1 - b0, SEQ_LEN, NH, hd)
                         k = F.linear(inp, w_stud["k_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
                         v = k.clone() if (is_f and K_EQ_V) else F.linear(inp, w_stud["v_proj"]).view(b1 - b0, SEQ_LEN, nkv, hd)
                         qn, kn, vn = apply_rope(rmsn_gpu(q, ng["qn"]), cr_l, sr_l, rot_d, hd).transpose(1, 2), apply_rope(rmsn_gpu(k, ng["kn"]), cr_l, sr_l, rot_d, hd).transpose(1, 2), rmsn_gpu(v, None).transpose(1, 2)
-                        am = None if is_f else make_sliding_mask(list(range(b0, b1)), vlm_spans)
+                        am = None if (is_f or vlm_full_mask_gpu is None) else vlm_full_mask_gpu[b0:b1]
                         ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(rep, 1), vn.repeat_interleave(rep, 1), attn_mask=am, is_causal=(am is None), scale=1.0).transpose(1, 2).contiguous().view(b1 - b0, SEQ_LEN, NH * hd)
                         accum_hess(h_o, xsq_o, ctx.reshape(-1, di_o).float())
                         if (len(x_ev_o) < 3 or b0 >= N_TEXT_SEQ) and len(x_ev_o) < 4:
-                            x_ev_o.append(ctx.reshape(-1, di_o).float()[:512].clone())
-                        ctx_all[b0:b1] = ctx.cpu()
+                            x_ev_o.append(ctx.reshape(-1, di_o).float()[:1024].clone())
+                        ctx_all[b0:b1] = ctx.to(ctx_all.device)
                 mi, bsi, rki, trm = get_lm_spec_v7_0(l_idx, "o_proj")
                 nb, asy = spec_to_t16c_bits(mi, trm)
                 ho_box = [h_o]; del h_o
-                pb, invs, lrt, w_o_eff = pack_matrix_gpu_gptq(w_teach["o_proj"], ho_box, torch.sqrt((xsq_o / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_o, 0)[:2048], to_rowmajor=trm)
+                pb, invs, lrt, w_o_eff = pack_matrix_gpu_gptq(w_teach["o_proj"], ho_box, torch.sqrt((xsq_o / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_o, 0)[:ALS_EV], to_rowmajor=trm)
                 t16c_pos = p3._write_mat_record(t16c_fp, t16c_pos, f"{p}self_attn.o_proj.weight", do_o, di_o, bsi, nb, asy, True, pb, invs, lrt)
                 lm_mats_count += 1; w_stud["o_proj"] = w_o_eff
                 del ho_box, xsq_o, x_ev_o, pb, invs, lrt
@@ -1739,25 +1824,25 @@ def run_pipeline() -> Dict[str, object]:
                     _hq = F.linear(_hi, w_stud["q_proj"]).view(_hg.shape[0], SEQ_LEN, NH, hd)
                     _hk = F.linear(_hi, w_stud["k_proj"]).view(_hg.shape[0], SEQ_LEN, nkv, hd)
                     _hv = _hk.clone() if (is_f and K_EQ_V) else F.linear(_hi, w_stud["v_proj"]).view(_hg.shape[0], SEQ_LEN, nkv, hd)
-                    _amh = None if is_f else make_sliding_mask(list(range(_hg.shape[0])), heldout_spans)
+                    _amh = None if is_f else heldout_full_mask_gpu
                     _hc = F.scaled_dot_product_attention(apply_rope(rmsn_gpu(_hq, ng["qn"]), cr_l, sr_l, rot_d, hd).transpose(1, 2), apply_rope(rmsn_gpu(_hk, ng["kn"]), cr_l, sr_l, rot_d, hd).transpose(1, 2).repeat_interleave(rep, 1), rmsn_gpu(_hv, None).transpose(1, 2).repeat_interleave(rep, 1), attn_mask=_amh, is_causal=(_amh is None), scale=1.0).transpose(1, 2).contiguous().view(_hg.shape[0], SEQ_LEN, NH * hd)
-                    H_stud_eval_mid = (_hg + rmsn_gpu(F.linear(_hc, w_o_eff), ng["pa"])).cpu()
+                    H_stud_eval_mid = (_hg + rmsn_gpu(F.linear(_hc, w_o_eff), ng["pa"])).to(device if RES_GPU else "cpu")
                     del _hg, _hi, _hq, _hk, _hv, _amh, _hc
 
                 # Extract CRTR MoD input slices before freeing X_stud_cpu
-                xp_crtr_tr = X_stud_cpu[torch.from_numpy(tr_crtr_s).long(), torch.from_numpy(tr_crtr_t).long()].clone()
-                xp_crtr_va = X_stud_cpu[torch.from_numpy(va_crtr_s).long(), torch.from_numpy(va_crtr_t).long()].clone()
+                xp_crtr_tr = X_stud_cpu[torch.from_numpy(tr_crtr_s).long().to(X_stud_cpu.device), torch.from_numpy(tr_crtr_t).long().to(X_stud_cpu.device)].cpu()
+                xp_crtr_va = X_stud_cpu[torch.from_numpy(va_crtr_s).long().to(X_stud_cpu.device), torch.from_numpy(va_crtr_t).long().to(X_stud_cpu.device)].cpu()
                 h_mlp, xsq_mlp, x_ev_m = torch.zeros((D_MOD, D_MOD), device=device, dtype=torch.float32), torch.zeros((D_MOD,), device=device, dtype=torch.float32), []
-                xm_all = torch.empty((N_SEQ, SEQ_LEN, D_MOD), dtype=torch.float16)
+                xm_all = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), device if RES_GPU else torch.device("cpu"))
                 with torch.no_grad():
-                    for b0 in range(0, N_SEQ, 32):
-                        b1 = min(b0 + 32, N_SEQ)
-                        xm = X_stud_cpu[b0:b1].to(device) + rmsn_gpu(F.linear(ctx_all[b0:b1].to(device), w_o_eff), ng["pa"])
-                        xm_all[b0:b1] = xm.cpu()
+                    for b0 in range(0, N_SEQ, MB_FWD):
+                        b1 = min(b0 + MB_FWD, N_SEQ)
+                        xm = X_stud_cpu[b0:b1].to(device, non_blocking=True) + rmsn_gpu(F.linear(ctx_all[b0:b1].to(device, non_blocking=True), w_o_eff), ng["pa"])
+                        xm_all[b0:b1] = xm.to(xm_all.device)
                         hmf = rmsn_gpu(xm, ng["pf"]).reshape(-1, D_MOD).float()
                         accum_hess(h_mlp, xsq_mlp, hmf)
                         if (len(x_ev_m) < 3 or b0 >= N_TEXT_SEQ) and len(x_ev_m) < 4:
-                            x_ev_m.append(hmf[:512].clone())
+                            x_ev_m.append(hmf[:1024].clone())
                 del ctx_all, X_stud_cpu, w_o_eff
                 for apn in ("q_proj", "k_proj", "v_proj", "o_proj"):
                     w_teach.pop(apn, None)
@@ -1767,7 +1852,7 @@ def run_pipeline() -> Dict[str, object]:
                         w_stud.pop(apn, None)
                 torch.cuda.empty_cache()
 
-                xrms_mlp, xev_mlp = torch.sqrt((xsq_mlp / n_tok_l).clamp(min=1e-8)), torch.cat(x_ev_m, 0)[:2048]
+                xrms_mlp, xev_mlp = torch.sqrt((xsq_mlp / n_tok_l).clamp(min=1e-8)), torch.cat(x_ev_m, 0)[:ALS_EV]
                 for pn in ("gate_proj", "up_proj"):
                     mi, bsi, rki, trm = get_lm_spec_v7_0(l_idx, pn)
                     nb, asy = spec_to_t16c_bits(mi, trm)
@@ -1780,13 +1865,13 @@ def run_pipeline() -> Dict[str, object]:
                 do_d, di_d = w_teach["down_proj"].shape
                 h_d, xsq_d, x_ev_d = torch.zeros((di_d, di_d), device=device, dtype=torch.float32), torch.zeros((di_d,), device=device, dtype=torch.float32), []
                 with torch.no_grad():
-                    for b0 in range(0, N_SEQ, 32):
-                        hm = rmsn_gpu(xm_all[b0 : min(b0 + 32, N_SEQ)].to(device), ng["pf"])
+                    for b0 in range(0, N_SEQ, MB_FWD):
+                        hm = rmsn_gpu(xm_all[b0 : min(b0 + MB_FWD, N_SEQ)].to(device, non_blocking=True), ng["pf"])
                         act = F.gelu(F.linear(hm, w_stud["gate_proj"]).float(), approximate="tanh") * F.linear(hm, w_stud["up_proj"]).float()
                         af = act.reshape(-1, di_d)
                         accum_hess(h_d, xsq_d, af)
                         if (len(x_ev_d) < 3 or b0 >= N_TEXT_SEQ) and len(x_ev_d) < 4:
-                            x_ev_d.append(af[:512].clone())
+                            x_ev_d.append(af[:1024].clone())
                 w_stud["gate_proj"] = w_stud["gate_proj"].cpu()
                 w_stud["up_proj"] = w_stud["up_proj"].cpu()
                 torch.cuda.empty_cache()
@@ -1794,7 +1879,7 @@ def run_pipeline() -> Dict[str, object]:
                 mi, bsi, rki, trm = get_lm_spec_v7_0(l_idx, "down_proj")
                 nb, asy = spec_to_t16c_bits(mi, trm)
                 hd_box = [h_d]; del h_d
-                pb, invs, lrt, w_d_eff = pack_matrix_gpu_gptq(w_teach.pop("down_proj"), hd_box, torch.sqrt((xsq_d / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_d, 0)[:2048], to_rowmajor=trm)
+                pb, invs, lrt, w_d_eff = pack_matrix_gpu_gptq(w_teach.pop("down_proj"), hd_box, torch.sqrt((xsq_d / n_tok_l).clamp(min=1e-8)), mi, bsi, rki, torch.cat(x_ev_d, 0)[:ALS_EV], to_rowmajor=trm)
                 t16c_pos = p3._write_mat_record(t16c_fp, t16c_pos, f"{p}mlp.down_proj.weight", do_d, di_d, bsi, nb, asy, True, pb, invs, lrt)
                 lm_mats_count += 1
                 del hd_box, xsq_d, x_ev_d, w_teach, pb, invs, lrt
@@ -1806,32 +1891,33 @@ def run_pipeline() -> Dict[str, object]:
                 with torch.no_grad():
                     _hmg = H_stud_eval_mid.to(device)
                     _hact = (F.gelu(F.linear(rmsn_gpu(_hmg, ng["pf"]), wg_g).float(), approximate="tanh") * F.linear(rmsn_gpu(_hmg, ng["pf"]), wu_g).float()).to(torch.float16)
-                    H_stud_eval = ((_hmg.float() + rmsn_gpu(F.linear(_hact, w_d_eff), ng["pff"]).float()) * lsc).to(torch.float16).cpu()
+                    H_stud_eval = ((_hmg.float() + rmsn_gpu(F.linear(_hact, w_d_eff), ng["pff"]).float()) * lsc).to(torch.float16).to(device if RES_GPU else "cpu")
                     del H_stud_eval_mid
-                X_stud_next = torch.empty((N_SEQ, SEQ_LEN, D_MOD), dtype=torch.float16)
+                X_stud_next = _alloc_act_store((N_SEQ, SEQ_LEN, D_MOD), device if RES_GPU else torch.device("cpu"))
                 with torch.no_grad():
-                    for b0 in range(0, N_SEQ, 32):
-                        b1 = min(b0 + 32, N_SEQ)
-                        xm_g = xm_all[b0:b1].to(device); hm = rmsn_gpu(xm_g, ng["pf"])
+                    for b0 in range(0, N_SEQ, MB_FWD):
+                        b1 = min(b0 + MB_FWD, N_SEQ)
+                        xm_g = xm_all[b0:b1].to(device, non_blocking=True); hm = rmsn_gpu(xm_g, ng["pf"])
                         act = (F.gelu(F.linear(hm, wg_g).float(), approximate="tanh") * F.linear(hm, wu_g).float()).to(torch.float16)
-                        X_stud_next[b0:b1] = ((xm_g.float() + rmsn_gpu(F.linear(act, w_d_eff), ng["pff"]).float()) * lsc).to(torch.float16).cpu()
-                xm_crtr_tr = xm_all[torch.from_numpy(tr_crtr_s).long(), torch.from_numpy(tr_crtr_t).long()].clone()
-                xm_crtr_va = xm_all[torch.from_numpy(va_crtr_s).long(), torch.from_numpy(va_crtr_t).long()].clone()
+                        X_stud_next[b0:b1] = ((xm_g.float() + rmsn_gpu(F.linear(act, w_d_eff), ng["pff"]).float()) * lsc).to(torch.float16).to(X_stud_next.device)
+                xm_crtr_tr = xm_all[torch.from_numpy(tr_crtr_s).long().to(xm_all.device), torch.from_numpy(tr_crtr_t).long().to(xm_all.device)].cpu()
+                xm_crtr_va = xm_all[torch.from_numpy(va_crtr_s).long().to(xm_all.device), torch.from_numpy(va_crtr_t).long().to(xm_all.device)].cpu()
                 del xm_all, w_d_eff, w_stud
                 torch.cuda.empty_cache()
 
                 crec, cm = train_layer_crtr_v7_0(
                     l_idx,
-                    xp_crtr_tr, xm_crtr_tr, X_stud_next[torch.from_numpy(tr_crtr_s).long(), torch.from_numpy(tr_crtr_t).long()],
-                    xp_crtr_va, xm_crtr_va, X_stud_next[torch.from_numpy(va_crtr_s).long(), torch.from_numpy(va_crtr_t).long()],
+                    xp_crtr_tr, xm_crtr_tr, X_stud_next[torch.from_numpy(tr_crtr_s).long().to(X_stud_next.device), torch.from_numpy(tr_crtr_t).long().to(X_stud_next.device)].cpu(),
+                    xp_crtr_va, xm_crtr_va, X_stud_next[torch.from_numpy(va_crtr_s).long().to(X_stud_next.device), torch.from_numpy(va_crtr_t).long().to(X_stud_next.device)].cpu(),
                     ng["in"], ng["pf"], wg_g, wu_g, rmsn_gpu,
                     block_size=256, rank=32, top_p=0.30, mod_quantile=0.20, steps=200, eps=EPS, device=device,
                 )
                 crtr_layers[l_idx] = crec
                 del xp_crtr_tr, xp_crtr_va, xm_crtr_tr, xm_crtr_va, wg_g, wu_g
 
-                cos_l_txt = float(F.cosine_similarity(X_stud_next[va_seq_idx[:16]].reshape(-1, D_MOD).float(), X_teach_next[va_seq_idx[:16]].reshape(-1, D_MOD).float(), dim=-1).mean().item())
-                cos_l_vlm = float(F.cosine_similarity(H_stud_eval.reshape(-1, D_MOD).float(), H_teach_eval.reshape(-1, D_MOD).float(), dim=-1).mean().item())
+                va16_t = torch.from_numpy(va_seq_idx[:16]).long().to(X_stud_next.device)
+                cos_l_txt = float(F.cosine_similarity(X_stud_next[va16_t].reshape(-1, D_MOD).float().to(device), X_teach_next[va16_t].reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
+                cos_l_vlm = float(F.cosine_similarity(H_stud_eval.reshape(-1, D_MOD).float().to(device), H_teach_eval.reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
                 layer_cos_log.append({"l": l_idx, "txt_cos": round(cos_l_txt, 5), "vlm_cos": round(cos_l_vlm, 5), "top50_e_pct": round(top50_e_pct, 1), "crtr": cm})
                 X_teach_cpu, X_stud_cpu = X_teach_next, X_stud_next
                 del X_teach_next, X_stud_next
@@ -1839,17 +1925,18 @@ def run_pipeline() -> Dict[str, object]:
 
                 if (l_idx + 1) % 4 == 0:
                     t16c_fp.flush(); os.fsync(t16c_fp.fileno())
-                    _atomic_torch_save(X_teach_cpu, CKPT_X_TEACH)
-                    _atomic_torch_save(X_stud_cpu, CKPT_X_STUD)
+                    _atomic_torch_save(X_teach_cpu.cpu(), CKPT_X_TEACH)
+                    _atomic_torch_save(X_stud_cpu.cpu(), CKPT_X_STUD)
                     _atomic_torch_save(crtr_layers, CRTR_CKPT)
-                    _atomic_torch_save({"next_layer": l_idx + 1, "t16c_pos": t16c_pos, "lm_mats_count": lm_mats_count, "bridge_cache": bridge_cache, "H_teach_eval": H_teach_eval, "H_stud_eval": H_stud_eval, "layer_cos_log": layer_cos_log}, STAGE3_CKPT)
+                    _atomic_torch_save({"next_layer": l_idx + 1, "t16c_pos": t16c_pos, "lm_mats_count": lm_mats_count, "bridge_cache": bridge_cache, "H_teach_eval": H_teach_eval.cpu(), "H_stud_eval": H_stud_eval.cpu(), "layer_cos_log": layer_cos_log}, STAGE3_CKPT)
                     sync_checkpoint_to_drive(expected_t16c_pos=t16c_pos)
                     gc.collect()
                 save_progress({"stage": f"L{l_idx:02d}_done", "next_layer": l_idx + 1, "txt_cos": round(cos_l_txt, 5), "vlm_cos": round(cos_l_vlm, 5)})
+                va_gb, vp_gb, vt_gb = _v70_gpu_vram_stats_gb(device)
                 print(
                     f"  [V7.0 L{l_idx:02d}/59 {'F' if is_f else 'S'}] txt_cos={cos_l_txt:.5f} vlm_cos={cos_l_vlm:.5f} "
                     f"| e50={top50_e_pct:.1f}% crtr_rec={cm['val_recall_after']:.3f} mod_acc={cm['mod_val_acc']:.3f} "
-                    f"| dt={time.perf_counter()-tl:.1f}s ram={host_ram_gb()[0]:.2f}GiB",
+                    f"| vram={va_gb}/peak={vp_gb}/{vt_gb}GiB | dt={time.perf_counter()-tl:.1f}s",
                     flush=True,
                 )
 
@@ -1914,7 +2001,7 @@ def run_pipeline() -> Dict[str, object]:
         exp_r = [c8d._c6d_radicals("kv", "head", "shared", "native", "layer", "positive", e) for e in range(8)]
         return {"name": name, "d_out": yt_tr.shape[1], "d_in": x_tr.shape[1], "rank": rank, "top_k": 2, "c6d": exp_r[0], "temperature": 0.5, "gate_scale": 1.0, "centroids": ct, "expert_radicals": exp_r, "experts": ex}, ct, ex
 
-    def forward_adapted_layer(X_in_c: torch.Tensor, ckpt_p: Path, li: int, adp_k=None, adp_v=None, cap_sub=None, cap_ast=None, spans=None, capture_only: bool = False):
+    def forward_adapted_layer(X_in_c: torch.Tensor, ckpt_p: Path, li: int, adp_k=None, adp_v=None, cap_sub=None, cap_ast=None, mask_full=None, capture_only: bool = False):
         ck = torch.load(ckpt_p, map_location="cpu", weights_only=True)
         wg = {k: v.to(device) for k, v in ck["w"].items()}
         ng = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in ck["norms"].items()}
@@ -1927,8 +2014,8 @@ def run_pipeline() -> Dict[str, object]:
             ia = torch.as_tensor(cap_sub, dtype=torch.long)
             ci, ck_l = [], []
             with torch.no_grad():
-                for s0 in range(0, ia.numel(), 32):
-                    sel = ia[s0 : min(s0 + 32, ia.numel())]
+                for s0 in range(0, ia.numel(), MB_FWD):
+                    sel = ia[s0 : min(s0 + MB_FWD, ia.numel())]
                     inp = rmsn_gpu(X_in_c[sel].to(device), ng["in"])
                     k2 = F.linear(inp.reshape(-1, D_MOD), wg["k_proj"]).float()
                     if adp_k is not None:
@@ -1939,8 +2026,8 @@ def run_pipeline() -> Dict[str, object]:
         ast_set = set(cap_ast) if cap_ast is not None else set()
         ast_k, ast_v = {}, {}
         with torch.no_grad():
-            for b0 in range(0, X_in_c.shape[0], 32):
-                b1 = min(b0 + 32, X_in_c.shape[0])
+            for b0 in range(0, X_in_c.shape[0], MB_FWD):
+                b1 = min(b0 + MB_FWD, X_in_c.shape[0])
                 xb = X_in_c[b0:b1].to(device); inp = rmsn_gpu(xb, ng["in"]); inp2 = inp.reshape(-1, D_MOD)
                 q = F.linear(inp, wg["q_proj"]).view(b1 - b0, SEQ_LEN, NH, hd)
                 k2 = F.linear(inp2, wg["k_proj"]).float()
@@ -1962,7 +2049,7 @@ def run_pipeline() -> Dict[str, object]:
                         ast_k[gi] = kn[gi - b0].cpu()
                         if not (is_f and K_EQ_V):
                             ast_v[gi] = vn[gi - b0].cpu()
-                am = None if (is_f or not spans) else make_sliding_mask(list(range(b0, b1)), spans)
+                am = None if (is_f or mask_full is None) else mask_full[b0:b1]
                 ctx = F.scaled_dot_product_attention(qn, kn.repeat_interleave(rep, 1), vn.repeat_interleave(rep, 1), attn_mask=am, is_causal=(am is None), scale=1.0).transpose(1, 2).contiguous().view(b1 - b0, SEQ_LEN, NH * hd)
                 xm = xb + rmsn_gpu(F.linear(ctx, wg["o_proj"]), ng["pa"])
                 hm = rmsn_gpu(xm, ng["pf"])
@@ -1991,9 +2078,9 @@ def run_pipeline() -> Dict[str, object]:
     del X_stud_cpu; gc.collect()
     AST_SEQS = np.linspace(0, N_TEXT_SEQ - 1, 128, dtype=int).tolist()
     x58 = torch.load("/tmp/v7_x_stud_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v7_x_stud_pre58.pt").unlink(missing_ok=True)
-    x59_in, _, cap_kv58 = forward_adapted_layer(x58, Path("/tmp/v7_l58_stud.pt"), 58, adp_k58, adp_v58, cap_ast=AST_SEQS, spans=vlm_spans)
+    x59_in, _, cap_kv58 = forward_adapted_layer(x58, Path("/tmp/v7_l58_stud.pt"), 58, adp_k58, adp_v58, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
     hev58 = torch.load("/tmp/v7_h_eval_pre58.pt", map_location="cpu", weights_only=True); Path("/tmp/v7_h_eval_pre58.pt").unlink(missing_ok=True)
-    hev59, _, _ = forward_adapted_layer(hev58, Path("/tmp/v7_l58_stud.pt"), 58, adp_k58, adp_v58, spans=heldout_spans)
+    hev59, _, _ = forward_adapted_layer(hev58, Path("/tmp/v7_l58_stud.pt"), 58, adp_k58, adp_v58, mask_full=heldout_full_mask_gpu)
     Path("/tmp/v7_l58_stud.pt").unlink(missing_ok=True)
 
     sub_59 = np.concatenate([np.linspace(0, N_TEXT_SEQ - 1, 96, dtype=int), np.linspace(N_TEXT_SEQ, N_SEQ - 1, 32, dtype=int)])
@@ -2005,26 +2092,26 @@ def run_pipeline() -> Dict[str, object]:
     if ent59 is not None:
         c8db_entries.append(ent59); adp_k59 = (c59n, e59n)
     del xk59, ytk59, ysk59
-    X_stud_cpu, _, cap_kv59 = forward_adapted_layer(x59_in, Path("/tmp/v7_l59_stud.pt"), 59, adp_k59, cap_ast=AST_SEQS, spans=vlm_spans)
-    H_stud_eval, _, _ = forward_adapted_layer(hev59, Path("/tmp/v7_l59_stud.pt"), 59, adp_k59, spans=heldout_spans)
+    X_stud_cpu, _, cap_kv59 = forward_adapted_layer(x59_in, Path("/tmp/v7_l59_stud.pt"), 59, adp_k59, cap_ast=AST_SEQS, mask_full=vlm_full_mask_gpu)
+    H_stud_eval, _, _ = forward_adapted_layer(hev59, Path("/tmp/v7_l59_stud.pt"), 59, adp_k59, mask_full=heldout_full_mask_gpu)
     Path("/tmp/v7_l59_stud.pt").unlink(missing_ok=True)
 
-    cos_l59 = float(F.cosine_similarity(X_stud_cpu[-16:].reshape(-1, D_MOD).float(), X_teach_cpu[-16:].reshape(-1, D_MOD).float(), dim=-1).mean().item())
+    cos_l59 = float(F.cosine_similarity(X_stud_cpu[-16:].reshape(-1, D_MOD).float().to(device), X_teach_cpu[-16:].reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
     print(f"  [L59 Student vs Teacher VLM cos] {cos_l59:.5f}", flush=True)
 
     fn_g = fn_orig_cpu.to(device)
     num_w, den_w = torch.zeros((D_MOD,), device=device), torch.zeros((D_MOD,), device=device)
     val_sq_o = val_sq_w = 0.0; val_cnt = 0
     with torch.no_grad():
-        for b0 in range(0, N_SEQ, 64):
-            b1 = min(b0 + 64, N_SEQ)
+        for b0 in range(0, N_SEQ, MB_FWD):
+            b1 = min(b0 + MB_FWD, N_SEQ)
             xtb = rmsn_gpu(X_teach_cpu[b0:b1].to(device), fn_g).reshape(-1, D_MOD).float()
             xub = rmsn_gpu(X_stud_cpu[b0:b1].to(device), None).reshape(-1, D_MOD).float()
             iv = torch.arange(xtb.shape[0], device=device) % 10 == 0
             num_w.add_((xub[~iv] * xtb[~iv]).sum(dim=0)); den_w.add_((xub[~iv] * xub[~iv]).sum(dim=0))
         fn_wiener = ((num_w / (N_SEQ * SEQ_LEN * 0.9)) + 0.05 * fn_g) / ((den_w / (N_SEQ * SEQ_LEN * 0.9)) + 0.05).clamp(min=1e-8)
-        for b0 in range(0, N_SEQ, 64):
-            b1 = min(b0 + 64, N_SEQ)
+        for b0 in range(0, N_SEQ, MB_FWD):
+            b1 = min(b0 + MB_FWD, N_SEQ)
             xtb = rmsn_gpu(X_teach_cpu[b0:b1].to(device), fn_g).reshape(-1, D_MOD).float()
             xub = rmsn_gpu(X_stud_cpu[b0:b1].to(device), None).reshape(-1, D_MOD).float()
             iv = torch.arange(xtb.shape[0], device=device) % 10 == 0
@@ -2038,8 +2125,9 @@ def run_pipeline() -> Dict[str, object]:
     sel_v = vlm_pos[np.linspace(0, vlm_pos.size - 1, min(8192, vlm_pos.size), dtype=int)] if vlm_pos.size > 0 else np.array([], dtype=int)
     sel_t = txt_pos[np.linspace(0, txt_pos.size - 1, min(32768 - sel_v.size, txt_pos.size), dtype=int)]
     sel_pos = np.sort(np.concatenate([sel_t, sel_v]))
-    ht_ans = rmsn_gpu(X_teach_cpu[sel_pos // SEQ_LEN, sel_pos % SEQ_LEN].to(device).unsqueeze(1), fn_g).squeeze(1).float()
-    hs_ans = rmsn_gpu(X_stud_cpu[sel_pos // SEQ_LEN, sel_pos % SEQ_LEN].to(device).unsqueeze(1), fn_eff_g).squeeze(1).float()
+    s_t_cpu, t_t_cpu = torch.from_numpy(sel_pos // SEQ_LEN).long(), torch.from_numpy(sel_pos % SEQ_LEN).long()
+    ht_ans = rmsn_gpu(X_teach_cpu[s_t_cpu.to(X_teach_cpu.device), t_t_cpu.to(X_teach_cpu.device)].to(device).unsqueeze(1), fn_g).squeeze(1).float()
+    hs_ans = rmsn_gpu(X_stud_cpu[s_t_cpu, t_t_cpu].to(device).unsqueeze(1), fn_eff_g).squeeze(1).float()
     nxt_ans = torch.from_numpy(all_seq_nxt.reshape(-1)[sel_pos]).to(device, dtype=torch.long)
     ast_x59_stud = X_stud_cpu[AST_SEQS].clone()
     del X_teach_cpu, X_stud_cpu; gc.collect(); torch.cuda.empty_cache()
@@ -2228,9 +2316,10 @@ def run_pipeline() -> Dict[str, object]:
     opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2.5e-4, weight_decay=1e-4)
     sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=300, eta_min=2e-5)
     best_aagr, best_asd = aagr0, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
+    ast_bs = int(hw_cfg["ast_bs"])
     for st in range(300):
         opt_a.zero_grad()
-        bais = np.random.choice(112, size=4, replace=False).tolist()
+        bais = np.random.choice(112, size=ast_bs, replace=False).tolist()
         te_l, bh_l, k58_l, v58_l, k59_l, ht_l = [], [], [], [], [], []
         for ai in bais:
             gi = AST_SEQS[ai]
@@ -2278,8 +2367,8 @@ def run_pipeline() -> Dict[str, object]:
     # Extract 128 x 350 = 44,800 aligned Assistant hidden states + V7.0 Student full-262K argmax & top-64 probs!
     h_ast_chunks = []
     with torch.no_grad():
-        for b0 in range(0, len(AST_SEQS), 16):
-            bais = list(range(b0, min(b0 + 16, len(AST_SEQS))))
+        for b0 in range(0, len(AST_SEQS), 32):
+            bais = list(range(b0, min(b0 + 32, len(AST_SEQS))))
             gis = [AST_SEQS[ai] for ai in bais]
             te_s = torch.stack([emb_gpu[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE for gi in gis])
             bh_s = ast_h_final[b0 : b0 + len(bais), :-1].to(device).float()
@@ -2294,8 +2383,8 @@ def run_pipeline() -> Dict[str, object]:
     top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
     top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
     with torch.no_grad():
-        for i0 in range(0, H_stud_tgt.shape[0], 256):
-            i1 = min(i0 + 256, H_stud_tgt.shape[0])
+        for i0 in range(0, H_stud_tgt.shape[0], 512):
+            i1 = min(i0 + 512, H_stud_tgt.shape[0])
             lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_gpu.T).float() / SOFTCAP)
             tv, ti = torch.topk(lg_b, k=64, dim=-1)
             top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
@@ -2308,7 +2397,7 @@ def run_pipeline() -> Dict[str, object]:
     torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
     bh_rpt = bhmod.train_from_activations(
         act_bundle, tok_path, OUT_BHDR,
-        d_byte=384, max_bytes=48, steps=2400, batch_size=256, lr=3e-3, device=str(device),
+        d_byte=384, max_bytes=48, steps=2400, batch_size=int(hw_cfg["bh_bs"]), lr=3e-3, device=str(device),
     )
     act_bundle.unlink(missing_ok=True)
     bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)
