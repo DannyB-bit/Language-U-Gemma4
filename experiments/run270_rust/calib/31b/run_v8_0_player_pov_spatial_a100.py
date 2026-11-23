@@ -2474,11 +2474,11 @@ def run_pipeline() -> Dict[str, object]:
 
                 if l_idx in (58, 59):
                     sub_idx = np.concatenate([np.linspace(0, N_TEXT_SEQ - 1, 96, dtype=int), np.linspace(N_TEXT_SEQ, N_SEQ - 1, 32, dtype=int)])
-                    sub_t = torch.from_numpy(sub_idx).long().to(X_teach_store.device)
+                    sub_t = torch.from_numpy(sub_idx).long()
                     with torch.no_grad():
-                        inpt = rmsn_gpu(X_teach_store[sub_t].to(device, dtype=compute_dtype), ng["in"]).reshape(-1, D_MOD).float()
+                        inpt = rmsn_gpu(X_teach_store[sub_t.to(X_teach_store.device)].to(device, dtype=compute_dtype), ng["in"]).reshape(-1, D_MOD).float()
                         if l_idx == 58:
-                            inps = rmsn_gpu(X_stud_store[sub_t].to(device, dtype=compute_dtype), ng["in"]).reshape(-1, D_MOD).float()
+                            inps = rmsn_gpu(X_stud_store[sub_t.to(X_stud_store.device)].to(device, dtype=compute_dtype), ng["in"]).reshape(-1, D_MOD).float()
                             bridge_cache["in_58_stud"] = inps.to(torch.float16).cpu()
                             bridge_cache["kt58"] = (inpt @ w_teach["k_proj"].to(device).T).to(torch.float16).cpu()
                             bridge_cache["ks58_base"] = (inps @ w_stud["k_proj"].float().T).to(torch.float16).cpu()
@@ -2796,8 +2796,8 @@ def run_pipeline() -> Dict[str, object]:
                 crtr_layers[l_idx] = crec
                 del xp_crtr_tr, xp_crtr_va, xm_crtr_tr, xm_crtr_va, wg_cr, wu_cr
 
-                va_idx_t = torch.from_numpy(va_seq_idx[:16]).long().to(X_stud_next.device)
-                cos_l_txt = float(F.cosine_similarity(X_stud_next[va_idx_t].reshape(-1, D_MOD).float().to(device), X_teach_next[va_idx_t].reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
+                va_idx_t = torch.from_numpy(va_seq_idx[:16]).long()
+                cos_l_txt = float(F.cosine_similarity(X_stud_next[va_idx_t.to(X_stud_next.device)].reshape(-1, D_MOD).float().to(device), X_teach_next[va_idx_t.to(X_teach_next.device)].reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
                 cos_l_vlm = float(F.cosine_similarity(H_stud_eval.reshape(-1, D_MOD).float().to(device), H_teach_eval.reshape(-1, D_MOD).float().to(device), dim=-1).mean().item())
                 del va_idx_t
                 d_entry = {
