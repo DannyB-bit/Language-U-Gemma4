@@ -207,7 +207,7 @@ def get_v9_proj_spec(l_idx: int, pname: str, is_full: Optional[bool] = None) -> 
         is_full = l_idx in GLOBAL_ATTN_LAYERS
     if pname in ("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"):
         is_cb = pname == "mlp.down_proj"
-        if l_idx in (0, 1, 58, 59):
+        if l_idx in (0, 1, 2, 3, 4, 5, 56, 57, 58, 59):
             return 5, V9_BLOCK_SIZE, (16 if is_cb else 8), False, is_cb
         lrr_m = 16 if (is_cb and (is_full or l_idx >= 54)) else (8 if (not is_cb and l_idx >= 54) else 0)
         return 0, V9_BLOCK_SIZE, lrr_m, True, is_cb
@@ -790,7 +790,7 @@ def solve_block_ridge_headers(
     w_lr: Optional[torch.Tensor] = None,
     val_x: Optional[torch.Tensor] = None,
     val_y_target: Optional[torch.Tensor] = None,
-    lambdas: Tuple[float, ...] = (1e9, 1.0, 0.25, 0.05, 0.01),
+    lambdas: Tuple[float, ...] = (0.5, 0.1, 0.02, 0.004, 0.0008),
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], float, float, float]:
     """Closed-form activation-covariance Ridge solver for FP16 `(sc*, bi*)` with strict held-out MSE rollback."""
     d_out, d_in = int(w_target.shape[0]), int(w_target.shape[1])
@@ -804,10 +804,8 @@ def solve_block_ridge_headers(
 
     sc_base = sc0.float().half().float()
     bi_base = bi0.float().half().float() if bi0 is not None else None
-    sc_lo = (sc_base.abs() * 0.72).clamp(min=0.0)
-    sc_hi = (sc_base.abs() * 1.32).clamp(min=1e-6)
 
-    # First compute unweighted closed-form LS as canonical safe anchor
+    # 1) Unweighted closed-form LS anchor
     suu_w = (u_blk * u_blk).sum(dim=-1)
     sut_w = (u_blk * T_rot).sum(dim=-1)
     if bi0 is not None:
@@ -836,20 +834,44 @@ def solve_block_ridge_headers(
     mse_base = _eval_cand(sc_base, bi_base)
     mse_wls = _eval_cand(sc_wls, bi_wls)
     best_sc, best_bi, best_mse, best_lam = (sc_wls, bi_wls, mse_wls, 0.0) if mse_wls < mse_base else (sc_base, bi_base, mse_base, 1e9)
-    sc_anc = sc_wls if mse_wls <= mse_base else sc_base
-    bi_anc = bi_wls if (bi_wls is not None and mse_wls <= mse_base) else bi_base
-    sc_lo = (sc_anc.abs() * 0.72).clamp(min=0.0)
-    sc_hi = (sc_anc.abs() * 1.32).clamp(min=1e-6)
+
+    t_rms = T_rot.pow(2).mean(dim=-1).sqrt().clamp(min=1e-6)
+    sc_max = 4.5 * t_rms
+    bi_lim = 3.5 * t_rms
 
     if h_blks_rot is not None:
         hb = h_blks_rot.float()
+        # 2) Diagonal-Hessian weighted LS candidate (handles SmoothQuant inv_s [0.25, 4.0] cleanly)
+        wd = hb.diagonal(dim1=-2, dim2=-1).clamp(min=1e-8)  # [n_blks, bsize]
+        wd_n = wd / wd.mean(dim=-1, keepdim=True).clamp(min=1e-8)
+        d_uu = (u_blk * u_blk * wd_n.unsqueeze(0)).sum(dim=-1)
+        d_ut = (u_blk * T_rot * wd_n.unsqueeze(0)).sum(dim=-1)
+        if bi0 is not None:
+            d_u1 = (u_blk * wd_n.unsqueeze(0)).sum(dim=-1)
+            d_11 = wd_n.sum(dim=-1, keepdim=False).unsqueeze(0).expand(d_out, n_blks)
+            d_t1 = (T_rot * wd_n.unsqueeze(0)).sum(dim=-1)
+            d_det = d_uu * d_11 - d_u1 * d_u1
+            safe_dd = torch.where(d_det > 1e-12, d_det, 1.0)
+            sc_dwls = torch.clamp(torch.where(d_det > 1e-12, (d_11 * d_ut - d_u1 * d_t1) / safe_dd, sc_wls), min=0.0, max=sc_max).half().float()
+            bi_dwls = torch.clamp(torch.where(d_det > 1e-12, (d_uu * d_t1 - d_u1 * d_ut) / safe_dd, bi_wls), min=-bi_lim, max=bi_lim).half().float()
+        else:
+            sc_dwls = torch.clamp(torch.where(d_uu > 1e-12, d_ut / d_uu.clamp(min=1e-12), sc_wls), min=0.0, max=sc_max).half().float()
+            bi_dwls = None
+        mse_dwls = _eval_cand(sc_dwls, bi_dwls)
+        if mse_dwls < best_mse * 0.9999:
+            best_sc, best_bi, best_mse, best_lam = sc_dwls, bi_dwls, mse_dwls, -1.0
+
+        sc_anc = best_sc
+        bi_anc = best_bi
+
+        # 3) Exact full 256x256 block-covariance Ridge sweep anchored at best MSE point
         v_u = torch.einsum("rbj,bjk->rbk", u_blk, hb)
         h_uu = (u_blk * v_u).sum(dim=-1)
         h_ut = (T_rot * v_u).sum(dim=-1)
         diag_ref = hb.diagonal(dim1=-2, dim2=-1).mean(dim=-1).clamp(min=1e-6).unsqueeze(0) * float(bsize)
         if bi_anc is not None:
             ones_b = torch.ones((1, n_blks, bsize), device=u_blk.device, dtype=torch.float32)
-            v_1 = torch.einsum("rbj,bjk->rbk", ones_b, hb)  # [1, n_blks, bsize]
+            v_1 = torch.einsum("rbj,bjk->rbk", ones_b, hb)
             h_u1 = (u_blk * v_1).sum(dim=-1)
             h_11 = (ones_b * v_1).sum(dim=-1).expand(d_out, n_blks)
             h_t1 = (T_rot * v_1).sum(dim=-1)
@@ -866,10 +888,10 @@ def solve_block_ridge_headers(
                 safe_d = torch.where(det > 1e-12, det, 1.0)
                 sc_c = torch.where(det > 1e-12, (a22 * g1 - h_u1 * g2) / safe_d, sc_anc)
                 bi_c = torch.where(det > 1e-12, (a11 * g2 - h_u1 * g1) / safe_d, bi_anc)
-                sc_c = torch.clamp(sc_c, min=sc_lo, max=sc_hi).half().float()
-                bi_c = (bi_anc + torch.clamp(bi_c - bi_anc, -0.15 * sc_anc.abs(), 0.15 * sc_anc.abs())).half().float()
+                sc_c = torch.clamp(sc_c, min=0.0, max=sc_max).half().float()
+                bi_c = torch.clamp(bi_c, min=-bi_lim, max=bi_lim).half().float()
             else:
-                sc_c = torch.clamp((h_ut + damp * sc_anc) / (h_uu + damp).clamp(min=1e-12), min=sc_lo, max=sc_hi).half().float()
+                sc_c = torch.clamp((h_ut + damp * sc_anc) / (h_uu + damp).clamp(min=1e-12), min=0.0, max=sc_max).half().float()
                 bi_c = None
             m_c = _eval_cand(sc_c, bi_c)
             if m_c < best_mse * 0.9999:
@@ -1347,8 +1369,14 @@ def _recover_pi_l_gpu(
     ug = _extract_units(pb_g, meta_g)
     uu = _extract_units(pb_u, meta_u)
     k_sub = min(1024, d_in)
-    cand = torch.cat([F.normalize(wg_rot_g[:, :k_sub], dim=1), F.normalize(wu_rot_g[:, :k_sub], dim=1)], dim=1).half()
-    targ = torch.cat([F.normalize(ug[:, :k_sub], dim=1), F.normalize(uu[:, :k_sub], dim=1)], dim=1).half()
+
+    def _norm_centered(t: torch.Tensor, cols: int) -> torch.Tensor:
+        tb = t[:, :cols].float().reshape(d_out, -1, bsize)
+        tb = (tb - tb.mean(dim=-1, keepdim=True)).reshape(d_out, cols)
+        return F.normalize(tb, dim=1)
+
+    cand = torch.cat([_norm_centered(wg_rot_g, k_sub), _norm_centered(wu_rot_g, k_sub)], dim=1).half()
+    targ = torch.cat([_norm_centered(ug, k_sub), _norm_centered(uu, k_sub)], dim=1).half()
 
     best_j = torch.empty((d_out,), device=cand.device, dtype=torch.long)
     best_s = torch.empty((d_out,), device=cand.device, dtype=torch.float32)
@@ -1378,8 +1406,8 @@ def _recover_pi_l_gpu(
         rem = np.where(~used)[0]
         rem_t = torch.from_numpy(rem).to(cand.device)
         amb_t = torch.tensor(ambig, device=cand.device, dtype=torch.long)
-        cg = torch.cat([F.normalize(wg_rot_g[rem_t], dim=1), F.normalize(wu_rot_g[rem_t], dim=1)], dim=1).half()
-        tg = torch.cat([F.normalize(ug[amb_t], dim=1), F.normalize(uu[amb_t], dim=1)], dim=1).half()
+        cg = torch.cat([_norm_centered(wg_rot_g, d_in)[rem_t], _norm_centered(wu_rot_g, d_in)[rem_t]], dim=1).half()
+        tg = torch.cat([_norm_centered(ug, d_in)[amb_t], _norm_centered(uu, d_in)[amb_t]], dim=1).half()
         sc_a = (tg @ cg.T).float().cpu().numpy()
         taken_l = set()
         for idx_a, r_a in enumerate(ambig):
@@ -1705,6 +1733,34 @@ def run_selftest() -> int:
         w_d4 = decode_t16c_mat_to_f32(upd4, 32, 128, 64, nb_t, True, None, None, h_64, has_fwht=False)
         if not torch.isfinite(w_d4).all().item() or abs(float(w_d4.mean().item()) - 0.0625) > 1e-4:
             pb_rt_ok = False
+    # Verify _recover_pi_l_gpu recovers random permutation 100% accurately & SmoothQuant inv_s Ridge beats WLS
+    torch.manual_seed(13)
+    w_g_s = torch.randn(32, 128) * 0.02
+    w_u_s = torch.randn(32, 128) * 0.02
+    w_g_r = (w_g_s.reshape(-1, 64) @ h_64).reshape(32, 128)
+    w_u_r = (w_u_s.reshape(-1, 64) @ h_64).reshape(32, 128)
+    perm_t4 = torch.randperm(32)
+    pb_g4 = np.empty(p3.expected_tile16_bytes(32, 128, 64, 1, True), dtype=np.uint8)
+    pb_u4 = np.empty_like(pb_g4)
+    LIB_FQ.quant_and_pack_t16c_f32(np.ascontiguousarray(w_g_r[perm_t4].numpy(), dtype=np.float32).ctypes.data, 32, 128, 64, 0, pb_g4.ctypes.data)
+    LIB_FQ.quant_and_pack_t16c_f32(np.ascontiguousarray(w_u_r[perm_t4].numpy(), dtype=np.float32).ctypes.data, 32, 128, 64, 0, pb_u4.ctypes.data)
+    meta_pi4 = {"d_out": 32, "d_in": 128, "bsize": 64, "n_bits": 1, "is_asym": True}
+    pi_rec4, _ = _recover_pi_l_gpu(w_g_r, pb_g4.tobytes(), meta_pi4, w_u_r, pb_u4.tobytes(), meta_pi4, h_64)
+    pi_rec_ok = torch.equal(pi_rec4, perm_t4)
+    inv_s_t4 = torch.linspace(0.25, 4.0, 128)
+    w_sq_t = torch.randn(32, 128) * 0.02
+    x_sq_tr = torch.randn(256, 128)
+    x_sq_tr[:, :32] *= 4.0
+    x_sq_va = torch.randn(64, 128)
+    x_sq_va[:, :32] *= 4.0
+    w_sq_rot = ((w_sq_t / inv_s_t4.unsqueeze(0)).reshape(-1, 64) @ h_64).reshape(32, 64 * 2)
+    u_sq = torch.where(w_sq_rot >= w_sq_rot.mean(dim=-1, keepdim=True), 1.0, -1.0).reshape(32, 128)
+    hb_sq_r = _h_full_to_blks_rot(x_sq_tr.T @ x_sq_tr, inv_s_t4, h_64, 64)
+    sc_wls0, bi_wls0, _, _, _ = solve_block_ridge_headers(w_sq_t, u_sq, torch.full((32, 2), 0.01), torch.zeros(32, 2), None, inv_s_t4, h_64)
+    w_wls0 = reconstruct_from_headers(u_sq, sc_wls0, bi_wls0, inv_s_t4, h_64)
+    mse_sq_wls = float(F.mse_loss(F.linear(x_sq_va, w_wls0), F.linear(x_sq_va, w_sq_t)).item())
+    sc_sq_r, bi_sq_r, _, mse_sq_r, _ = solve_block_ridge_headers(w_sq_t, u_sq, sc_wls0, bi_wls0, hb_sq_r, inv_s_t4, h_64, val_x=x_sq_va, val_y_target=F.linear(x_sq_va, w_sq_t))
+    sq_ridge_ok = mse_sq_r < mse_sq_wls
     # Check block-diagonal GPTQ parity (block diag H -> exact match!)
     w_b1 = torch.randn(16, 64) * 0.015
     hb_g4 = torch.stack([torch.eye(32) * 1.5, torch.eye(32) * 0.8], dim=0)
@@ -1714,13 +1770,15 @@ def run_selftest() -> int:
         mse_r < mse_bad * 0.15
         and mse_c8 < mse_r
         and pb_rt_ok
+        and pi_rec_ok
+        and sq_ridge_ok
         and 0.70 <= norm_rat_g4 <= 1.25
         and torch.isfinite(w_b1).all().item()
     )
     gate(
-        "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers recovers & stays bounded",
+        "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers + GPU pi_l + SmoothQuant",
         g4_ok,
-        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}",
+        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}, pi={pi_rec_ok}, sq={mse_sq_wls:.5f}->{mse_sq_r:.5f}",
     )
 
     # Gate 5: Strict Rule 2 Decontamination Detector (0 overlap on clean strings, catches injected holdout)
@@ -4107,33 +4165,67 @@ def _calibrate_branch_layer(
             mod_sal_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = sal_tok.reshape(-1).cpu()
     del xn_cpu, wq_q, wk_q, wv_q, wo_q
 
-    # Gate & Up MLP Ridge headers over preserved bitplanes
+    # Gate & Up MLP (Re-quantize to 2b_gauss on App3 stem/pre-head when src is 1b, otherwise Ridge headers over preserved bitplanes)
     m_g = f"{pfx}.mlp.gate_proj.weight"
     m_u = f"{pfx}.mlp.up_proj.weight"
     meta_g, meta_u = mats_src[m_g], mats_src[m_u]
-    pb_g, is_g_np, lr_g = _read_raw_mat_parts(fp_src, meta_g)
-    pb_u, is_u_np, lr_u = _read_raw_mat_parts(fp_src, meta_u)
-    is_g_g = torch.from_numpy(np.ascontiguousarray(is_g_np, dtype=np.float32)).to(device) if is_g_np is not None else None
-    is_u_g = torch.from_numpy(np.ascontiguousarray(is_u_np, dtype=np.float32)).to(device) if is_u_np is not None else None
-    lrd_g = _lr_tuple_to_dense(lr_g, device)
-    lrd_u = _lr_tuple_to_dense(lr_u, device)
-    u_g, sc_g, bi_g = _unpack_units_from_meta(pb_g, meta_g, H256_GPU)
-    u_u, sc_u, bi_u = _unpack_units_from_meta(pb_u, meta_u, H256_GPU)
     va_xf = xf_cpu[va_seq_ids[:16]].to(device, dtype=torch.float32).reshape(-1, D_MOD)
-    h_blks_g_rot = _h_full_to_blks_rot(H_mlp, is_g_g, H256_GPU, V9_BLOCK_SIZE)
-    h_blks_u_rot = _h_full_to_blks_rot(H_mlp, is_u_g, H256_GPU, V9_BLOCK_SIZE) if is_u_np is not None else h_blks_g_rot
-    del H_mlp
-    sc_g, bi_g, _, _, _ = solve_block_ridge_headers(wg_t, u_g, sc_g, bi_g, h_blks_g_rot, is_g_g, H256_GPU, w_lr=lrd_g, val_x=va_xf, val_y_target=F.linear(va_xf, wg_t))
-    sc_u, bi_u, _, _, _ = solve_block_ridge_headers(wu_t, u_u, sc_u, bi_u, h_blks_u_rot, is_u_g, H256_GPU, w_lr=lrd_u, val_x=va_xf, val_y_target=F.linear(va_xf, wu_t))
-    del h_blks_g_rot, h_blks_u_rot
-    pb_g_upd = _update_raw_pb_headers(pb_g, int(meta_g["d_out"]), int(meta_g["d_in"]), int(meta_g["bsize"]), meta_g["n_bits"], meta_g["is_asym"], sc_g, bi_g)
-    pb_u_upd = _update_raw_pb_headers(pb_u, int(meta_u["d_out"]), int(meta_u["d_in"]), int(meta_u["bsize"]), meta_u["n_bits"], meta_u["is_asym"], sc_u, bi_u)
-    if not is_app3:
-        fp_dst.seek(int(meta_g["offset"])); fp_dst.write(pb_g_upd)
-        fp_dst.seek(int(meta_u["offset"])); fp_dst.write(pb_u_upd)
-    wg_fin = reconstruct_from_headers(u_g, sc_g, bi_g, is_g_g, H256_GPU) + (lrd_g if lrd_g is not None else 0.0)
-    wu_fin = reconstruct_from_headers(u_u, sc_u, bi_u, is_u_g, H256_GPU) + (lrd_u if lrd_u is not None else 0.0)
-    del u_g, u_u
+    requant_mlp_app3 = is_app3 and get_v9_proj_spec(l_idx, "mlp.gate_proj", is_f)[0] == 5 and (int(meta_g["n_bits"]) & 0x1F) == 1
+    if requant_mlp_app3:
+        mlp_x_rms = torch.sqrt((H_mlp.diagonal() / float(N_SEQ * V9_SEQ_LEN)).clamp(min=1e-10)).clamp(min=1e-5)
+        x_m_ev = xf_cpu[:64].to(device, dtype=torch.float32).reshape(-1, D_MOD)[::2]
+        hb_mlp_raw = torch.stack([H_mlp[b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE, b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE] for b in range(D_MOD // V9_BLOCK_SIZE)], dim=0)
+
+        def _req_mlp_in(pname_m: str, mname_m: str, w_tgt: torch.Tensor) -> Tuple[tuple, torch.Tensor]:
+            mode_m, bsz_m, lrr_m, is_rm_m, is_cb_m = get_v9_proj_spec(l_idx, pname_m, is_f)
+            sq_m = (mlp_x_rms.pow(0.5) / w_tgt.abs().amax(dim=0).clamp(min=1e-5).pow(0.5)).clamp(0.25, 4.0)
+            sq_m = sq_m / sq_m.mean().clamp(min=1e-5)
+            is_m_g = 1.0 / sq_m
+            is_m_np = is_m_g.cpu().numpy().astype("<f4")
+            w_rot_m = ((w_tgt * sq_m.unsqueeze(0)).reshape(-1, V9_BLOCK_SIZE) @ H256_GPU).contiguous()
+            h_blks_m_rot = _h_full_to_blks_rot(H_mlp, is_m_g, H256_GPU, V9_BLOCK_SIZE)
+            gptq_quant_blks_gpu(w_rot_m, hb_mlp_raw, is_m_g, H256_GPU, V9_BLOCK_SIZE, mode_m)
+            nb_m, asym_m = p3.MODE_TO_T16C[mode_m]
+            pb_arr = np.empty(p3.expected_tile16_bytes(V9_FF, D_MOD, V9_BLOCK_SIZE, nb_m, asym_m), dtype=np.uint8)
+            LIB_FQ.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_m.cpu().numpy(), dtype=np.float32).ctypes.data, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, pb_arr.ctypes.data)
+            u_m, sc_m, bi_m = unpack_tile16_headers_and_units(pb_arr, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, H256_GPU)
+            w_m0 = reconstruct_from_headers(u_m, sc_m, bi_m, is_m_g, H256_GPU)
+            lr_m, lrd_m = _fit_als_lr_int8(w_tgt, w_m0, x_m_ev, lrr_m) if lrr_m > 0 else (None, None)
+            sc_m, bi_m, _, _, _ = solve_block_ridge_headers(w_tgt, u_m, sc_m, bi_m, h_blks_m_rot, is_m_g, H256_GPU, w_lr=lrd_m, val_x=va_xf, val_y_target=F.linear(va_xf, w_tgt))
+            sc_np_m = np.ascontiguousarray(sc_m.detach().cpu().numpy(), dtype=np.float32)
+            LIB_FQ.update_t16c_headers_f32(pb_arr.ctypes.data, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, sc_np_m.ctypes.data, 0)
+            hdr_m_out, pay_m_out = finalize_t16c_payload(pb_arr, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, is_rm_m, is_cb_m)
+            w_fin = reconstruct_from_headers(u_m, sc_m, bi_m, is_m_g, H256_GPU) + (lrd_m if lrd_m is not None else 0.0)
+            return (mname_m, V9_FF, D_MOD, V9_BLOCK_SIZE, hdr_m_out, asym_m, True, pay_m_out, is_m_np, lr_m), w_fin
+
+        g_write_rec, wg_fin = _req_mlp_in("mlp.gate_proj", m_g, wg_t)
+        u_write_rec, wu_fin = _req_mlp_in("mlp.up_proj", m_u, wu_t)
+        del H_mlp, hb_mlp_raw, x_m_ev, mlp_x_rms
+    else:
+        pb_g, is_g_np, lr_g = _read_raw_mat_parts(fp_src, meta_g)
+        pb_u, is_u_np, lr_u = _read_raw_mat_parts(fp_src, meta_u)
+        is_g_g = torch.from_numpy(np.ascontiguousarray(is_g_np, dtype=np.float32)).to(device) if is_g_np is not None else None
+        is_u_g = torch.from_numpy(np.ascontiguousarray(is_u_np, dtype=np.float32)).to(device) if is_u_np is not None else None
+        lrd_g = _lr_tuple_to_dense(lr_g, device)
+        lrd_u = _lr_tuple_to_dense(lr_u, device)
+        u_g, sc_g, bi_g = _unpack_units_from_meta(pb_g, meta_g, H256_GPU)
+        u_u, sc_u, bi_u = _unpack_units_from_meta(pb_u, meta_u, H256_GPU)
+        h_blks_g_rot = _h_full_to_blks_rot(H_mlp, is_g_g, H256_GPU, V9_BLOCK_SIZE)
+        h_blks_u_rot = _h_full_to_blks_rot(H_mlp, is_u_g, H256_GPU, V9_BLOCK_SIZE) if is_u_np is not None else h_blks_g_rot
+        del H_mlp
+        sc_g, bi_g, _, _, _ = solve_block_ridge_headers(wg_t, u_g, sc_g, bi_g, h_blks_g_rot, is_g_g, H256_GPU, w_lr=lrd_g, val_x=va_xf, val_y_target=F.linear(va_xf, wg_t))
+        sc_u, bi_u, _, _, _ = solve_block_ridge_headers(wu_t, u_u, sc_u, bi_u, h_blks_u_rot, is_u_g, H256_GPU, w_lr=lrd_u, val_x=va_xf, val_y_target=F.linear(va_xf, wu_t))
+        del h_blks_g_rot, h_blks_u_rot
+        pb_g_upd = _update_raw_pb_headers(pb_g, int(meta_g["d_out"]), int(meta_g["d_in"]), int(meta_g["bsize"]), meta_g["n_bits"], meta_g["is_asym"], sc_g, bi_g)
+        pb_u_upd = _update_raw_pb_headers(pb_u, int(meta_u["d_out"]), int(meta_u["d_in"]), int(meta_u["bsize"]), meta_u["n_bits"], meta_u["is_asym"], sc_u, bi_u)
+        if not is_app3:
+            fp_dst.seek(int(meta_g["offset"])); fp_dst.write(pb_g_upd)
+            fp_dst.seek(int(meta_u["offset"])); fp_dst.write(pb_u_upd)
+        wg_fin = reconstruct_from_headers(u_g, sc_g, bi_g, is_g_g, H256_GPU) + (lrd_g if lrd_g is not None else 0.0)
+        wu_fin = reconstruct_from_headers(u_u, sc_u, bi_u, is_u_g, H256_GPU) + (lrd_u if lrd_u is not None else 0.0)
+        g_write_rec = (m_g, int(meta_g["d_out"]), int(meta_g["d_in"]), int(meta_g["bsize"]), meta_g["n_bits"], meta_g["is_asym"], meta_g["has_fwht"], pb_g_upd, is_g_np, lr_g)
+        u_write_rec = (m_u, int(meta_u["d_out"]), int(meta_u["d_in"]), int(meta_u["bsize"]), meta_u["n_bits"], meta_u["is_asym"], meta_u["has_fwht"], pb_u_upd, is_u_np, lr_u)
+        del u_g, u_u
 
     # Block energies & CRTR-V9 (r=64 + MoD) -> INT8 quantize
     blk_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, V9_MLP_BLOCKS), dtype=torch.float32)
@@ -4182,32 +4274,61 @@ def _calibrate_branch_layer(
     act_va = torch.cat(act_va_l, 0); xm_va = torch.cat(xm_va_l, 0); xt_va = torch.cat(xt_va_l, 0)
     del act_tr_l, xm_tr_l, xt_tr_l, act_va_l, xm_va_l, xt_va_l
 
-    # Down_proj Ridge headers (+ ALS rk=16 upgrade on App3 boundary/global/L>=54 if absent)
+    # Down_proj (Re-quantize to 2b_gauss COLBLOCK + rk=16 on App3 stem/pre-head, otherwise Ridge + rk=16 upgrade)
     m_d = f"{pfx}.mlp.down_proj.weight"
     meta_d = mats_src[m_d]
-    pb_d, is_d_np, lr_d = _read_raw_mat_parts(fp_src, meta_d)
-    is_d_g = torch.from_numpy(np.ascontiguousarray(is_d_np, dtype=np.float32)).to(device) if is_d_np is not None else None
-    u_d, sc_d, bi_d = _unpack_units_from_meta(pb_d, meta_d, H256_GPU)
-    if is_d_g is not None:
+    if is_app3 and get_v9_proj_spec(l_idx, "mlp.down_proj", is_f)[0] == 5 and (int(meta_d["n_bits"]) & 0x1F) == 1:
+        mode_d, bsz_d, lrr_d, is_rm_d, is_cb_d = get_v9_proj_spec(l_idx, "mlp.down_proj", is_f)
+        down_x_rms = torch.sqrt((H_down_blks.diagonal(dim1=-2, dim2=-1).reshape(-1) / float(N_SEQ * V9_SEQ_LEN)).clamp(min=1e-10)).clamp(min=1e-5)
+        sq_d = (down_x_rms.pow(0.5) / wd_t.abs().amax(dim=0).clamp(min=1e-5).pow(0.5)).clamp(0.25, 4.0)
+        sq_d = sq_d / sq_d.mean().clamp(min=1e-5)
+        is_d_g = 1.0 / sq_d
+        is_d_np = is_d_g.cpu().numpy().astype("<f4")
+        w_rot_d = ((wd_t * sq_d.unsqueeze(0)).reshape(-1, V9_BLOCK_SIZE) @ H256_GPU).contiguous()
         is_db = is_d_g.reshape(V9_MLP_BLOCKS, V9_BLOCK_SIZE)
-        H_down_blks = H_down_blks * is_db.unsqueeze(2) * is_db.unsqueeze(1)
-    h_down_blks_rot = torch.einsum("ij,bjk,kl->bil", H256_GPU, H_down_blks, H256_GPU)
-    h_down_blks_rot = 0.5 * (h_down_blks_rot + h_down_blks_rot.mT)
-    del H_down_blks
-
-    if is_app3 and lr_d is None and get_v9_proj_spec(l_idx, "mlp.down_proj", is_f)[2] == 16:
+        h_down_blks_rot = torch.einsum("ij,bjk,kl->bil", H256_GPU, H_down_blks * is_db.unsqueeze(2) * is_db.unsqueeze(1), H256_GPU)
+        h_down_blks_rot = 0.5 * (h_down_blks_rot + h_down_blks_rot.mT)
+        gptq_quant_blks_gpu(w_rot_d, H_down_blks, is_d_g, H256_GPU, V9_BLOCK_SIZE, mode_d)
+        del H_down_blks
+        nb_d, asym_d = p3.MODE_TO_T16C[mode_d]
+        pb_d_arr = np.empty(p3.expected_tile16_bytes(D_MOD, V9_FF, V9_BLOCK_SIZE, nb_d, asym_d), dtype=np.uint8)
+        LIB_FQ.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_d.cpu().numpy(), dtype=np.float32).ctypes.data, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, pb_d_arr.ctypes.data)
+        u_d, sc_d, bi_d = unpack_tile16_headers_and_units(pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, H256_GPU)
         w_d0 = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU)
-        lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_tr[: min(2048, act_tr.shape[0])].float(), 16)
+        lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_tr[: min(2048, act_tr.shape[0])].float(), lrr_d) if lrr_d > 0 else (None, None)
+        sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
+        del h_down_blks_rot
+        sc_np_d = np.ascontiguousarray(sc_d.detach().cpu().numpy(), dtype=np.float32)
+        LIB_FQ.update_t16c_headers_f32(pb_d_arr.ctypes.data, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, sc_np_d.ctypes.data, 0)
+        hdr_d_out, pay_d_out = finalize_t16c_payload(pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, is_rm_d, is_cb_d)
+        wd_fin = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU) + (lrd_d if lrd_d is not None else 0.0)
+        d_write_rec = (m_d, D_MOD, V9_FF, V9_BLOCK_SIZE, hdr_d_out, asym_d, True, pay_d_out, is_d_np, lr_d)
+        del u_d
     else:
-        lrd_d = _lr_tuple_to_dense(lr_d, device)
+        pb_d, is_d_np, lr_d = _read_raw_mat_parts(fp_src, meta_d)
+        is_d_g = torch.from_numpy(np.ascontiguousarray(is_d_np, dtype=np.float32)).to(device) if is_d_np is not None else None
+        u_d, sc_d, bi_d = _unpack_units_from_meta(pb_d, meta_d, H256_GPU)
+        if is_d_g is not None:
+            is_db = is_d_g.reshape(V9_MLP_BLOCKS, V9_BLOCK_SIZE)
+            H_down_blks = H_down_blks * is_db.unsqueeze(2) * is_db.unsqueeze(1)
+        h_down_blks_rot = torch.einsum("ij,bjk,kl->bil", H256_GPU, H_down_blks, H256_GPU)
+        h_down_blks_rot = 0.5 * (h_down_blks_rot + h_down_blks_rot.mT)
+        del H_down_blks
 
-    sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
-    del h_down_blks_rot
-    pb_d_upd = _update_raw_pb_headers(pb_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], sc_d, bi_d)
-    if not is_app3:
-        fp_dst.seek(int(meta_d["offset"])); fp_dst.write(pb_d_upd)
-    wd_fin = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU) + (lrd_d if lrd_d is not None else 0.0)
-    del u_d
+        if is_app3 and lr_d is None and get_v9_proj_spec(l_idx, "mlp.down_proj", is_f)[2] == 16:
+            w_d0 = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU)
+            lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_tr[: min(2048, act_tr.shape[0])].float(), 16)
+        else:
+            lrd_d = _lr_tuple_to_dense(lr_d, device)
+
+        sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
+        del h_down_blks_rot
+        pb_d_upd = _update_raw_pb_headers(pb_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], sc_d, bi_d)
+        if not is_app3:
+            fp_dst.seek(int(meta_d["offset"])); fp_dst.write(pb_d_upd)
+        wd_fin = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU) + (lrd_d if lrd_d is not None else 0.0)
+        d_write_rec = (m_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], meta_d["has_fwht"], pb_d_upd, is_d_np, lr_d)
+        del u_d
 
     # Wiener post_feedforward_layernorm & layer_scalar + Accept-Only C8DB (rank=16)
     with torch.no_grad():
@@ -4246,9 +4367,9 @@ def _calibrate_branch_layer(
             recs_to_write.append((m_v, int(mats_src[m_v]["d_out"]), int(mats_src[m_v]["d_in"]), int(mats_src[m_v]["bsize"]), mats_src[m_v]["n_bits"], mats_src[m_v]["is_asym"], mats_src[m_v]["has_fwht"], pb_v, is_v_np, lr_v))
         recs_to_write.extend([
             o_write_rec,
-            (m_g, int(meta_g["d_out"]), int(meta_g["d_in"]), int(meta_g["bsize"]), meta_g["n_bits"], meta_g["is_asym"], meta_g["has_fwht"], pb_g_upd, is_g_np, lr_g),
-            (m_u, int(meta_u["d_out"]), int(meta_u["d_in"]), int(meta_u["bsize"]), meta_u["n_bits"], meta_u["is_asym"], meta_u["has_fwht"], pb_u_upd, is_u_np, lr_u),
-            (m_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], meta_d["has_fwht"], pb_d_upd, is_d_np, lr_d),
+            g_write_rec,
+            u_write_rec,
+            d_write_rec,
         ])
         for rw in recs_to_write:
             new_pos = p3._write_mat_record(fp_dst, new_pos, *rw)
@@ -4331,12 +4452,12 @@ def run_ablate_2_and_3() -> Dict[str, object]:
         for k_n, v_old in norms_ordered:
             if k_n == "model.language_model.norm.weight":
                 clean_norms_ordered.append((k_n, fn_clean))
-            elif ".layers." in k_n and (k_n.endswith("post_attention_layernorm.weight") or k_n.endswith("post_feedforward_layernorm.weight")):
+            elif k_n.startswith("model.language_model.layers.") and (k_n.endswith("post_attention_layernorm.weight") or k_n.endswith("post_feedforward_layernorm.weight")):
                 clean_norms_ordered.append((k_n, sf.get_tensor(k_n).float()[perm_pi].numpy().astype("<f4")))
-            elif ".layers." in k_n and k_n.endswith("layer_scalar"):
+            elif k_n.startswith("model.language_model.layers.") and k_n.endswith("layer_scalar"):
                 clean_norms_ordered.append((k_n, sf.get_tensor(k_n).float().reshape(-1).numpy().astype("<f4")))
             else:
-                if k_n.endswith("input_layernorm.weight") and ".layers." in k_n:
+                if k_n.startswith("model.language_model.layers.") and k_n.endswith("input_layernorm.weight"):
                     ref_n = sf.get_tensor(k_n).float()[perm_pi].numpy().astype(np.float32)
                     max_pi_diff = max(max_pi_diff, float(np.max(np.abs(ref_n - v_old))))
                 clean_norms_ordered.append((k_n, v_old.astype("<f4")))
