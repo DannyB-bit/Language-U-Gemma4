@@ -352,11 +352,11 @@ def compute_geglu_colblock_perm(
     if not (0 < shared_blocks < n_blocks):
         raise ValueError(f"shared_blocks={shared_blocks} must be in (0, {n_blocks})")
 
-    abs_a = act_samples.detach().float().abs()
+    abs_a = torch.nan_to_num(act_samples.detach().float().abs(), nan=0.0, posinf=65000.0, neginf=0.0).clamp(max=65000.0)
     if energy_vec is None:
-        energy = (abs_a * abs_a).mean(dim=0)
+        energy = (abs_a.double() * abs_a.double()).mean(dim=0).float()
     else:
-        energy = energy_vec.detach().float().clamp(min=0.0)
+        energy = torch.nan_to_num(energy_vec.detach().float(), nan=0.0, posinf=1e12, neginf=0.0).clamp(min=0.0)
     tau = abs_a.mean() * 0.25 + 1e-6
     freq = (abs_a > tau).float().mean(dim=0)
     shared_score = freq * torch.sqrt(energy + 1e-12)
@@ -421,12 +421,13 @@ def compute_geglu_colblock_perm(
     inv_perm = torch.empty_like(perm)
     inv_perm[perm] = torch.arange(ff, dtype=torch.long)
 
-    e_perm = energy.cpu()[perm].reshape(n_blocks, block_size).sum(dim=1)
+    e_perm = energy.double().cpu()[perm].reshape(n_blocks, block_size).sum(dim=1)
     keep_total = min(n_blocks, shared_blocks + V9_ROUTED_BLOCKS)
-    # Top-k energy concentration per token vs raw block ordering
-    blk_raw = (abs_a[:sub_n] ** 2).reshape(sub_n, n_blocks, block_size).sum(dim=2)
-    raw_topk_pct = 100.0 * float(torch.topk(blk_raw, keep_total, dim=-1).values.sum() / blk_raw.sum().clamp(min=1e-9))
-    blk_prm = (abs_a[:sub_n, perm.to(abs_a.device)] ** 2).reshape(sub_n, n_blocks, block_size).sum(dim=2)
+    # Top-k energy concentration per token vs raw block ordering (float64 avoids Inf/NaN)
+    abs_sub_d = abs_a[:sub_n].double()
+    blk_raw = (abs_sub_d * abs_sub_d).reshape(sub_n, n_blocks, block_size).sum(dim=2)
+    raw_topk_pct = 100.0 * float((torch.topk(blk_raw, keep_total, dim=-1).values.sum(dim=1) / blk_raw.sum(dim=1).clamp(min=1e-9)).mean().item())
+    blk_prm = (abs_sub_d[:, perm.to(abs_a.device)] ** 2).reshape(sub_n, n_blocks, block_size).sum(dim=2)
     sh_e = blk_prm[:, :shared_blocks].sum(dim=1)
     k_rt = min(V9_ROUTED_BLOCKS, n_spec_blocks)
     rt_e = torch.topk(blk_prm[:, shared_blocks:], k_rt, dim=-1).values.sum(dim=1) if k_rt > 0 else torch.zeros_like(sh_e)
@@ -562,9 +563,10 @@ class Gemma4AssistantTrain(nn.Module):
             m.n_pff = nn.Parameter(sd[pa + "post_feedforward_layernorm.weight"].float().clone())
             m.lsc = nn.Parameter(sd[pa + "layer_scalar"].float().reshape(1).clone())
             self.layers.append(m)
-        for pfx_r, th, rd in (("l", theta_l, self.rot_l), ("g", theta_g, self.rot_g)):
-            if rd > 0:
-                inv_f = 1.0 / (th ** (torch.arange(0, rd, 2, dtype=torch.float32) / float(rd)))
+        for pfx_r, th, rd, hd_r in (("l", theta_l, self.rot_l, hd_s), ("g", theta_g, self.rot_g, hd_f)):
+            hr = rd // 2
+            if hr > 0:
+                inv_f = 1.0 / (th ** (torch.arange(0, 2 * hr, 2, dtype=torch.float32) / float(hd_r)))
                 ang = torch.outer(torch.arange(seq_len, dtype=torch.float32), inv_f)
                 self.register_buffer(f"cr_{pfx_r}", torch.cos(ang), persistent=False)
                 self.register_buffer(f"sr_{pfx_r}", torch.sin(ang), persistent=False)
@@ -576,20 +578,23 @@ class Gemma4AssistantTrain(nn.Module):
         xf = t.float()
         y = xf * torch.rsqrt((xf * xf).mean(dim=-1, keepdim=True) + self.eps)
         if w is not None:
-            y = y * (1.0 + w.float())
+            y = y * w.float()
         return y.to(t.dtype)
 
     def _rope(self, x: torch.Tensor, cs: torch.Tensor, sn: torch.Tensor, rot_d: int, hd: int) -> torch.Tensor:
-        if rot_d <= 0:
+        hr, hh = rot_d // 2, hd // 2
+        if hr <= 0:
             return x
-        xr = x[..., :rot_d].float()
-        x1, x2 = xr[..., : rot_d // 2], xr[..., rot_d // 2 :]
-        cs_v = cs.view(1, cs.shape[0], 1, rot_d // 2)
-        sn_v = sn.view(1, sn.shape[0], 1, rot_d // 2)
-        yr = torch.cat([x1 * cs_v - x2 * sn_v, x2 * cs_v + x1 * sn_v], dim=-1)
-        return torch.cat([yr, x[..., rot_d:].float()], dim=-1).to(x.dtype) if rot_d < hd else yr.to(x.dtype)
+        xf = x.float()
+        x0, x1 = xf[..., :hr], xf[..., hh : hh + hr]
+        cs_v = cs.view(1, cs.shape[0], 1, hr)
+        sn_v = sn.view(1, sn.shape[0], 1, hr)
+        r0, r1 = x0 * cs_v - x1 * sn_v, x0 * sn_v + x1 * cs_v
+        if hr == hh:
+            return torch.cat([r0, r1], dim=-1).to(x.dtype)
+        return torch.cat([r0, xf[..., hr:hh], r1, xf[..., hh + hr :]], dim=-1).to(x.dtype)
 
-    def forward_seq(self, tok_emb_seq, back_h_seq, k58, v58, k59):
+    def forward_seq(self, tok_emb_seq, back_h_seq, k58, v58, k59, v59):
         B, Sm1, _ = tok_emb_seq.shape
         kv_len = int(k58.shape[2])
         state = F.linear(torch.cat([tok_emb_seq, back_h_seq], dim=-1).to(self.compute_dtype), self.pre.to(self.compute_dtype)).float()
@@ -605,7 +610,7 @@ class Gemma4AssistantTrain(nn.Module):
             sr = (self.sr_g if is_f else self.sr_l)[1 : Sm1 + 1]
             qn = self._rope(self._rmsn(q, m.n_qn), cr, sr, rota, hda).transpose(1, 2).to(self.compute_dtype)
             kk = (k59 if is_f else k58).to(self.compute_dtype).repeat_interleave(ga, dim=1)
-            vv = (k59 if is_f else v58).to(self.compute_dtype).repeat_interleave(ga, dim=1)
+            vv = (v59 if is_f else v58).to(self.compute_dtype).repeat_interleave(ga, dim=1)
             ctx = F.scaled_dot_product_attention(qn, kk, vv, attn_mask=q_mask, scale=1.0)
             state = state + self._rmsn(F.linear(ctx.transpose(1, 2).contiguous().view(B, Sm1, self.nh * hda), m.o_proj.to(self.compute_dtype)), m.n_pa).float()
             hm = self._rmsn(state, m.n_pf).to(self.compute_dtype)
@@ -818,7 +823,7 @@ def run_selftest() -> int:
     toy_sd: Dict[str, torch.Tensor] = {
         "pre_projection.weight": torch.randn(d_ast_a, 2 * d_m_a) * 0.05,
         "post_projection.weight": torch.randn(d_m_a, d_ast_a) * 0.05,
-        "model.norm.weight": torch.zeros(d_ast_a),
+        "model.norm.weight": torch.ones(d_ast_a),
         "model.embed_tokens.weight": torch.randn(16, d_ast_a) * 0.05,
     }
     for la in range(4):
@@ -828,11 +833,11 @@ def run_selftest() -> int:
         toy_sd[pa_t + "mlp.gate_proj.weight"] = torch.randn(d_ast_a * 2, d_ast_a) * 0.05
         toy_sd[pa_t + "mlp.up_proj.weight"] = torch.randn(d_ast_a * 2, d_ast_a) * 0.05
         toy_sd[pa_t + "mlp.down_proj.weight"] = torch.randn(d_ast_a, d_ast_a * 2) * 0.05
-        toy_sd[pa_t + "input_layernorm.weight"] = torch.zeros(d_ast_a)
-        toy_sd[pa_t + "self_attn.q_norm.weight"] = torch.zeros(hd_a)
-        toy_sd[pa_t + "post_attention_layernorm.weight"] = torch.zeros(d_ast_a)
-        toy_sd[pa_t + "pre_feedforward_layernorm.weight"] = torch.zeros(d_ast_a)
-        toy_sd[pa_t + "post_feedforward_layernorm.weight"] = torch.zeros(d_ast_a)
+        toy_sd[pa_t + "input_layernorm.weight"] = torch.ones(d_ast_a)
+        toy_sd[pa_t + "self_attn.q_norm.weight"] = torch.ones(hd_a)
+        toy_sd[pa_t + "post_attention_layernorm.weight"] = torch.ones(d_ast_a)
+        toy_sd[pa_t + "pre_feedforward_layernorm.weight"] = torch.ones(d_ast_a)
+        toy_sd[pa_t + "post_feedforward_layernorm.weight"] = torch.ones(d_ast_a)
         toy_sd[pa_t + "layer_scalar"] = torch.ones(1)
     ast_chk = Gemma4AssistantTrain(
         toy_sd, d_mod=d_m_a, nh=nh_a, nkv_s=nkv_a, nkv_f=nkv_a, hd_s=hd_a, hd_f=hd_a,
@@ -841,10 +846,10 @@ def run_selftest() -> int:
     te_c = torch.randn(2, sq_a - 1, d_m_a)
     bh_c = torch.randn(2, sq_a - 1, d_m_a)
     k_c = torch.randn(2, nkv_a, sq_a, hd_a)
-    ha1_c = ast_chk.forward_seq(te_c, bh_c, k_c, k_c, k_c)
+    ha1_c = ast_chk.forward_seq(te_c, bh_c, k_c, k_c, k_c, k_c)
     hp1_c = F.linear(ha1_c, ast_chk.post)
     bh2_c = torch.cat([bh_c[:, :1], hp1_c[:, :-1]], dim=1)
-    ha2_c = ast_chk.forward_seq(te_c, bh2_c, k_c, k_c, k_c)
+    ha2_c = ast_chk.forward_seq(te_c, bh2_c, k_c, k_c, k_c, k_c)
     hp2_c = F.linear(ha2_c, ast_chk.post)
     loss_chk = F.mse_loss(hp1_c, bh_c) + 0.25 * (1.0 - F.cosine_similarity(hp2_c[:, 1:], bh_c[:, 1:], dim=-1).mean())
     loss_chk.backward()
@@ -873,10 +878,10 @@ def run_selftest() -> int:
     scores = torch.abs(x).reshape(-1, d_m).amax(dim=0)
     perm, inv_perm = compute_outlier_dispersion_perm(scores, block_size=bsz)
     assert torch.equal(perm[inv_perm], torch.arange(d_m))
-    g_in = torch.randn(d_m) * 0.2
-    g_pa = torch.randn(d_m) * 0.2
-    g_pf = torch.randn(d_m) * 0.2
-    g_pff = torch.randn(d_m) * 0.2
+    g_in = 1.0 + torch.randn(d_m) * 0.2
+    g_pa = 1.0 + torch.randn(d_m) * 0.2
+    g_pf = 1.0 + torch.randn(d_m) * 0.2
+    g_pff = 1.0 + torch.randn(d_m) * 0.2
     wq = torch.randn(d_kv, d_m) * 0.05
     wk = torch.randn(d_kv, d_m) * 0.05
     wv = torch.randn(d_kv, d_m) * 0.05
@@ -887,7 +892,40 @@ def run_selftest() -> int:
     ls = 0.93
 
     def _rmsn(t: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        return t * torch.rsqrt(t.pow(2).mean(-1, keepdim=True) + 1e-6) * (1.0 + w)
+        return t * torch.rsqrt(t.pow(2).mean(-1, keepdim=True) + 1e-6) * w
+
+    # Parity check: Gemma 4 rmsn_raw y * w (fails if 1.0 + w) & partial-RoPE pairing matching src/math.rs
+    t_rm = torch.tensor([3.0, 4.0])
+    w_rm = torch.tensor([0.5, 2.0])
+    rm_out = _rmsn(t_rm, w_rm)
+    rms_exp = math.sqrt((9.0 + 16.0) / 2.0 + 1e-6)
+    rm_exp = torch.tensor([3.0 / rms_exp * 0.5, 4.0 / rms_exp * 2.0])
+    assert float((rm_out - rm_exp).abs().max().item()) < 1e-5, f"RMSNorm mismatch: {rm_out} vs {rm_exp}"
+
+    hd_p, rot_p, th_p, pos_p = 16, 4, 1e6, 3
+    hr_p, hh_p = rot_p // 2, hd_p // 2
+    inv_f_p = 1.0 / (th_p ** (torch.arange(0, 2 * hr_p, 2, dtype=torch.float32) / float(hd_p)))
+    ang_p = float(pos_p) * inv_f_p
+    c_p, s_p = torch.cos(ang_p), torch.sin(ang_p)
+    xq_p = torch.arange(1, hd_p + 1, dtype=torch.float32)
+    xr_p = xq_p.clone()
+    x0_p, x1_p = xq_p[:hr_p], xq_p[hh_p : hh_p + hr_p]
+    xr_p[:hr_p] = x0_p * c_p - x1_p * s_p
+    xr_p[hh_p : hh_p + hr_p] = x0_p * s_p + x1_p * c_p
+    assert torch.allclose(xr_p[hr_p:hh_p], xq_p[hr_p:hh_p], atol=1e-6)
+    assert torch.allclose(xr_p[hh_p + hr_p :], xq_p[hh_p + hr_p :], atol=1e-6)
+    exp_f0 = 1.0 / (th_p ** (0.0 / float(hd_p)))
+    exp_f1 = 1.0 / (th_p ** (2.0 / float(hd_p)))
+    assert abs(float(inv_f_p[0]) - exp_f0) < 1e-7 and abs(float(inv_f_p[1]) - exp_f1) < 1e-7
+
+    ast_chk_rp = Gemma4AssistantTrain(
+        toy_sd, d_mod=d_m_a, nh=nh_a, nkv_s=nkv_a, nkv_f=nkv_a, hd_s=16, hd_f=16,
+        theta_l=th_p, part_l=0.25, theta_g=th_p, part_g=0.25, seq_len=6, eps=1e-6, compute_dtype=torch.float32,
+    )
+    xq_4d = torch.zeros(1, 1, 1, hd_p)
+    xq_4d[0, 0, 0] = xq_p
+    xr_ast = ast_chk_rp._rope(xq_4d, ast_chk_rp.cr_l[pos_p : pos_p + 1], ast_chk_rp.sr_l[pos_p : pos_p + 1], rot_p, hd_p)[0, 0, 0]
+    assert float((xr_ast - xr_p).abs().max().item()) < 1e-5, f"Partial RoPE mismatch: {xr_ast} vs {xr_p}"
 
     def _fwd_block(inp_x, gi, gpa, gpf, gpff, q, k, v, o, g, u, d):
         xn = _rmsn(inp_x, gi)
@@ -1063,10 +1101,10 @@ def _build_decontaminated_corpus(tk, max_text_seq: int = 896, seq_len: int = V9_
     seq_nxt = np.zeros((len(turns), seq_len), dtype=np.int64)
     ans_mask = np.zeros((len(turns), seq_len), dtype=bool)
     for si, (_, q, a) in enumerate(turns):
-        pre_txt = f"<bos><start_of_turn>user\n{q}<end_of_turn>\n<start_of_turn>model\n<thought>\n</thought>"
-        full_txt = pre_txt + a + "<end_of_turn>"
-        pre_ids = tk.encode(pre_txt).ids
-        full_ids = tk.encode(full_txt).ids
+        pre_txt = vc.format_gemma4_turn(q, None)
+        pre_ids = [2] + list(tk.encode(pre_txt, add_special_tokens=False).ids)
+        ans_ids = list(tk.encode(f"{a}<turn|>\n", add_special_tokens=False).ids)
+        full_ids = pre_ids + ans_ids
         pad_id = tk.token_to_id("<pad>") or 0
         if len(full_ids) < seq_len + 1:
             full_ids = full_ids + [pad_id] * (seq_len + 1 - len(full_ids))
@@ -1161,24 +1199,31 @@ def run_pipeline() -> Dict[str, object]:
         xf = t.float()
         y = xf * torch.rsqrt((xf * xf).mean(dim=-1, keepdim=True) + EPS)
         if w is not None:
-            y = y * (1.0 + w.float())
+            y = y * w.float()
         return y.to(t.dtype)
 
     def make_rope(theta: float, rot_d: int, hd: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        inv_f = 1.0 / (theta ** (torch.arange(0, rot_d, 2, device=device, dtype=torch.float32) / float(rot_d)))
+        hr = rot_d // 2
+        if hr <= 0:
+            z = torch.zeros((V9_SEQ_LEN, 0), device=device, dtype=torch.float32)
+            return z, z
+        inv_f = 1.0 / (theta ** (torch.arange(0, 2 * hr, 2, device=device, dtype=torch.float32) / float(hd)))
         pos = torch.arange(V9_SEQ_LEN, device=device, dtype=torch.float32)
         ang = torch.outer(pos, inv_f)
         return torch.cos(ang), torch.sin(ang)
 
     def apply_rope(x: torch.Tensor, cs: torch.Tensor, sn: torch.Tensor, rot_d: int, hd: int) -> torch.Tensor:
-        if rot_d <= 0:
+        hr, hh = rot_d // 2, hd // 2
+        if hr <= 0:
             return x
-        xr = x[..., :rot_d].float()
-        x1, x2 = xr[..., : rot_d // 2], xr[..., rot_d // 2 :]
-        c = cs.view(1, x.shape[1], 1, rot_d // 2)
-        s = sn.view(1, x.shape[1], 1, rot_d // 2)
-        rot = torch.cat([x1 * c - x2 * s, x2 * c + x1 * s], dim=-1).to(x.dtype)
-        return rot if rot_d == hd else torch.cat([rot, x[..., rot_d:]], dim=-1)
+        xf = x.float()
+        x0, x1 = xf[..., :hr], xf[..., hh : hh + hr]
+        c = cs.view(1, x.shape[1], 1, hr)
+        s = sn.view(1, x.shape[1], 1, hr)
+        r0, r1 = x0 * c - x1 * s, x0 * s + x1 * c
+        if hr == hh:
+            return torch.cat([r0, r1], dim=-1).to(x.dtype)
+        return torch.cat([r0, xf[..., hr:hh], r1, xf[..., hh + hr :]], dim=-1).to(x.dtype)
 
     # ------------------------------------------------------------------
     # Stage 1: Corpus + VLM Seed Hidden States + Dispersion Perm Pi
@@ -1191,6 +1236,8 @@ def run_pipeline() -> Dict[str, object]:
     soft_tok = int(cfg_full.get("image_token_id", 258880))
     boi_tok = int(cfg_full.get("boi_token_id", 255999))
     eoi_tok = int(cfg_full.get("eoi_token_id", 258882))
+    tok_user_open = list(tk.encode("<|turn>user\n", add_special_tokens=False).ids)
+    tok_model_open = list(tk.encode("<turn|>\n<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False).ids)
     for r in coco_ds:
         objs = r.get("objects", {})
         cats = [str(c) for c in (objs.get("category", []) if isinstance(objs, dict) else [])[:4]]
@@ -1200,8 +1247,8 @@ def run_pipeline() -> Dict[str, object]:
         im = r["image"].convert("RGB").resize((224, 224))
         vlm_imgs.append(im)
         n_img = 16
-        prompt_ids = [tk.token_to_id("<bos>") or 2, boi_tok] + [soft_tok] * n_img + [eoi_tok] + tk.encode("\nDescribe the image.\n").ids
-        ans_ids = tk.encode(cap + "<end_of_turn>").ids
+        prompt_ids = [tk.token_to_id("<bos>") or 2] + tok_user_open + [boi_tok] + [soft_tok] * n_img + [eoi_tok] + list(tk.encode("Describe this image concisely in one sentence.", add_special_tokens=False).ids) + tok_model_open
+        ans_ids = list(tk.encode(f"{cap}<turn|>\n", add_special_tokens=False).ids)
         full = (prompt_ids + ans_ids + [0] * (V9_SEQ_LEN + 1))[: V9_SEQ_LEN + 1]
         vlm_seqs.append(full[:V9_SEQ_LEN])
         vlm_nxts.append(full[1 : V9_SEQ_LEN + 1])
@@ -1278,9 +1325,8 @@ def run_pipeline() -> Dict[str, object]:
     torch.save({"perm_pi": perm_pi, "inv_perm_pi": inv_perm_pi}, OUT_PERM_PT)
     print(f"[Stage 1] Dispersion Perm Pi computed across {D_MOD // V9_BLOCK_SIZE} blocks (score max/min ratio reduced via snake deal)", flush=True)
 
-    # Apply Pi to Teacher X_teach (and pack vision records with Pi on mm_input_projection output rows)
+    # Apply Pi to Teacher X_teach (Student X_stud_perm initialized from quantized emb_eff below)
     X_teach_perm = X_teach[:, :, perm_pi].clone()
-    X_stud_perm = X_teach_perm.clone()
     del X_teach
     gc.collect()
 
@@ -1343,6 +1389,10 @@ def run_pipeline() -> Dict[str, object]:
         emb_eff[r0:r1] = reconstruct_from_headers(u_c, sc_c, None, None, H256_GPU).to(torch.float16).cpu()
         del w_c, w_rot, pb_c, u_c, sc_c
     del emb_perm
+    X_stud_perm = (emb_eff[torch.from_numpy(all_seq_ids)] * ESCALE).to(torch.float16)
+    for si in range(N_TEXT_SEQ, N_SEQ):
+        pos_m = torch.from_numpy(all_seq_ids[si] == soft_tok)
+        X_stud_perm[si, pos_m] = X_teach_perm[si, pos_m]
     torch.cuda.empty_cache()
 
     # Collect per-layer permuted norms upfront so T16C header can be written deterministically
@@ -1602,7 +1652,7 @@ def run_pipeline() -> Dict[str, object]:
             x_mlp_ev: List[torch.Tensor] = []
             X_teach_next = torch.empty_like(X_teach_perm)
             X_teach_attn_out = torch.empty_like(X_teach_perm)
-            head_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, NH), dtype=torch.float16)
+            head_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, NH), dtype=torch.float32)
             wo_head_norm = wo_t.view(D_MOD, NH, hd).pow(2).sum(dim=(0, 2)).sqrt().clamp(min=1e-6)
             with torch.no_grad():
                 for b0 in range(0, N_SEQ, MB_FWD):
@@ -1622,7 +1672,7 @@ def run_pipeline() -> Dict[str, object]:
                     v = v.transpose(1, 2)
                     ctx = F.scaled_dot_product_attention(q, k.repeat_interleave(rep, 1), v.repeat_interleave(rep, 1), is_causal=True, scale=1.0)
                     ctx_h = ctx.transpose(1, 2).contiguous()
-                    head_e_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = (ctx_h.pow(2).sum(dim=-1).sqrt() * wo_head_norm.view(1, 1, NH)).reshape(-1, NH).to(torch.float16).cpu()
+                    head_e_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = (ctx_h.pow(2).sum(dim=-1).sqrt() * wo_head_norm.view(1, 1, NH)).reshape(-1, NH).to(torch.float32).cpu()
                     ctx = ctx_h.view(b1 - b0, V9_SEQ_LEN, NH * hd)
                     ctx_f = ctx.reshape(-1, NH * hd)
                     H_o.add_(ctx_f.T @ ctx_f)
@@ -1638,7 +1688,7 @@ def run_pipeline() -> Dict[str, object]:
                         x_mlp_ev.append(xf_f[::4])
                     act = F.gelu(F.linear(xf, wg_t), approximate="tanh") * F.linear(xf, wu_t)
                     if b0 < 64:
-                        act_samples.append(act[:, ::2, :].reshape(-1, V9_FF).abs().to(torch.float16).cpu())
+                        act_samples.append(act[:, ::2, :].reshape(-1, V9_FF).abs().to(torch.float32).cpu())
                     xo = (xm + rmsn_gpu(F.linear(act, wd_t), g_pff.detach())) * lsc_init
                     X_teach_next[b0:b1] = xo.to(torch.float16).cpu()
 
@@ -1860,7 +1910,7 @@ def run_pipeline() -> Dict[str, object]:
             # Student Attention output on current layer (applies exact 10/32 head mask on L2..L57!)
             xm_stud_cpu = torch.empty_like(X_stud_perm)
             xf_stud_cpu = torch.empty_like(X_stud_perm)
-            blk_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, V9_MLP_BLOCKS), dtype=torch.float16)
+            blk_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, V9_MLP_BLOCKS), dtype=torch.float32)
             mod_sal_cpu = torch.empty((N_SEQ * V9_SEQ_LEN,), dtype=torch.float32)
 
             wq_q = attn_packed["self_attn.q_proj"].float()
@@ -1882,8 +1932,7 @@ def run_pipeline() -> Dict[str, object]:
                             if gi in ast_seqs:
                                 cap = cap_kv58 if l_idx == 58 else cap_kv59
                                 cap["k_rope"][gi] = k[gi - b0].to(torch.float16).cpu()
-                                if not (is_f and K_EQ_V):
-                                    cap["v_norm"][gi] = v[gi - b0].to(torch.float16).cpu()
+                                cap["v_norm"][gi] = v[gi - b0].to(torch.float16).cpu()
                     ctx_s = F.scaled_dot_product_attention(q, k.repeat_interleave(rep, 1), v.repeat_interleave(rep, 1), is_causal=True, scale=1.0).transpose(1, 2).contiguous()
                     if hr_net_eval is not None:
                         hr_lg, _ = hr_net_eval(xn.reshape(-1, D_MOD))
@@ -1897,7 +1946,7 @@ def run_pipeline() -> Dict[str, object]:
                     xm_stud_cpu[b0:b1] = xm.to(torch.float16).cpu()
                     xf_stud_cpu[b0:b1] = xf.to(torch.float16).cpu()
                     gg = F.gelu(F.linear(xf, wg_init), approximate="tanh").reshape(-1, V9_MLP_BLOCKS, V9_BLOCK_SIZE)
-                    blk_e_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = gg.pow(2).sum(dim=-1).to(torch.float16).cpu()
+                    blk_e_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = gg.pow(2).sum(dim=-1).to(torch.float32).cpu()
                     # Layer residual salience target for MoD threshold (top 72% kept)
                     sal_tok = (X_teach_next[b0:b1].to(device, dtype=torch.float32) - xb).pow(2).sum(dim=-1).sqrt() / (xb.pow(2).sum(dim=-1).sqrt() + 1e-6)
                     mod_sal_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = sal_tok.reshape(-1).cpu()
@@ -2160,6 +2209,7 @@ def run_pipeline() -> Dict[str, object]:
                     cap_kv58["k_rope"][gi].unsqueeze(0).to(device),
                     cap_kv58["v_norm"][gi].unsqueeze(0).to(device),
                     cap_kv59["k_rope"][gi].unsqueeze(0).to(device),
+                    cap_kv59["v_norm"][gi].unsqueeze(0).to(device),
                 ).squeeze(0)
                 zs = SOFTCAP * torch.tanh((ast_h_final[ai, 1:].to(device).float() @ W_cand_g.T) / SOFTCAP)
                 za = ha @ W_ast_cand.T
@@ -2177,7 +2227,7 @@ def run_pipeline() -> Dict[str, object]:
     for st in range(300):
         opt_a.zero_grad()
         bais = np.random.choice(n_ast_tr, size=min(ast_bs, n_ast_tr), replace=False).tolist()
-        te_l, bh_l, k58_l, v58_l, k59_l, ht_l = [], [], [], [], [], []
+        te_l, bh_l, k58_l, v58_l, k59_l, v59_l, ht_l = [], [], [], [], [], [], []
         for ai in bais:
             gi = ast_seqs[ai]
             te_l.append(emb_g[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE)
@@ -2185,19 +2235,20 @@ def run_pipeline() -> Dict[str, object]:
             k58_l.append(cap_kv58["k_rope"][gi].to(device))
             v58_l.append(cap_kv58["v_norm"][gi].to(device))
             k59_l.append(cap_kv59["k_rope"][gi].to(device))
+            v59_l.append(cap_kv59["v_norm"][gi].to(device))
             ht_l.append(ast_h_final[ai, 1:].to(device).float())
         te_s = torch.stack(te_l)
         bh_s = torch.stack(bh_l)
-        k58_s, v58_s, k59_s = torch.stack(k58_l), torch.stack(v58_l), torch.stack(k59_l)
+        k58_s, v58_s, k59_s, v59_s = torch.stack(k58_l), torch.stack(v58_l), torch.stack(k59_l), torch.stack(v59_l)
         hst = torch.stack(ht_l)
-        ha = ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s)
+        ha = ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s)
         with torch.no_grad():
             zs = SOFTCAP * torch.tanh((hst.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
             ps, ys_t1 = F.softmax(zs / TAU_AST, dim=-1), zs.argmax(dim=-1)
         za = ha.reshape(-1, 1024) @ W_ast_cand.T
         hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
         bh2 = torch.cat([bh_s[:, :1], hpost[:, :-1]], dim=1)
-        ha2 = ast_mod.forward_seq(te_s, bh2, k58_s, v58_s, k59_s)
+        ha2 = ast_mod.forward_seq(te_s, bh2, k58_s, v58_s, k59_s, v59_s)
         hpost2 = F.linear(ha2.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
         loss_a = (
             ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU_AST, dim=-1))).sum(dim=-1) * (TAU_AST * TAU_AST)).mean()
@@ -2250,7 +2301,8 @@ def run_pipeline() -> Dict[str, object]:
             k58_s = torch.stack([cap_kv58["k_rope"][gi].to(device) for gi in gis])
             v58_s = torch.stack([cap_kv58["v_norm"][gi].to(device) for gi in gis])
             k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
-            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s).cpu())
+            v59_s = torch.stack([cap_kv59["v_norm"][gi].to(device) for gi in gis])
+            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s).cpu())
     del ast_mod, cap_kv58, cap_kv59
     torch.cuda.empty_cache()
 
