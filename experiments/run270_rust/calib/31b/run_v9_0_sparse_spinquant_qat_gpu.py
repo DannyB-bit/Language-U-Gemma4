@@ -1771,6 +1771,28 @@ def run_selftest() -> int:
     w_b1 = torch.randn(16, 64) * 0.015
     hb_g4 = torch.stack([torch.eye(32) * 1.5, torch.eye(32) * 0.8], dim=0)
     gptq_quant_blks_gpu(w_b1, hb_g4, None, h_q, 32, 0)
+    # Verify T16C header + norm + record roundtrip matching run_ablate_2_and_3()
+    t16c_hdr_ok = False
+    with tempfile.TemporaryDirectory() as td_hdr:
+        p_t16 = Path(td_hdr) / "test_hdr.t16c"
+        n_test = np.linspace(0.5, 1.5, 32, dtype="<f4")
+        pb_t16 = np.frombuffer(_pack_1b_cm_test(w_g_r.numpy()), dtype=np.uint8)
+        with open(p_t16, "wb") as fp_t:
+            fp_t.write(struct.pack("<4s5I", p3.T16C_MAGIC, p3.T16C_VERSION, p3.ARCH_FLAGS, 1, 1, 0))
+            kb_t = b"model.language_model.norm.weight"
+            fp_t.write(struct.pack("<H", len(kb_t)) + kb_t + struct.pack("<I", n_test.size))
+            off_n = fp_t.tell()
+            fp_t.write(n_test.tobytes())
+            pos_t = p3._write_mat_record(fp_t, fp_t.tell(), "model.language_model.embed_tokens.weight", 32, 128, 64, 1, True, True, pb_t16, None, None)
+        nm_t, noff_t, mm_t, mo_t = _parse_t16c_full_index(p_t16)
+        vm_t, ve_t = v70.verify_t16c_integrity(p_t16)
+        t16c_hdr_ok = (
+            vm_t == 1 and ve_t == pos_t == p_t16.stat().st_size
+            and noff_t.get("model.language_model.norm.weight") == off_n
+            and np.allclose(nm_t[0][1], n_test)
+            and mo_t == ["model.language_model.embed_tokens.weight"]
+            and "model.language_model.embed_tokens.weight" in mm_t
+        )
     # Test finiteness & stability
     g4_ok = (
         mse_r < mse_bad * 0.15
@@ -1778,13 +1800,14 @@ def run_selftest() -> int:
         and pb_rt_ok
         and pi_rec_ok
         and sq_ridge_ok
+        and t16c_hdr_ok
         and 0.70 <= norm_rat_g4 <= 1.25
         and torch.isfinite(w_b1).all().item()
     )
     gate(
-        "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers + GPU pi_l + SmoothQuant",
+        "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers + GPU pi_l + SmoothQuant + T16C hdr",
         g4_ok,
-        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}, pi={pi_rec_ok}, sq={mse_sq_wls:.5f}->{mse_sq_r:.5f}",
+        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}, pi={pi_rec_ok}, sq={mse_sq_wls:.5f}->{mse_sq_r:.5f}, t16c={t16c_hdr_ok}",
     )
 
     # Gate 5: Strict Rule 2 Decontamination Detector (0 overlap on clean strings, catches injected holdout)
@@ -2859,6 +2882,7 @@ def run_pipeline() -> Dict[str, object]:
 
     LIB_FQ = _compile_fast_quant(Path("/tmp/libfast_quant_v9_0.so"))
     H256_GPU = torch.from_numpy(pa.make_sylvester_hadamard(V9_BLOCK_SIZE)).to(device, dtype=torch.float32)
+    H8_GPU = torch.from_numpy(c8d.H8_NP).to(device, dtype=torch.float32)
 
     print(f"[V9.0 INIT] GPU={gpu_name} ({gpu_vram_gb:.1f} GiB) | MB_FWD={MB_FWD} | DRIVE={DRIVE_DIR}", flush=True)
     model_dir = Path(snapshot_download("google/gemma-4-31B-it-qat-w4a16-ct", local_dir="/tmp/gemma4_31b", ignore_patterns=["*.bin", "*.pt"]))
@@ -4526,15 +4550,16 @@ def run_ablate_2_and_3() -> Dict[str, object]:
                 fp2.write(arr_n.tobytes())
         fp2.flush()
 
-        # Write T16C v3 header + clean norms + intact embed_tokens into fp3
+        # Write T16C v1 header + clean norms + intact embed_tokens into fp3
         total_mats = len(mat_order_src)
-        pos3 = p3._write_t16c_header(fp3, len(clean_norms_ordered), total_mats, V9_BLOCK_SIZE)
+        fp3.write(struct.pack("<4s5I", p3.T16C_MAGIC, p3.T16C_VERSION, p3.ARCH_FLAGS, len(clean_norms_ordered), total_mats, 0))
+        pos3 = 24
         for k_n, arr_n in clean_norms_ordered:
             kb_n = k_n.encode("utf-8")
-            fp3.write(struct.pack("<H", len(kb_n)) + kb_n + struct.pack("<I", len(arr_n)))
+            a32_n = np.ascontiguousarray(arr_n, dtype="<f4").ravel()
+            fp3.write(struct.pack("<H", len(kb_n)) + kb_n + struct.pack("<I", a32_n.size))
             norm_offsets_3[k_n] = fp3.tell()
-            raw_n = arr_n.tobytes()
-            fp3.write(raw_n)
+            fp3.write(a32_n.tobytes())
             pos3 = fp3.tell()
         pb_emb, is_emb, lr_emb = _read_raw_mat_parts(fp_src, mats_src["model.language_model.embed_tokens.weight"])
         pos3 = p3._write_mat_record(
