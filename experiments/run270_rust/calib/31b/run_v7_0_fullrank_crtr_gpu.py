@@ -2164,7 +2164,7 @@ def run_pipeline() -> Dict[str, object]:
     del X_teach_cpu, X_stud_cpu; gc.collect(); torch.cuda.empty_cache()
 
     with safe_open(sf_path, framework="pt", device="cpu") as sf_e:
-        emb_gpu = sf_e.get_tensor("model.language_model.embed_tokens.weight").to(device, dtype=torch.float16)
+        emb_gpu = sf_e.get_tensor("model.language_model.embed_tokens.weight").to(device, dtype=compute_dtype)
     N_ANS, TAU = hs_ans.shape[0], 1.5
     t_lse = torch.full((N_ANS,), -1e9, device=device)
     q_lse = torch.full((N_ANS,), -1e9, device=device)
@@ -2416,7 +2416,7 @@ def run_pipeline() -> Dict[str, object]:
     with torch.no_grad():
         for i0 in range(0, H_stud_tgt.shape[0], 512):
             i1 = min(i0 + 512, H_stud_tgt.shape[0])
-            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_gpu.T).float() / SOFTCAP)
+            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_gpu.to(dtype=compute_dtype).T).float() / SOFTCAP)
             tv, ti = torch.topk(lg_b, k=64, dim=-1)
             top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
             top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
