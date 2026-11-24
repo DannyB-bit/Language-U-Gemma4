@@ -666,6 +666,35 @@ def _compile_fast_quant(out_so: Path) -> ctypes.CDLL:
     return lib
 
 
+def _c_quant_and_pack_t16c(lib_fq: ctypes.CDLL, w_rot: torch.Tensor, bsize: int, mode_i: int) -> np.ndarray:
+    """Safely pin a contiguous FP32 buffer across FFI to quantize & pack `[d_out, d_in]` into T16C payload."""
+    do, di = int(w_rot.shape[0]), int(w_rot.shape[1])
+    nb_m, asym_m = p3.MODE_TO_T16C[mode_i]
+    pb_arr = np.empty(p3.expected_tile16_bytes(do, di, bsize, nb_m, asym_m), dtype=np.uint8)
+    w_cpu_f32 = np.ascontiguousarray(w_rot.detach().cpu().numpy(), dtype=np.float32)
+    lib_fq.quant_and_pack_t16c_f32(w_cpu_f32.ctypes.data, do, di, bsize, mode_i, pb_arr.ctypes.data)
+    del w_cpu_f32
+    return pb_arr
+
+
+def _c_update_t16c_headers(
+    lib_fq: ctypes.CDLL,
+    pb_arr: np.ndarray,
+    do: int,
+    di: int,
+    bsize: int,
+    mode_i: int,
+    sc_t: torch.Tensor,
+    bi_t: Optional[torch.Tensor] = None,
+) -> None:
+    """Safely pin contiguous FP32 `(sc, bi)` buffers across FFI header update without dangling temporaries."""
+    sc_np = np.ascontiguousarray(sc_t.detach().cpu().numpy(), dtype=np.float32)
+    bi_np = np.ascontiguousarray(bi_t.detach().cpu().numpy(), dtype=np.float32) if bi_t is not None else None
+    bi_ptr = bi_np.ctypes.data if bi_np is not None else 0
+    lib_fq.update_t16c_headers_f32(pb_arr.ctypes.data, do, di, bsize, mode_i, sc_np.ctypes.data, bi_ptr)
+    del sc_np, bi_np
+
+
 def unpack_tile16_headers_and_units(
     pbytes: np.ndarray,
     d_out: int,
@@ -1774,6 +1803,17 @@ def run_selftest() -> int:
     w_b2 = w_sq_rot.reshape(32, 128).clone()
     hb_b2 = torch.stack([(x_sq_tr[:, :64].T @ x_sq_tr[:, :64]), (x_sq_tr[:, 64:].T @ x_sq_tr[:, 64:])], dim=0)
     gptq_quant_blks_gpu(w_b2, hb_b2, inv_s_t4, h_64, 64, 5)
+    c_pack_ok = True
+    if shutil.which("gcc") is not None:
+        lib_t4 = _compile_fast_quant(Path(tempfile.gettempdir()) / "libfast_quant_selftest.so")
+        # 512 x 512 FP32 (1.0 MiB > glibc 128 KB mmap threshold) exercises non-dangling FFI pinning
+        w_big4 = torch.randn(512, 512) * 0.02
+        pb_big4 = _c_quant_and_pack_t16c(lib_t4, w_big4, 256, 5)
+        h_256_4 = torch.from_numpy(pa.make_sylvester_hadamard(256)).float()
+        u_big4, sc_big4, bi_big4 = unpack_tile16_headers_and_units(pb_big4, 512, 512, 256, 5, h_256_4)
+        _c_update_t16c_headers(lib_t4, pb_big4, 512, 512, 256, 5, sc_big4 * 1.05, bi_big4)
+        _, sc_big4_after, _ = unpack_tile16_headers_and_units(pb_big4, 512, 512, 256, 5, h_256_4)
+        c_pack_ok = bool(torch.isfinite(u_big4).all().item() and float((sc_big4_after - sc_big4 * 1.05).abs().mean().item()) < 1e-3)
     # Verify T16C header + norm + record roundtrip matching run_ablate_2_and_3()
     t16c_hdr_ok = False
     with tempfile.TemporaryDirectory() as td_hdr:
@@ -1807,6 +1847,7 @@ def run_selftest() -> int:
         and 0.70 <= norm_rat_g4 <= 1.25
         and torch.isfinite(w_b1).all().item()
         and torch.isfinite(w_b2).all().item()
+        and c_pack_ok
     )
     gate(
         "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers + GPU pi_l + SmoothQuant + T16C hdr",
@@ -4031,9 +4072,8 @@ def _calibrate_branch_layer(
         hb_q_raw = torch.stack([H_attn[b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE, b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE] for b in range(D_MOD // V9_BLOCK_SIZE)], dim=0)
         gptq_quant_blks_gpu(w_rot_q, hb_q_raw, is_q_g, H256_GPU, V9_BLOCK_SIZE, mode_q)
         del hb_q_raw
-        n_b_q, asym_q = p3.MODE_TO_T16C[mode_q]
-        pb_q_arr = np.empty(p3.expected_tile16_bytes(int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, n_b_q, asym_q), dtype=np.uint8)
-        lib_fq.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_q.cpu().numpy(), dtype=np.float32).ctypes.data, int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, mode_q, pb_q_arr.ctypes.data)
+        _, asym_q = p3.MODE_TO_T16C[mode_q]
+        pb_q_arr = _c_quant_and_pack_t16c(lib_fq, w_rot_q, V9_BLOCK_SIZE, mode_q)
         del w_rot_q
         u_q, sc_q, bi_q = unpack_tile16_headers_and_units(pb_q_arr, int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, mode_q, H256_GPU)
         w_q0 = reconstruct_from_headers(u_q, sc_q, bi_q, is_q_g, H256_GPU)
@@ -4042,8 +4082,7 @@ def _calibrate_branch_layer(
         del w_q0, x_q_ev
         sc_q, bi_q, _, _, _ = solve_block_ridge_headers(wq_t, u_q, sc_q, bi_q, h_blks_q_rot, is_q_g, H256_GPU, w_lr=lrd_q, val_x=va_xn, val_y_target=F.linear(va_xn, wq_t))
         del h_blks_q_rot
-        sc_np_q = np.ascontiguousarray(sc_q.detach().cpu().numpy(), dtype=np.float32)
-        lib_fq.update_t16c_headers_f32(pb_q_arr.ctypes.data, int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, mode_q, sc_np_q.ctypes.data, 0)
+        _c_update_t16c_headers(lib_fq, pb_q_arr, int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, mode_q, sc_q, bi_q)
         hdr_q_out, pay_q_out = finalize_t16c_payload(pb_q_arr, int(wq_t.shape[0]), D_MOD, V9_BLOCK_SIZE, mode_q, is_rm_q, is_cb_q)
         wq_q = reconstruct_from_headers(u_q, sc_q, bi_q, is_q_g, H256_GPU) + (lrd_q if lrd_q is not None else 0.0)
         del u_q, pb_q_arr
@@ -4117,9 +4156,8 @@ def _calibrate_branch_layer(
         hb_o_raw = torch.stack([H_o[b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE, b * V9_BLOCK_SIZE : (b + 1) * V9_BLOCK_SIZE] for b in range((NH * hd) // V9_BLOCK_SIZE)], dim=0)
         gptq_quant_blks_gpu(w_rot_o, hb_o_raw, None, H256_GPU, V9_BLOCK_SIZE, mode_o)
         del hb_o_raw
-        n_b_o, asym_o = p3.MODE_TO_T16C[mode_o]
-        pb_o_arr = np.empty(p3.expected_tile16_bytes(D_MOD, NH * hd, V9_BLOCK_SIZE, n_b_o, asym_o), dtype=np.uint8)
-        lib_fq.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_o.cpu().numpy(), dtype=np.float32).ctypes.data, D_MOD, NH * hd, V9_BLOCK_SIZE, mode_o, pb_o_arr.ctypes.data)
+        _, asym_o = p3.MODE_TO_T16C[mode_o]
+        pb_o_arr = _c_quant_and_pack_t16c(lib_fq, w_rot_o, V9_BLOCK_SIZE, mode_o)
         del w_rot_o
         u_o, sc_o, bi_o = unpack_tile16_headers_and_units(pb_o_arr, D_MOD, NH * hd, V9_BLOCK_SIZE, mode_o, H256_GPU)
         w_o0 = reconstruct_from_headers(u_o, sc_o, bi_o, None, H256_GPU)
@@ -4127,8 +4165,7 @@ def _calibrate_branch_layer(
         del w_o0
         sc_o, bi_o, _, _, _ = solve_block_ridge_headers(wo_t, u_o, sc_o, bi_o, h_blks_o_rot, None, H256_GPU, w_lr=lrd_o, val_x=vx_o, val_y_target=F.linear(vx_o, wo_t))
         del h_blks_o_rot
-        sc_np_o = np.ascontiguousarray(sc_o.detach().cpu().numpy(), dtype=np.float32)
-        lib_fq.update_t16c_headers_f32(pb_o_arr.ctypes.data, D_MOD, NH * hd, V9_BLOCK_SIZE, mode_o, sc_np_o.ctypes.data, 0)
+        _c_update_t16c_headers(lib_fq, pb_o_arr, D_MOD, NH * hd, V9_BLOCK_SIZE, mode_o, sc_o, bi_o)
         hdr_o_out, pay_o_out = finalize_t16c_payload(pb_o_arr, D_MOD, NH * hd, V9_BLOCK_SIZE, mode_o, is_rm_o, is_cb_o)
         wo_q = reconstruct_from_headers(u_o, sc_o, bi_o, None, H256_GPU) + (lrd_o if lrd_o is not None else 0.0)
         del u_o, pb_o_arr
@@ -4233,9 +4270,8 @@ def _calibrate_branch_layer(
             w_rot_m = ((w_tgt * sq_m.unsqueeze(0)).reshape(-1, V9_BLOCK_SIZE) @ H256_GPU).reshape(w_tgt.shape).contiguous()
             h_blks_m_rot = _h_full_to_blks_rot(H_mlp, is_m_g, H256_GPU, V9_BLOCK_SIZE)
             gptq_quant_blks_gpu(w_rot_m, hb_mlp_raw, is_m_g, H256_GPU, V9_BLOCK_SIZE, mode_m)
-            nb_m, asym_m = p3.MODE_TO_T16C[mode_m]
-            pb_arr = np.empty(p3.expected_tile16_bytes(V9_FF, D_MOD, V9_BLOCK_SIZE, nb_m, asym_m), dtype=np.uint8)
-            lib_fq.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_m.cpu().numpy(), dtype=np.float32).ctypes.data, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, pb_arr.ctypes.data)
+            _, asym_m = p3.MODE_TO_T16C[mode_m]
+            pb_arr = _c_quant_and_pack_t16c(lib_fq, w_rot_m, V9_BLOCK_SIZE, mode_m)
             del w_rot_m
             u_m, sc_m, bi_m = unpack_tile16_headers_and_units(pb_arr, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, H256_GPU)
             w_m0 = reconstruct_from_headers(u_m, sc_m, bi_m, is_m_g, H256_GPU)
@@ -4243,8 +4279,7 @@ def _calibrate_branch_layer(
             del w_m0
             sc_m, bi_m, _, _, _ = solve_block_ridge_headers(w_tgt, u_m, sc_m, bi_m, h_blks_m_rot, is_m_g, H256_GPU, w_lr=lrd_m, val_x=va_xf, val_y_target=F.linear(va_xf, w_tgt))
             del h_blks_m_rot
-            sc_np_m = np.ascontiguousarray(sc_m.detach().cpu().numpy(), dtype=np.float32)
-            lib_fq.update_t16c_headers_f32(pb_arr.ctypes.data, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, sc_np_m.ctypes.data, 0)
+            _c_update_t16c_headers(lib_fq, pb_arr, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, sc_m, bi_m)
             hdr_m_out, pay_m_out = finalize_t16c_payload(pb_arr, V9_FF, D_MOD, V9_BLOCK_SIZE, mode_m, is_rm_m, is_cb_m)
             w_fin = reconstruct_from_headers(u_m, sc_m, bi_m, is_m_g, H256_GPU) + (lrd_m if lrd_m is not None else 0.0)
             del u_m, pb_arr
@@ -4353,9 +4388,8 @@ def _calibrate_branch_layer(
         h_down_blks_rot = 0.5 * (h_down_blks_rot + h_down_blks_rot.mT)
         gptq_quant_blks_gpu(w_rot_d, H_down_blks, is_d_g, H256_GPU, V9_BLOCK_SIZE, mode_d)
         del H_down_blks
-        nb_d, asym_d = p3.MODE_TO_T16C[mode_d]
-        pb_d_arr = np.empty(p3.expected_tile16_bytes(D_MOD, V9_FF, V9_BLOCK_SIZE, nb_d, asym_d), dtype=np.uint8)
-        lib_fq.quant_and_pack_t16c_f32(np.ascontiguousarray(w_rot_d.cpu().numpy(), dtype=np.float32).ctypes.data, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, pb_d_arr.ctypes.data)
+        _, asym_d = p3.MODE_TO_T16C[mode_d]
+        pb_d_arr = _c_quant_and_pack_t16c(lib_fq, w_rot_d, V9_BLOCK_SIZE, mode_d)
         del w_rot_d
         u_d, sc_d, bi_d = unpack_tile16_headers_and_units(pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, H256_GPU)
         w_d0 = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU)
@@ -4363,8 +4397,7 @@ def _calibrate_branch_layer(
         del w_d0
         sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
         del h_down_blks_rot
-        sc_np_d = np.ascontiguousarray(sc_d.detach().cpu().numpy(), dtype=np.float32)
-        lib_fq.update_t16c_headers_f32(pb_d_arr.ctypes.data, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, sc_np_d.ctypes.data, 0)
+        _c_update_t16c_headers(lib_fq, pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, sc_d, bi_d)
         hdr_d_out, pay_d_out = finalize_t16c_payload(pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, is_rm_d, is_cb_d)
         wd_fin = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU) + (lrd_d if lrd_d is not None else 0.0)
         d_write_rec = (m_d, D_MOD, V9_FF, V9_BLOCK_SIZE, hdr_d_out, asym_d, True, pay_d_out, is_d_np, lr_d)
