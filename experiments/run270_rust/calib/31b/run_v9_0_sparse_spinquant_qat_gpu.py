@@ -114,6 +114,15 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _drive_safe_copy(src: Path, dst: Path, chunk_bytes: int = 16 * 1024 * 1024) -> None:
+    """Truncate-and-overwrite in-place so Google Drive FUSE updates the existing file ID without duplicates."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(src, "rb") as fs, open(dst, "wb") as fd:
+        shutil.copyfileobj(fs, fd, chunk_bytes)
+        fd.flush()
+        os.fsync(fd.fileno())
+
+
 def _normalize_words(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
@@ -1066,10 +1075,7 @@ def run_pipeline() -> Dict[str, object]:
         sz = src.stat().st_size
         dig = _sha256_file(src)
         if DRIVE_DIR is not None:
-            dst = DRIVE_DIR / src.name
-            tmp = DRIVE_DIR / (src.name + ".tmp")
-            shutil.copy2(src, tmp)
-            os.replace(tmp, dst)
+            _drive_safe_copy(src, DRIVE_DIR / src.name)
         return sz, dig
 
     from datasets import load_dataset
@@ -1226,7 +1232,7 @@ def run_pipeline() -> Dict[str, object]:
             si = N_TEXT_SEQ + vi
             proc_out = img_proc(images=im, return_tensors="pt")
             pv = proc_out["pixel_values"].to(device, dtype=compute_dtype)
-            pos_ids = proc_out["pixel_position_ids"].to(device)
+            pos_ids = proc_out["image_position_ids"].to(device)
             vo = vis_model(pixel_values=pv, pixel_position_ids=pos_ids).last_hidden_state
             vm = mm_embed(vo).squeeze(0)[:16].to(torch.float16).cpu()
             pos_m = torch.from_numpy(all_seq_ids[si] == soft_tok)
@@ -1252,23 +1258,41 @@ def run_pipeline() -> Dict[str, object]:
 
     # Pack Vision + Permuted Embedding Table into V9.0 .t16c header pass
     all_norms: List[Tuple[str, np.ndarray]] = [("model.language_model.norm.weight", fn_orig[perm_pi].numpy().astype(np.float32))]
-    # Read per-layer norms now and permute D_MOD-sized norms cleanly
+    # Read per-layer vision norms and pack Vision Tower + embed_vision at bsz=64 (exact vision.rs layout)
+    H64_GPU = torch.from_numpy(pa.make_sylvester_hadamard(64)).to(device, dtype=torch.float32)
+
+    def _pack_vis_mat(name: str, wt: torch.Tensor, pad_in: int = 0) -> None:
+        t = vis_deq[name].float() if (vis_deq is not None and name in vis_deq) else wt.float()
+        if "embedding_projection" in name and t.shape[0] == D_MOD:
+            t = t[perm_pi]
+        do, di = int(t.shape[0]), int(t.shape[1])
+        if pad_in > di:
+            tp = torch.zeros((do, pad_in), dtype=torch.float32)
+            tp[:, :di] = t
+            t, die = tp, pad_in
+        else:
+            die = di
+        pb = c_pack((t.to(device).reshape(-1, 64) @ H64_GPU).cpu().numpy(), do, die, 64, 6)
+        vision_mat_recs.append((name, do, die, 64, 3 | p3.T16C_GAUSS_BIT, False, True, pb, None, None))
+
     with safe_open(sf_path, framework="pt", device="cpu") as sf:
-        for vk in sorted(vis_keys):
-            t = vis_deq[vk].float() if (vis_deq is not None and vk in vis_deq) else sf.get_tensor(vk).float()
-            if t.ndim == 1:
-                arr = t.numpy()
-                if arr.size == D_MOD:
-                    arr = arr[perm_pi.numpy()]
-                vision_norm_recs.append((vk, arr.astype(np.float32)))
-            elif t.ndim == 2:
-                if "embedding_projection" in vk and t.shape[0] == D_MOD:
-                    t = t[perm_pi]
-                do, di = int(t.shape[0]), int(t.shape[1])
-                bsz = 64 if (di % 256 != 0) else 256
-                pb = c_pack((t.to(device).reshape(-1, bsz) @ torch.from_numpy(pa.make_sylvester_hadamard(bsz)).to(device)).cpu().numpy(), do, di, bsz, 6)
-                vision_mat_recs.append((vk, do, di, bsz, 3 | p3.T16C_GAUSS_BIT, False, True, pb, None, None))
-    del vis_model, mm_embed
+        sf_keys = set(sf.keys())
+        for std_k in ("model.vision_tower.std_bias", "model.vision_tower.std_scale"):
+            if std_k in sf_keys:
+                vision_norm_recs.append((std_k, sf.get_tensor(std_k).float().numpy().astype("<f4")))
+        pos_tbl_raw = sf.get_tensor("model.vision_tower.patch_embedder.position_embedding_table").float()
+        for ax in (0, 1):
+            _pack_vis_mat(f"model.vision_tower.patch_embedder.position_embedding_table.{ax}", pos_tbl_raw[ax])
+        _pack_vis_mat("model.vision_tower.patch_embedder.input_proj.weight", sf.get_tensor("model.vision_tower.patch_embedder.input_proj.weight"))
+        for lv in range(27):
+            fp_v = f"model.vision_tower.encoder.layers.{lv}"
+            for nk in ("input_layernorm.weight", "post_attention_layernorm.weight", "pre_feedforward_layernorm.weight", "post_feedforward_layernorm.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight"):
+                vision_norm_recs.append((f"{fp_v}.{nk}", sf.get_tensor(f"{fp_v}.{nk}").float().numpy().astype("<f4")))
+            for pj in ("self_attn.q_proj.linear.weight", "self_attn.k_proj.linear.weight", "self_attn.v_proj.linear.weight", "self_attn.o_proj.linear.weight", "mlp.gate_proj.linear.weight", "mlp.up_proj.linear.weight"):
+                _pack_vis_mat(f"{fp_v}.{pj}", sf.get_tensor(f"{fp_v}.{pj}"))
+            _pack_vis_mat(f"{fp_v}.mlp.down_proj.linear.weight", sf.get_tensor(f"{fp_v}.mlp.down_proj.linear.weight"), pad_in=4352)
+        _pack_vis_mat("model.embed_vision.embedding_projection.weight", sf.get_tensor("model.embed_vision.embedding_projection.weight"))
+    del vis_model, mm_embed, H64_GPU
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -1448,6 +1472,18 @@ def run_pipeline() -> Dict[str, object]:
     ckpt_hr_p = CKPT_DIR / "head_crtr_layers.pt"
     ckpt_c8_p = CKPT_DIR / "c8db_entries.pt"
 
+    # Restore checkpoint from Google Drive if local runtime restarted cleanly
+    if not ckpt_meta_p.is_file() and DRIVE_DIR is not None:
+        d_ck = DRIVE_DIR / "ckpt_v9_0"
+        d_part = DRIVE_DIR / (OUT_T16C.name + ".partial")
+        if (d_ck / "stage2_v9_ckpt.pt").is_file() and d_part.is_file():
+            print(f"[V9.0 Drive Restore] Restoring Stage 2 checkpoint from {DRIVE_DIR}...", flush=True)
+            shutil.copy2(d_part, tmp_t16c)
+            for fn_ck in ("stage2_v9_ckpt.pt", "x_teach.pt", "x_stud.pt", "crtr_layers.pt", "head_crtr_layers.pt", "c8db_entries.pt"):
+                src_ck = d_ck / fn_ck
+                if src_ck.is_file():
+                    shutil.copy2(src_ck, CKPT_DIR / fn_ck)
+
     # Write initial header + norms (resume if partial exists on Drive/local)
     resumed_layer = 0
     resumed_pos = 0
@@ -1455,6 +1491,9 @@ def run_pipeline() -> Dict[str, object]:
         meta_ck = torch.load(ckpt_meta_p, map_location="cpu", weights_only=False)
         resumed_layer = int(meta_ck["next_layer"])
         resumed_pos = int(meta_ck["pos"])
+        assert tmp_t16c.stat().st_size >= resumed_pos, (
+            f"Fail-closed resume guard: {tmp_t16c} size {tmp_t16c.stat().st_size:,} < resumed_pos {resumed_pos:,}"
+        )
         norm_offsets = dict(meta_ck["norm_offsets"])
         layer_logs = list(meta_ck["layer_logs"])
         crtr_layers = torch.load(ckpt_cr_p, map_location="cpu", weights_only=False)
@@ -1487,6 +1526,7 @@ def run_pipeline() -> Dict[str, object]:
             del emb_pb
         else:
             pos = resumed_pos
+            fp.truncate(pos)
             fp.seek(pos)
             del emb_pb
 
@@ -1969,13 +2009,13 @@ def run_pipeline() -> Dict[str, object]:
                 torch.save(head_crtr_layers, ckpt_hr_p)
                 torch.save(c8db_entries, ckpt_c8_p)
                 torch.save({"next_layer": l_idx + 1, "pos": pos, "norm_offsets": norm_offsets, "layer_logs": layer_logs, "cap_kv58": cap_kv58, "cap_kv59": cap_kv59}, ckpt_meta_p)
-                if DRIVE_DIR is not None:
+                if DRIVE_DIR is not None and ((l_idx + 1) % 10 == 0 or (l_idx + 1) == N_LAYERS):
                     d_ck = DRIVE_DIR / "ckpt_v9_0"
                     d_ck.mkdir(parents=True, exist_ok=True)
-                    for cp_f in (ckpt_meta_p, ckpt_cr_p, ckpt_hr_p, ckpt_c8_p):
-                        shutil.copy2(cp_f, d_ck / cp_f.name)
                     tmp_part = DRIVE_DIR / (OUT_T16C.name + ".partial")
-                    shutil.copy2(tmp_t16c, tmp_part)
+                    _drive_safe_copy(tmp_t16c, tmp_part)
+                    for cp_f in (ckpt_xt_p, ckpt_xs_p, ckpt_cr_p, ckpt_hr_p, ckpt_c8_p, ckpt_meta_p):
+                        _drive_safe_copy(cp_f, d_ck / cp_f.name)
 
         for rec_v in vision_mat_recs:
             pos = p3._write_mat_record(fp, pos, *rec_v)
@@ -2186,12 +2226,12 @@ def run_pipeline() -> Dict[str, object]:
             k58_s = torch.stack([cap_kv58["k_rope"][gi].to(device) for gi in gis])
             v58_s = torch.stack([cap_kv58["v_norm"][gi].to(device) for gi in gis])
             k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
-            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s)[:, :-1, :].cpu())
+            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s).cpu())
     del ast_mod, cap_kv58, cap_kv59
     torch.cuda.empty_cache()
 
     H_ast_all = torch.cat(h_ast_chunks, dim=0).reshape(-1, 1024)
-    H_stud_tgt = ast_h_final[:, 1:-1, :].reshape(-1, D_MOD)
+    H_stud_tgt = ast_h_final[:, 1:, :].reshape(-1, D_MOD)
     top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
     top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
     with torch.no_grad():
