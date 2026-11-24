@@ -1,0 +1,46 @@
+{
+  "version": "V7.0-FULLRANK-HYBRID-CRTR-MODQ20-BHDR384",
+  "status": "COMPLETED_AND_SEALED",
+  "gpu": "NVIDIA L4 (22.03 GiB VRAM, High-RAM)",
+  "unified_t16c_bytes": 6060165632,
+  "drive_path": "/content/drive/MyDrive/gemma4_v7_0/",
+  "stage_summary": {
+    "stage1_tokens_packed": 214016,
+    "stage2_vision_val_cos": [0.90551, 0.90794],
+    "stage3_layers_calibrated": 60,
+    "stage4a_c8db_kv_val_cos": 0.85052,
+    "stage4b_assistant_align_kl": [8.4524, 1.5560],
+    "stage4b_assistant_align_top1_agree": [0.309, 0.666],
+    "assistant_bodies": {
+      "q2_bytes": 56628032,
+      "q4_bytes": 106894144,
+      "q8_bytes": 207426368
+    }
+  },
+  "artifacts": {
+    "gemma4_31b_v7_0_fullrank.t16c": {
+      "bytes": 6060165632,
+      "sha256": "901ef4f1326031acd57e96b113e190488bc8408376c7b075566d00b90d84319a"
+    },
+    "gemma4_31b_v7_assistant_body_q2.t16c": {
+      "bytes": 56628032,
+      "sha256": "e6f1706c5f5bd77224ed8d4e644c8e3d1f8351c27351bc450073f12170204a59"
+    },
+    "gemma4_31b_v7_assistant_body_q4.t16c": {
+      "bytes": 106894144,
+      "sha256": "30d07903b64fc1fd1587a404769f29458b3d24131740d65efc02c2a53c6f6ada"
+    },
+    "gemma4_31b_v7_assistant_body_q8.t16c": {
+      "bytes": 207426368,
+      "sha256": "c8cc5d2697bb05b749383d4a466672f5a2795572c89a52857ae334b18e439169"
+    },
+    "gemma4_31b_v7_c8d.c8d": {
+      "bytes": 11874560,
+      "sha256": "1b01be6b3cb5cc065b30032d9884f64ae06bb575c64f49adf339bcf150afd85b"
+    },
+    "gemma4_31b_v7_router.crtr": {
+      "bytes": 10861956,
+      "sha256": "53e183344de7885138601c6927ab2d7a37561fe6b430919d2ebdf60eb77e39ad"
+    }
+  }
+}
