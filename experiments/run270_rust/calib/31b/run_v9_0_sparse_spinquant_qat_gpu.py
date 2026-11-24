@@ -116,12 +116,39 @@ def _sha256_file(path: Path) -> str:
 
 
 def _drive_safe_copy(src: Path, dst: Path, chunk_bytes: int = 16 * 1024 * 1024) -> None:
-    """Truncate-and-overwrite in-place so Google Drive FUSE updates the existing file ID without duplicates."""
+    """Copy atomically to Google Drive (temp + fsync + replace) and fail closed on size mismatch."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    with open(src, "rb") as fs, open(dst, "wb") as fd:
+    tmp_dst = dst.with_name(dst.name + ".tmp_up")
+    with open(src, "rb") as fs, open(tmp_dst, "wb") as fd:
         shutil.copyfileobj(fs, fd, chunk_bytes)
         fd.flush()
         os.fsync(fd.fileno())
+    os.replace(tmp_dst, dst)
+    src_sz, dst_sz = src.stat().st_size, dst.stat().st_size
+    if src_sz != dst_sz:
+        raise IOError(f"Drive copy size mismatch for {dst}: {dst_sz} != {src_sz}")
+
+
+def _verify_drive_sha256(drive_dir: Path, expected_sha: Dict[str, str]) -> None:
+    """Fail closed if any persisted artifact on Google Drive differs from its local SHA-256."""
+    for fname, exp_dig in expected_sha.items():
+        fp_d = drive_dir / fname
+        if not fp_d.is_file():
+            raise FileNotFoundError(f"Drive verification failed: missing {fp_d}")
+        got_dig = _sha256_file(fp_d)
+        if got_dig != exp_dig:
+            raise IOError(f"Drive SHA-256 mismatch for {fp_d}: got {got_dig}, expected {exp_dig}")
+    print(f"[Drive Verify] {len(expected_sha)}/{len(expected_sha)} SHA-256 checksums verified OK in {drive_dir}", flush=True)
+
+
+def _flush_drive_before_unassign() -> None:
+    """Synchronize Linux page cache and Google Drive FUSE write-back queue before VM termination."""
+    try:
+        subprocess.run(["sync"], check=False)
+        from google.colab import drive
+        drive.flush_and_unmount()
+    except Exception as exc:
+        print(f"[Drive Flush Note] {exc}", flush=True)
 
 
 def _normalize_words(text: str) -> List[str]:
@@ -750,6 +777,178 @@ def reconstruct_from_headers(
     return w
 
 
+_T16C_TO_MODE: Dict[Tuple[int, bool, bool], int] = {
+    (1, True, False): 0,
+    (5, False, False): 1,
+    (2, False, False): 2,
+    (2, True, False): 3,
+    (3, False, False): 4,
+    (2, False, True): 5,
+    (3, False, True): 6,
+}
+
+
+def transpose_planes_row_to_colmajor(
+    arr_u8: np.ndarray, d_out: int, d_in: int, bsize: int, eff_bits: int, is_asym: bool
+) -> np.ndarray:
+    """Invert `repack_t16c_rowmajor.transpose_planes_col_to_rowmajor` cleanly."""
+    n_tiles = (d_out + 15) // 16
+    n_blks = d_in // bsize
+    hdr = 64 if is_asym else 32
+    bpr = bsize // 8
+    plane_b = bpr * 16
+    tblk_b = hdr + eff_bits * plane_b
+    arr = np.asarray(arr_u8, dtype=np.uint8).reshape(n_tiles, n_blks, tblk_b).copy()
+    for p in range(eff_bits):
+        s0 = hdr + p * plane_b
+        s1 = s0 + plane_b
+        pl = arr[:, :, s0:s1].reshape(n_tiles, n_blks, 16, bpr)
+        arr[:, :, s0:s1] = np.ascontiguousarray(pl.transpose(0, 1, 3, 2)).reshape(n_tiles, n_blks, plane_b)
+    return arr.reshape(-1)
+
+
+def decode_t16c_mat_to_f32(
+    pay_bytes: bytes | np.ndarray,
+    d_out: int,
+    d_in: int,
+    bsize: int,
+    n_bits: int,
+    is_asym: bool,
+    inv_s_np: Optional[np.ndarray],
+    low_rank: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    h_mat: torch.Tensor,
+    has_fwht: bool = True,
+) -> torch.Tensor:
+    """Decode any packed T16C matrix (ColMajor, RowMajor `0x40`, COLBLOCK `0x20`, Gauss `0x80`) + low-rank to `[d_out, d_in]`."""
+    eff_bits = int(n_bits) & 0x1F
+    is_gauss = bool(int(n_bits) & p3.T16C_GAUSS_BIT)
+    is_rm = bool(int(n_bits) & p3.T16C_ROWMAJOR_BIT)
+    is_cb = bool(int(n_bits) & p3.T16C_COLBLOCK_BIT)
+    mode_i = _T16C_TO_MODE[(eff_bits, bool(is_asym), is_gauss)]
+    raw_b = pay_bytes if isinstance(pay_bytes, (bytes, bytearray, memoryview)) else np.asarray(pay_bytes, dtype=np.uint8).tobytes()
+    if is_cb:
+        raw_b = sdc.transpose_colblock_bytes(raw_b, d_out, d_in, bsize, eff_bits, bool(is_asym), to_colblock=False)
+    arr_u8 = np.frombuffer(raw_b, dtype=np.uint8)
+    if is_rm:
+        arr_u8 = transpose_planes_row_to_colmajor(arr_u8, d_out, d_in, bsize, eff_bits, bool(is_asym))
+    u_t, sc_t, bi_t = unpack_tile16_headers_and_units(arr_u8, d_out, d_in, bsize, mode_i, h_mat)
+    inv_s_t = torch.from_numpy(np.ascontiguousarray(inv_s_np, dtype=np.float32)).to(h_mat.device) if inv_s_np is not None else None
+    h_use = h_mat if has_fwht else torch.eye(bsize, device=h_mat.device, dtype=torch.float32)
+    w = reconstruct_from_headers(u_t, sc_t, bi_t, inv_s_t, h_use)
+    if low_rank is not None:
+        su, sv, ui8, vi8 = low_rank
+        uf = torch.from_numpy(np.ascontiguousarray(ui8)).to(h_mat.device, dtype=torch.float32) * torch.from_numpy(np.ascontiguousarray(su)).to(h_mat.device, dtype=torch.float32).unsqueeze(1)
+        vf = torch.from_numpy(np.ascontiguousarray(vi8)).to(h_mat.device, dtype=torch.float32) * torch.from_numpy(np.ascontiguousarray(sv)).to(h_mat.device, dtype=torch.float32).unsqueeze(1)
+        w = w + (uf @ vf)
+    return w
+
+
+def _parse_t16c_index(t16c_path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, dict]]:
+    """Verify and index norms + matrix payload file offsets in an existing `.t16c` file."""
+    v70.verify_t16c_integrity(t16c_path)
+    norms: Dict[str, np.ndarray] = {}
+    mats: Dict[str, dict] = {}
+    with open(t16c_path, "rb") as fp:
+        _magic, _ver, _flags, n_norms, n_mats, _resv = struct.unpack("<4s5I", fp.read(24))
+        for _ in range(n_norms):
+            klen = struct.unpack("<H", fp.read(2))[0]
+            kname = fp.read(klen).decode("utf-8")
+            alen = struct.unpack("<I", fp.read(4))[0]
+            norms[kname] = np.frombuffer(fp.read(alen * 4), dtype="<f4").copy()
+        for _ in range(n_mats):
+            nlen, d_out, d_in, bsize, n_bits, is_asym_u8, has_fwht_u8, inv_k, rk, pb_len, lr_len = struct.unpack("<HIIHBBBBHQQ", fp.read(34))
+            mname = fp.read(nlen).decode("utf-8")
+            pos = fp.tell()
+            pad = (64 - (pos % 64)) % 64
+            if pad:
+                fp.seek(pad, 1)
+            p_off = fp.tell()
+            inv_bytes = (d_in * 4) if inv_k == 1 else ((d_in * 2) if inv_k == 2 else 0)
+            mats[mname] = {
+                "offset": p_off,
+                "d_out": d_out,
+                "d_in": d_in,
+                "bsize": bsize,
+                "n_bits": n_bits,
+                "is_asym": bool(is_asym_u8),
+                "has_fwht": bool(has_fwht_u8),
+                "inv_k": inv_k,
+                "rk": rk,
+                "pb_len": pb_len,
+                "lr_len": lr_len,
+            }
+            fp.seek(pb_len + inv_bytes + lr_len, 1)
+    return norms, mats
+
+
+def _read_t16c_matrix_f32(fp, meta: dict, h_mat: torch.Tensor) -> torch.Tensor:
+    """Seek, read, and decode a single `.t16c` matrix record to GPU/CPU `[d_out, d_in]` float32."""
+    d_out, d_in, bsize = int(meta["d_out"]), int(meta["d_in"]), int(meta["bsize"])
+    fp.seek(int(meta["offset"]))
+    pay_b = fp.read(int(meta["pb_len"]))
+    inv_s_np = None
+    if meta["inv_k"] == 1:
+        inv_s_np = np.frombuffer(fp.read(d_in * 4), dtype="<f4").copy()
+    elif meta["inv_k"] == 2:
+        inv_s_np = np.frombuffer(fp.read(d_in * 2), dtype="<f2").astype(np.float32).copy()
+    low_rank = None
+    if meta["rk"] > 0:
+        rk = int(meta["rk"])
+        su = np.frombuffer(fp.read(d_out * 4), dtype="<f4").copy()
+        sv = np.frombuffer(fp.read(rk * 4), dtype="<f4").copy()
+        ui8 = np.frombuffer(fp.read(d_out * rk), dtype=np.int8).reshape(d_out, rk).copy()
+        vi8 = np.frombuffer(fp.read(rk * d_in), dtype=np.int8).reshape(rk, d_in).copy()
+        low_rank = (su, sv, ui8, vi8)
+    return decode_t16c_mat_to_f32(
+        pay_b, d_out, d_in, bsize, meta["n_bits"], meta["is_asym"],
+        inv_s_np, low_rank, h_mat, has_fwht=meta["has_fwht"],
+    )
+
+
+def _eval_crtr_rec_gpu(rec: dict, x_gpu: torch.Tensor) -> torch.Tensor:
+    """Evaluate quantized INT8 CRTR v1 layer record on GPU matching `cortical_router.rs`."""
+    dev = x_gpu.device
+    v_w = torch.from_numpy(rec["v_i8"].astype(np.float32) * rec["sv"][:, None]).to(dev)
+    b1 = torch.from_numpy(rec["b1"]).to(dev)
+    u_w = torch.from_numpy(rec["u_i8"].astype(np.float32) * rec["su"][:, None]).to(dev)
+    b2 = torch.from_numpy(rec["b2"]).to(dev)
+    h = F.gelu(F.linear(x_gpu.float(), v_w, b1), approximate="tanh")
+    return F.linear(h, u_w, b2)
+
+
+def _eval_c8d_gpu(
+    x_gpu: torch.Tensor,
+    cents: np.ndarray,
+    experts: List[tuple],
+    h8_gpu: torch.Tensor,
+    top_k: int = 2,
+    temp: float = 0.5,
+    gscale: float = 1.0,
+) -> torch.Tensor:
+    """Evaluate quantized C8DB adapter on GPU matching `cuneiform_tbi.rs` bit-accurately."""
+    dev = x_gpu.device
+    xf = x_gpu.float()
+    n_t, d_i = xf.shape
+    d_o = experts[0][0].shape[0]
+    kb = d_i // 8
+    u_bar = xf[:, : kb * 8].reshape(n_t, kb, 8).mean(dim=1) @ h8_gpu
+    g_hat = u_bar / u_bar.norm(dim=1, keepdim=True).clamp(min=1e-9)
+    logits = (g_hat @ torch.from_numpy(cents).to(dev, dtype=torch.float32).T) / temp
+    topv, topi = torch.topk(logits, top_k, dim=-1)
+    ws = F.softmax(topv, dim=-1) * gscale
+    out = torch.zeros((n_t, d_o), device=dev, dtype=torch.float32)
+    for e_idx, (su, sv, ui, vi) in enumerate(experts):
+        mask_e = topi == e_idx
+        if not mask_e.any():
+            continue
+        w_e = (ws * mask_e.float()).sum(dim=-1, keepdim=True)
+        nz = w_e.squeeze(1) > 0
+        vf = torch.from_numpy(vi).to(dev, dtype=torch.float32) * torch.from_numpy(sv).to(dev, dtype=torch.float32).unsqueeze(1)
+        uf = torch.from_numpy(ui).to(dev, dtype=torch.float32) * torch.from_numpy(su).to(dev, dtype=torch.float32).unsqueeze(1)
+        out[nz] += w_e[nz] * ((xf[nz] @ vf.T) @ uf.T)
+    return out
+
+
 def run_selftest() -> int:
     """Mandatory 6-gate fail-closed CPU verification battery."""
     failures = 0
@@ -796,10 +995,14 @@ def run_selftest() -> int:
         with io.BytesIO() as bio_chk:
             p3._write_mat_record(bio_chk, 0, "chk_mat", 32, 512, V9_BLOCK_SIZE, hdr_out, asym_c, True, pay_out, None, None)
             wr_rec_ok = bio_chk.tell() > len(pay_out)
+        dec_w = decode_t16c_mat_to_f32(pay_out, 32, 512, V9_BLOCK_SIZE, hdr_out, asym_c, None, None, h_rt_g1, has_fwht=True)
+        ref_w = reconstruct_from_headers(u_dec, sc_dec, bi_dec, None, h_rt_g1)
+        dec_err = float((dec_w - ref_w).abs().max().item())
         ok_m = (
             hdr_out == exp_hdr
             and len(pay_out) == p3.expected_tile16_bytes(32, 512, V9_BLOCK_SIZE, hdr_out, asym_c)
             and wr_rec_ok
+            and dec_err < 1e-5
             and torch.isfinite(u_dec).all().item()
             and float((sc_dec - 0.25).abs().max().item()) < 1e-3
             and (bi_dec is None or torch.isfinite(bi_dec).all().item())
@@ -1114,6 +1317,895 @@ def _build_decontaminated_corpus(tk, max_text_seq: int = 896, seq_len: int = V9_
         a_start = min(max(len(pre_ids) - 1, 0), seq_len - 1)
         ans_mask[si, a_start:] = True
     return seq_ids, seq_nxt, ans_mask
+
+
+def _resolve_existing_artifact(name: str, out_dir: Path, drive_dir: Optional[Path]) -> Path:
+    """Resolve an existing V9.0 artifact cleanly from local OUT_DIR or Drive, failing closed if absent."""
+    candidates = [out_dir / name]
+    if drive_dir is not None:
+        candidates.append(drive_dir / name)
+    for c in candidates:
+        if c.is_file() and c.stat().st_size > 0:
+            return c
+    raise FileNotFoundError(f"Missing required artifact {name}; checked {[str(c) for c in candidates]}")
+
+
+def _load_dequant_proj(sf_obj, base_name: str, perm_pi_dev: torch.Tensor, device: torch.device, is_perm_col: bool = False, is_perm_row: bool = False) -> torch.Tensor:
+    if f"{base_name}.weight_packed" in sf_obj.keys():
+        pk = sf_obj.get_tensor(f"{base_name}.weight_packed").to(device)
+        sc = sf_obj.get_tensor(f"{base_name}.weight_scale").to(device, dtype=torch.float32)
+        shifts = torch.arange(0, 32, 4, device=device, dtype=torch.int32)
+        nibs = ((pk.unsqueeze(-1).to(torch.int32) >> shifts) & 0xF) - 8
+        w = (nibs.reshape(pk.shape[0], sc.shape[1], 32).float() * sc.unsqueeze(-1)).reshape(pk.shape[0], -1)
+        del pk, sc, nibs
+    else:
+        w = sf_obj.get_tensor(f"{base_name}.weight").to(device, dtype=torch.float32)
+    if is_perm_col:
+        w = w[:, perm_pi_dev]
+    if is_perm_row:
+        w = w[perm_pi_dev, :]
+    return w
+
+
+def _init_v9_stage1_base(device: torch.device, compute_dtype: torch.dtype) -> Dict[str, object]:
+    """Download/open Gemma 4 31B, build decontaminated corpus + VLM seed states, and compute Global Perm Pi."""
+    from datasets import load_dataset
+    from huggingface_hub import snapshot_download
+    from safetensors import safe_open
+    from tokenizers import Tokenizer
+    from transformers import AutoConfig, Gemma4ImageProcessor
+    from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder, Gemma4VisionModel
+
+    model_dir = Path(snapshot_download("google/gemma-4-31B-it-qat-w4a16-ct", local_dir="/tmp/gemma4_31b", ignore_patterns=["*.bin", "*.pt"]))
+    sf_path = model_dir / "model.safetensors"
+    tok_path = model_dir / "tokenizer.json"
+    cfg_full = json.loads((model_dir / "config.json").read_text(encoding="utf-8"))
+    tk = Tokenizer.from_file(str(tok_path))
+
+    tc = cfg_full["text_config"]
+    N_LAYERS = int(tc["num_hidden_layers"])
+    D_MOD = int(tc["hidden_size"])
+    EPS = float(tc["rms_norm_eps"])
+    ESCALE = math.sqrt(float(D_MOD))
+    NH = int(tc["num_attention_heads"])
+    NKV_S = int(tc["num_key_value_heads"])
+    NKV_F = int(tc["num_global_key_value_heads"])
+    HD_S = int(tc["head_dim"])
+    HD_F = int(tc["global_head_dim"])
+    K_EQ_V = bool(tc.get("attention_k_eq_v", False))
+    LAYER_TYPES = tc["layer_types"]
+    RP = tc["rope_parameters"]
+    THETA_G, PART_G = float(RP["full_attention"]["rope_theta"]), float(RP["full_attention"].get("partial_rotary_factor", 1.0))
+    THETA_L, PART_L = float(RP["sliding_attention"]["rope_theta"]), float(RP["sliding_attention"].get("partial_rotary_factor", 1.0))
+    SOFTCAP = float(tc.get("final_logit_softcapping") or 30.0)
+    assert D_MOD == V9_D_MOD and N_LAYERS == V9_N_LAYERS
+
+    print("[Stage 1] Building decontaminated STEM/code/science + COCO VLM corpus...", flush=True)
+    txt_ids, txt_nxt, txt_ans = _build_decontaminated_corpus(tk, max_text_seq=896, seq_len=V9_SEQ_LEN)
+    coco_ds = load_dataset("detection-datasets/coco", split="val[:136]")
+    vlm_seqs, vlm_nxts, vlm_masks, vlm_imgs = [], [], [], []
+    img_proc = Gemma4ImageProcessor.from_pretrained("google/gemma-4-31B-it-qat-w4a16-ct")
+    soft_tok = int(cfg_full.get("image_token_id", 258880))
+    boi_tok = int(cfg_full.get("boi_token_id", 255999))
+    eoi_tok = int(cfg_full.get("eoi_token_id", 258882))
+    tok_user_open = list(tk.encode("<|turn>user\n", add_special_tokens=False).ids)
+    tok_model_open = list(tk.encode("<turn|>\n<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False).ids)
+    for r in coco_ds:
+        objs = r.get("objects", {})
+        cats = [str(c) for c in (objs.get("category", []) if isinstance(objs, dict) else [])[:4]]
+        cap = "Objects visible in image: " + (", ".join(dict.fromkeys(cats)) if cats else "scene objects") + "."
+        if any(b in cap.lower() for b in ALL_BLACKLIST):
+            continue
+        im = r["image"].convert("RGB").resize((224, 224))
+        vlm_imgs.append(im)
+        n_img = 16
+        prompt_ids = [tk.token_to_id("<bos>") or 2] + tok_user_open + [boi_tok] + [soft_tok] * n_img + [eoi_tok] + list(tk.encode("Describe this image concisely in one sentence.", add_special_tokens=False).ids) + tok_model_open
+        ans_ids = list(tk.encode(f"{cap}<turn|>\n", add_special_tokens=False).ids)
+        full = (prompt_ids + ans_ids + [0] * (V9_SEQ_LEN + 1))[: V9_SEQ_LEN + 1]
+        vlm_seqs.append(full[:V9_SEQ_LEN])
+        vlm_nxts.append(full[1 : V9_SEQ_LEN + 1])
+        m = np.zeros(V9_SEQ_LEN, dtype=bool)
+        m[min(len(prompt_ids) - 1, V9_SEQ_LEN - 1) :] = True
+        vlm_masks.append(m)
+        if len(vlm_seqs) >= 128:
+            break
+
+    all_seq_ids = np.concatenate([txt_ids, np.array(vlm_seqs, dtype=np.int64)], axis=0)
+    all_seq_nxt = np.concatenate([txt_nxt, np.array(vlm_nxts, dtype=np.int64)], axis=0)
+    all_ans_mask = np.concatenate([txt_ans, np.array(vlm_masks, dtype=bool)], axis=0)
+    N_TEXT_SEQ = txt_ids.shape[0]
+    N_SEQ = all_seq_ids.shape[0]
+
+    with safe_open(sf_path, framework="pt", device="cpu") as sf:
+        emb_raw = sf.get_tensor("model.language_model.embed_tokens.weight").float()
+        fn_orig = sf.get_tensor("model.language_model.norm.weight").float()
+        vis_keys = [k for k in sf.keys() if k.startswith("model.vision_tower.") or k.startswith("model.embed_vision.")]
+        hf_cfg = AutoConfig.from_pretrained("google/gemma-4-31B-it-qat-w4a16-ct")
+        vis_model = Gemma4VisionModel(hf_cfg.vision_config)
+        mm_embed = Gemma4MultimodalEmbedder(hf_cfg.vision_config, hf_cfg.text_config)
+        vis_sd = {}
+        mm_sd = {}
+        for vk in vis_keys:
+            if vk.startswith("model.vision_tower."):
+                vis_sd[vk[len("model.vision_tower.") :]] = sf.get_tensor(vk)
+            elif vk.startswith("model.embed_vision."):
+                mm_sd[vk[len("model.embed_vision.") :]] = sf.get_tensor(vk)
+        vis_model.load_state_dict(vis_sd, strict=False)
+        mm_embed.load_state_dict(mm_sd, strict=False)
+
+    vis_model = vis_model.to(device, dtype=compute_dtype).eval()
+    mm_embed = mm_embed.to(device, dtype=compute_dtype).eval()
+    X_teach = (emb_raw[torch.from_numpy(all_seq_ids)] * ESCALE).to(torch.float16)
+    with torch.no_grad():
+        for vi, im in enumerate(vlm_imgs):
+            si = N_TEXT_SEQ + vi
+            proc_out = img_proc(images=im, return_tensors="pt")
+            pv = proc_out["pixel_values"].to(device, dtype=compute_dtype)
+            pos_ids = proc_out["image_position_ids"].to(device)
+            vo = vis_model(pixel_values=pv, pixel_position_ids=pos_ids).last_hidden_state
+            vm = mm_embed(vo).squeeze(0)[:16].to(torch.float16).cpu()
+            pos_m = torch.from_numpy(all_seq_ids[si] == soft_tok)
+            take = min(int(pos_m.sum().item()), vm.shape[0])
+            idx_m = torch.nonzero(pos_m, as_tuple=False).squeeze(1)[:take]
+            X_teach[si, idx_m] = vm[:take]
+    del vis_sd, mm_sd, vis_model, mm_embed
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    with torch.no_grad():
+        flat_x0 = X_teach[:min(256, N_SEQ)].reshape(-1, D_MOD).float()
+        chan_score = flat_x0.abs().amax(dim=0) + 2.0 * flat_x0.pow(2).mean(dim=0).sqrt()
+    perm_pi, inv_perm_pi = compute_outlier_dispersion_perm(chan_score, block_size=V9_BLOCK_SIZE)
+    torch.save({"perm_pi": perm_pi, "inv_perm_pi": inv_perm_pi}, OUT_PERM_PT)
+    print(f"[Stage 1] Dispersion Perm Pi computed across {D_MOD // V9_BLOCK_SIZE} blocks (score max/min ratio reduced via snake deal)", flush=True)
+    X_teach_perm = X_teach[:, :, perm_pi].clone()
+    del X_teach
+    gc.collect()
+
+    return {
+        "sf_path": sf_path, "tok_path": tok_path, "cfg_full": cfg_full, "tc": tc, "tk": tk,
+        "N_LAYERS": N_LAYERS, "D_MOD": D_MOD, "EPS": EPS, "ESCALE": ESCALE,
+        "NH": NH, "NKV_S": NKV_S, "NKV_F": NKV_F, "HD_S": HD_S, "HD_F": HD_F, "K_EQ_V": K_EQ_V,
+        "LAYER_TYPES": LAYER_TYPES, "THETA_G": THETA_G, "PART_G": PART_G, "THETA_L": THETA_L, "PART_L": PART_L,
+        "SOFTCAP": SOFTCAP, "soft_tok": soft_tok,
+        "all_seq_ids": all_seq_ids, "all_seq_nxt": all_seq_nxt, "all_ans_mask": all_ans_mask,
+        "N_TEXT_SEQ": N_TEXT_SEQ, "N_SEQ": N_SEQ,
+        "emb_raw": emb_raw, "fn_orig": fn_orig, "X_teach_perm": X_teach_perm,
+        "perm_pi": perm_pi, "inv_perm_pi": inv_perm_pi,
+    }
+
+
+def _make_gemma4_math_helpers(device: torch.device, eps: float):
+    def rmsn_gpu(t: torch.Tensor, w: Optional[torch.Tensor] = None) -> torch.Tensor:
+        xf = t.float()
+        y = xf * torch.rsqrt((xf * xf).mean(dim=-1, keepdim=True) + eps)
+        if w is not None:
+            y = y * w.float()
+        return y.to(t.dtype)
+
+    def make_rope(theta: float, rot_d: int, hd: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        hr = rot_d // 2
+        if hr <= 0:
+            z = torch.zeros((V9_SEQ_LEN, 0), device=device, dtype=torch.float32)
+            return z, z
+        inv_f = 1.0 / (theta ** (torch.arange(0, 2 * hr, 2, device=device, dtype=torch.float32) / float(hd)))
+        pos = torch.arange(V9_SEQ_LEN, device=device, dtype=torch.float32)
+        ang = torch.outer(pos, inv_f)
+        return torch.cos(ang), torch.sin(ang)
+
+    def apply_rope(x: torch.Tensor, cs: torch.Tensor, sn: torch.Tensor, rot_d: int, hd: int) -> torch.Tensor:
+        hr, hh = rot_d // 2, hd // 2
+        if hr <= 0:
+            return x
+        xf = x.float()
+        x0, x1 = xf[..., :hr], xf[..., hh : hh + hr]
+        c = cs.view(1, x.shape[1], 1, hr)
+        s = sn.view(1, x.shape[1], 1, hr)
+        r0, r1 = x0 * c - x1 * s, x0 * s + x1 * c
+        if hr == hh:
+            return torch.cat([r0, r1], dim=-1).to(x.dtype)
+        return torch.cat([r0, xf[..., hr:hh], r1, xf[..., hh + hr :]], dim=-1).to(x.dtype)
+
+    return rmsn_gpu, make_rope, apply_rope
+
+
+def _run_stage3_distill_and_export(
+    *,
+    ctx: Dict[str, object],
+    device: torch.device,
+    compute_dtype: torch.dtype,
+    gpu_name: str,
+    gpu_vram_gb: float,
+    t0_all: float,
+    rmsn_gpu,
+    X_stud_perm: torch.Tensor,
+    X_teach_perm: torch.Tensor,
+    emb_eff: torch.Tensor,
+    ast_seqs: List[int],
+    cap_kv58: Dict[str, dict],
+    cap_kv59: Dict[str, dict],
+    fn_vec_np: np.ndarray,
+    crtr_layers: List[dict],
+    head_crtr_layers: Optional[List[dict]],
+    c8db_entries: List[dict],
+    layer_logs: List[dict],
+    cb_cnt: int,
+    t16c_final_path: Path,
+    head_crtr_final_path: Path,
+    persist_t16c_and_head: bool,
+    apply_wiener: bool,
+    train_post_cell60: bool,
+    mode_tag: str,
+) -> Dict[str, object]:
+    """Shared Stage 3: Wiener/post_cell60 calibration, Teacher-KL eval, Assistant-V9, BHDR-384, and Drive sync."""
+    from huggingface_hub import snapshot_download
+    from safetensors import safe_open
+    from safetensors.torch import save_file as st_save_file
+
+    sf_path: Path = ctx["sf_path"]  # type: ignore[assignment]
+    tok_path: Path = ctx["tok_path"]  # type: ignore[assignment]
+    D_MOD: int = int(ctx["D_MOD"])
+    EPS: float = float(ctx["EPS"])
+    ESCALE: float = float(ctx["ESCALE"])
+    NH: int = int(ctx["NH"])
+    NKV_S: int = int(ctx["NKV_S"])
+    NKV_F: int = int(ctx["NKV_F"])
+    HD_S: int = int(ctx["HD_S"])
+    HD_F: int = int(ctx["HD_F"])
+    THETA_L: float = float(ctx["THETA_L"])
+    PART_L: float = float(ctx["PART_L"])
+    THETA_G: float = float(ctx["THETA_G"])
+    PART_G: float = float(ctx["PART_G"])
+    SOFTCAP: float = float(ctx["SOFTCAP"])
+    all_ans_mask: np.ndarray = ctx["all_ans_mask"]  # type: ignore[assignment]
+    all_seq_ids: np.ndarray = ctx["all_seq_ids"]  # type: ignore[assignment]
+    all_seq_nxt: np.ndarray = ctx["all_seq_nxt"]  # type: ignore[assignment]
+    perm_pi: torch.Tensor = ctx["perm_pi"]  # type: ignore[assignment]
+
+    H8_GPU = torch.from_numpy(c8d.H8_NP).to(device, dtype=torch.float32)
+    fn_g = torch.from_numpy(np.ascontiguousarray(fn_vec_np, dtype=np.float32)).to(device)
+    ans_flat = torch.nonzero(torch.from_numpy(all_ans_mask.reshape(-1)), as_tuple=False).squeeze(1)
+    sel_ans = ans_flat[torch.linspace(0, ans_flat.numel() - 1, min(16384, ans_flat.numel())).long()]
+    s_t, t_t = sel_ans // V9_SEQ_LEN, sel_ans % V9_SEQ_LEN
+    hs_ans = rmsn_gpu(X_stud_perm[s_t, t_t].to(device).unsqueeze(1), fn_g).squeeze(1).float()
+    ht_ans = rmsn_gpu(X_teach_perm[s_t, t_t].to(device).unsqueeze(1), fn_g).squeeze(1).float()
+    emb_g = emb_eff.to(device, dtype=torch.float32)
+    nxt_ans = torch.from_numpy(all_seq_nxt[s_t.numpy(), t_t.numpy()]).to(device, dtype=torch.long)
+
+    iv_fn = torch.arange(hs_ans.shape[0], device=device) % 10 == 0
+    fn_eff_g = fn_g
+    if apply_wiener:
+        xub_fn = rmsn_gpu(X_stud_perm[s_t, t_t].to(device).unsqueeze(1), None).squeeze(1).float()
+        num_fn = (xub_fn[~iv_fn] * ht_ans[~iv_fn]).sum(dim=0) / float(max(int((~iv_fn).sum().item()), 1))
+        den_fn = (xub_fn[~iv_fn] * xub_fn[~iv_fn]).sum(dim=0) / float(max(int((~iv_fn).sum().item()), 1))
+        fn_wiener = (num_fn + 0.05 * fn_g) / (den_fn + 0.05).clamp(min=1e-8)
+        if float(((xub_fn[iv_fn] * fn_wiener - ht_ans[iv_fn]) ** 2).sum().item()) < float(((xub_fn[iv_fn] * fn_g - ht_ans[iv_fn]) ** 2).sum().item()):
+            fn_eff_g = fn_wiener
+            hs_ans = xub_fn * fn_eff_g
+            with open(t16c_final_path, "r+b") as fp_fn:
+                fn_off = 24 + 2 + len("model.language_model.norm.weight".encode("utf-8")) + 4
+                fp_fn.seek(fn_off)
+                fp_fn.write(np.ascontiguousarray(fn_eff_g.detach().cpu().numpy(), dtype="<f4").tobytes())
+            print("[Stage 3] Updated final_norm in T16C with held-out validated Wiener shrinkage.", flush=True)
+        del xub_fn
+
+    keep_c60 = False
+    cents60 = experts60 = None
+    if train_post_cell60:
+        with torch.no_grad():
+            top_ids_c: List[torch.Tensor] = []
+            for i0 in range(0, min(4096, hs_ans.shape[0]), 512):
+                i1 = min(i0 + 512, hs_ans.shape[0])
+                lt_c = (ht_ans[i0:i1] @ emb_g.T)
+                top_ids_c.append(torch.topk(lt_c, 16, dim=-1).indices.reshape(-1))
+            uniq_c, cnt_c = torch.unique(torch.cat(top_ids_c), return_counts=True)
+            cand_c60 = torch.unique(torch.cat([uniq_c[torch.topk(cnt_c, min(4096, uniq_c.numel())).indices], nxt_ans]))
+            W_c60 = emb_g[cand_c60].float()
+            id_map60 = {int(t): ci for ci, t in enumerate(cand_c60.tolist())}
+            y_star60 = torch.tensor([id_map60[int(t)] for t in nxt_ans.tolist()], device=device, dtype=torch.long)
+
+        tr_idx60 = torch.nonzero(~iv_fn, as_tuple=False).squeeze(1)
+        va_idx60 = torch.nonzero(iv_fn, as_tuple=False).squeeze(1)
+        m60 = c8d.Cuneiform8DPatternAdapter(d_out=D_MOD, d_in=D_MOD, rank=32, n_experts=8, top_k=2, temperature=0.5, gate_scale=1.0).to(device)
+        o60 = torch.optim.AdamW(m60.parameters(), lr=3e-3, weight_decay=2e-2)
+        s60 = torch.optim.lr_scheduler.CosineAnnealingLR(o60, T_max=240, eta_min=3e-4)
+
+        def eval_c60(xs_v: torch.Tensor) -> Tuple[float, float]:
+            with torch.no_grad():
+                kls = agrs = 0.0
+                for b0 in range(0, va_idx60.numel(), 512):
+                    b1 = min(b0 + 512, va_idx60.numel())
+                    ib = va_idx60[b0:b1]
+                    lt_v = SOFTCAP * torch.tanh((ht_ans[ib] @ W_c60.T) / SOFTCAP)
+                    ls_v = SOFTCAP * torch.tanh((xs_v[b0:b1] @ W_c60.T) / SOFTCAP)
+                    pt_v = F.softmax(lt_v, dim=-1)
+                    kls += float((pt_v * (torch.log(pt_v.clamp(min=1e-12)) - F.log_softmax(ls_v, dim=-1))).sum(dim=-1).sum().item())
+                    agrs += float((ls_v.argmax(dim=-1) == lt_v.argmax(dim=-1)).float().sum().item())
+                n_v = float(max(va_idx60.numel(), 1))
+                return kls / n_v, agrs / n_v
+
+        kl60_0, agr60_0 = eval_c60(hs_ans[va_idx60])
+        best_kl60, best_sd60 = kl60_0, None
+        for st60 in range(240):
+            o60.zero_grad()
+            pb60 = tr_idx60[torch.randint(0, tr_idx60.numel(), (min(1024, tr_idx60.numel()),), device=device)]
+            da60, _, lb60 = m60(hs_ans[pb60])
+            hp60 = hs_ans[pb60] + da60
+            with torch.no_grad():
+                lt_b = SOFTCAP * torch.tanh((ht_ans[pb60] @ W_c60.T) / SOFTCAP)
+                pt_b = F.softmax(lt_b, dim=-1)
+            ls_b = SOFTCAP * torch.tanh((hp60 @ W_c60.T) / SOFTCAP)
+            zy60 = ls_b.gather(1, y_star60[pb60].unsqueeze(1)).squeeze(1)
+            zm60 = ls_b.clone()
+            zm60.scatter_(1, y_star60[pb60].unsqueeze(1), -1e9)
+            loss60 = (
+                (pt_b * (torch.log(pt_b.clamp(min=1e-12)) - F.log_softmax(ls_b, dim=-1))).sum(dim=-1).mean()
+                + 0.25 * F.relu(1.5 - zy60 + zm60.max(dim=-1).values).mean()
+                + 2.0 * F.mse_loss(hp60, ht_ans[pb60])
+                + 0.5 * (1.0 - F.cosine_similarity(hp60, ht_ans[pb60], dim=-1).mean())
+                + 0.005 * lb60
+            )
+            loss60.backward()
+            torch.nn.utils.clip_grad_norm_(m60.parameters(), 1.0)
+            o60.step()
+            s60.step()
+            if (st60 + 1) % 60 == 0:
+                with torch.no_grad():
+                    klv, _ = eval_c60(hs_ans[va_idx60] + m60(hs_ans[va_idx60])[0])
+                    if klv < best_kl60:
+                        best_kl60 = klv
+                        best_sd60 = {k: v.detach().cpu().clone() for k, v in m60.state_dict().items()}
+        mc60 = m60.cpu()
+        if best_sd60 is not None:
+            mc60.load_state_dict(best_sd60)
+        cents60, experts60 = mc60.export_quantized_arrays()
+        with torch.no_grad():
+            kl60_q, agr60_q = eval_c60(hs_ans[va_idx60] + _eval_c8d_gpu(hs_ans[va_idx60], cents60, experts60, H8_GPU))
+        keep_c60 = kl60_q < kl60_0
+        print(f"[Stage 3 post_cell60] Val KL {kl60_0:.4f}->{kl60_q:.4f} | Top1Agree {agr60_0*100:.2f}%->{agr60_q*100:.2f}% (keep={keep_c60})", flush=True)
+        if keep_c60:
+            exp_r60 = [c8d._c6d_radicals("general", "vector", "compute", "native", "layer", "positive", e) for e in range(8)]
+            c8db_entries.append({
+                "name": "model.language_model.norm.post_cell60", "d_out": D_MOD, "d_in": D_MOD, "rank": 32,
+                "top_k": 2, "c6d": exp_r60[0], "temperature": 0.5, "gate_scale": 1.0,
+                "centroids": cents60, "expert_radicals": exp_r60, "experts": experts60,
+            })
+            with torch.no_grad():
+                for i0 in range(0, hs_ans.shape[0], 2048):
+                    i1 = min(i0 + 2048, hs_ans.shape[0])
+                    hs_ans[i0:i1] = hs_ans[i0:i1] + _eval_c8d_gpu(hs_ans[i0:i1], cents60, experts60, H8_GPU)
+        del W_c60, cand_c60, y_star60, m60, mc60, o60, s60, top_ids_c
+        torch.cuda.empty_cache()
+
+    with torch.no_grad():
+        val_mask = iv_fn
+        kl_vals = []
+        top1_hits = 0
+        top5_hits = 0
+        val_cnt = int(val_mask.sum().item())
+        for b0 in range(0, val_cnt, 512):
+            idx_sl = torch.nonzero(val_mask, as_tuple=False).squeeze(1)[b0 : b0 + 512]
+            lt = SOFTCAP * torch.tanh((ht_ans[idx_sl] @ emb_g.T) / SOFTCAP)
+            ls = SOFTCAP * torch.tanh((hs_ans[idx_sl] @ emb_g.T) / SOFTCAP)
+            pt = F.softmax(lt, dim=-1)
+            kl_vals.append(float((pt * (torch.log(pt.clamp(min=1e-12)) - F.log_softmax(ls, dim=-1))).sum(dim=-1).mean().item()))
+            t1 = lt.argmax(dim=-1)
+            s5 = torch.topk(ls, 5, dim=-1).indices
+            top1_hits += int((s5[:, 0] == t1).sum().item())
+            top5_hits += int((s5 == t1.unsqueeze(1)).any(dim=-1).sum().item())
+        val_kl = float(np.mean(kl_vals)) if kl_vals else 0.0
+        val_top1 = float(top1_hits / max(val_cnt, 1))
+        val_top5 = float(top5_hits / max(val_cnt, 1))
+        print(f"[Stage 3 Teacher-KL Val] kl={val_kl:.4f} | top1_agree={val_top1*100:.2f}% | top5_agree={val_top5*100:.2f}%", flush=True)
+    del hs_ans, ht_ans
+    torch.cuda.empty_cache()
+
+    # Export updated CRTR and C8DB (now including post_cell60 when kept)
+    crtr.export_crtr(crtr_layers, OUT_CRTR)
+    if head_crtr_layers is not None and head_crtr_final_path == OUT_HEAD_CRTR:
+        crtr.export_crtr(head_crtr_layers, OUT_HEAD_CRTR)
+    c8d.write_c8db_file(OUT_C8D, [], c8db_entries)
+
+    ast_dir = Path(snapshot_download("google/gemma-4-31B-it-assistant", local_dir="/tmp/gemma4_ast", ignore_patterns=["*.bin", "*.pt"]))
+    ast_sf_raw = ast_dir / "model.safetensors"
+    ast_sd: Dict[str, torch.Tensor] = {}
+    with safe_open(ast_sf_raw, framework="pt", device="cpu") as sf_a:
+        for k in sf_a.keys():
+            t_a = sf_a.get_tensor(k)
+            if k == "pre_projection.weight" and t_a.shape[1] == 2 * D_MOD:
+                p2 = torch.cat([perm_pi, D_MOD + perm_pi])
+                t_a = t_a[:, p2].contiguous()
+            elif k == "post_projection.weight" and t_a.shape[0] == D_MOD:
+                t_a = t_a[perm_pi, :].contiguous()
+            ast_sd[k] = t_a
+
+    ast_mod = Gemma4AssistantTrain(
+        ast_sd, d_mod=D_MOD, nh=NH, nkv_s=NKV_S, nkv_f=NKV_F, hd_s=HD_S, hd_f=HD_F,
+        theta_l=THETA_L, part_l=PART_L, theta_g=THETA_G, part_g=PART_G, seq_len=V9_SEQ_LEN, eps=EPS, compute_dtype=compute_dtype,
+    ).to(device)
+    with torch.no_grad():
+        ast_h_final = torch.empty((len(ast_seqs), V9_SEQ_LEN, D_MOD), dtype=torch.float16)
+        for ai, gi in enumerate(ast_seqs):
+            hf_ai = rmsn_gpu(X_stud_perm[gi].to(device), fn_eff_g).float()
+            if keep_c60 and cents60 is not None and experts60 is not None:
+                hf_ai = hf_ai + _eval_c8d_gpu(hf_ai, cents60, experts60, H8_GPU)
+            ast_h_final[ai] = hf_ai.to(torch.float16).cpu()
+        nxt_ast = torch.from_numpy(all_seq_nxt[ast_seqs].reshape(-1)).long()
+        uniq_a, cnts_a = torch.unique(nxt_ast, return_counts=True)
+        cand_ids = uniq_a[torch.topk(cnts_a, min(8192, uniq_a.numel())).indices].to(device)
+        W_cand_g = emb_g[cand_ids].float()
+        W_ast_cand = ast_mod.emb[cand_ids].float()
+
+    TAU_AST = 2.0
+    n_ast_tr = max(1, (len(ast_seqs) * 7) // 8)
+    trie = bhmod.BpePrefixTrie.from_tokenizer_json(tok_path)
+
+    def eval_ast() -> Tuple[float, float]:
+        with torch.no_grad():
+            agrs = kls = 0.0
+            cnt = 0
+            for ai in range(n_ast_tr, len(ast_seqs)):
+                gi = ast_seqs[ai]
+                te = (emb_g[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE).unsqueeze(0)
+                ha = ast_mod.forward_seq(
+                    te, ast_h_final[ai : ai + 1, :-1].to(device).float(),
+                    cap_kv58["k_rope"][gi].unsqueeze(0).to(device), cap_kv58["v_norm"][gi].unsqueeze(0).to(device),
+                    cap_kv59["k_rope"][gi].unsqueeze(0).to(device), cap_kv59["v_norm"][gi].unsqueeze(0).to(device),
+                ).squeeze(0)
+                zs = SOFTCAP * torch.tanh((ast_h_final[ai, 1:].to(device).float() @ W_cand_g.T) / SOFTCAP)
+                za = ha @ W_ast_cand.T
+                ps = F.softmax(zs / TAU_AST, dim=-1)
+                kls += float(((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU_AST, dim=-1))).sum(dim=-1) * (TAU_AST * TAU_AST)).sum().item())
+                agrs += float((za.argmax(dim=-1) == zs.argmax(dim=-1)).float().sum().item())
+                cnt += ha.shape[0]
+            return kls / max(cnt, 1), agrs / max(cnt, 1)
+
+    akl0, aagr0 = eval_ast()
+    opt_a = torch.optim.AdamW(ast_mod.parameters(), lr=2.5e-4, weight_decay=1e-4)
+    sch_a = torch.optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=300, eta_min=2e-5)
+    best_aagr, best_asd = aagr0, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
+    ast_bs = 12 if gpu_vram_gb >= 64.0 else 4
+    for st in range(300):
+        opt_a.zero_grad()
+        bais = np.random.choice(n_ast_tr, size=min(ast_bs, n_ast_tr), replace=False).tolist()
+        te_l, bh_l, k58_l, v58_l, k59_l, v59_l, ht_l = [], [], [], [], [], [], []
+        for ai in bais:
+            gi = ast_seqs[ai]
+            te_l.append(emb_g[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE)
+            bh_l.append(ast_h_final[ai, :-1].to(device).float())
+            k58_l.append(cap_kv58["k_rope"][gi].to(device))
+            v58_l.append(cap_kv58["v_norm"][gi].to(device))
+            k59_l.append(cap_kv59["k_rope"][gi].to(device))
+            v59_l.append(cap_kv59["v_norm"][gi].to(device))
+            ht_l.append(ast_h_final[ai, 1:].to(device).float())
+        te_s, bh_s = torch.stack(te_l), torch.stack(bh_l)
+        k58_s, v58_s, k59_s, v59_s = torch.stack(k58_l), torch.stack(v58_l), torch.stack(k59_l), torch.stack(v59_l)
+        hst = torch.stack(ht_l)
+        ha = ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s)
+        with torch.no_grad():
+            zs = SOFTCAP * torch.tanh((hst.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
+            ps, ys_t1 = F.softmax(zs / TAU_AST, dim=-1), zs.argmax(dim=-1)
+        za = ha.reshape(-1, 1024) @ W_ast_cand.T
+        hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+        bh2 = torch.cat([bh_s[:, :1], hpost[:, :-1]], dim=1)
+        ha2 = ast_mod.forward_seq(te_s, bh2, k58_s, v58_s, k59_s, v59_s)
+        hpost2 = F.linear(ha2.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+        loss_a = (
+            ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU_AST, dim=-1))).sum(dim=-1) * (TAU_AST * TAU_AST)).mean()
+            + 0.5 * F.cross_entropy(za, ys_t1)
+            + 0.5 * (F.mse_loss(hpost, hst) / (hst.var() + 1e-5))
+            + 0.25 * (1.0 - F.cosine_similarity(hpost2[:, 1:], hst[:, 1:], dim=-1).mean())
+        )
+        loss_a.backward()
+        torch.nn.utils.clip_grad_norm_(ast_mod.parameters(), 1.0)
+        opt_a.step()
+        sch_a.step()
+        if (st + 1) % 60 == 0:
+            klv, agrv = eval_ast()
+            print(f"    [Ast step {st+1:03d}/300] Val KL={klv:.4f} Top1Agree={agrv*100:.1f}%", flush=True)
+            if agrv > best_aagr:
+                best_aagr, best_asd = agrv, {k: v.detach().cpu().clone() for k, v in ast_mod.state_dict().items()}
+    ast_mod.load_state_dict({k: v.to(device) for k, v in best_asd.items()})
+    akl1, aagr1 = eval_ast()
+    print(f"  [Assistant V9 Aligned] Val KL={akl0:.4f}->{akl1:.4f} | Top1Agree={aagr0*100:.1f}%->{aagr1*100:.1f}%", flush=True)
+
+    ast_sd["pre_projection.weight"] = ast_mod.pre.detach().to(torch.bfloat16).cpu()
+    ast_sd["post_projection.weight"] = ast_mod.post.detach().to(torch.bfloat16).cpu()
+    ast_sd["model.norm.weight"] = ast_mod.fn.detach().to(torch.bfloat16).cpu()
+    for la, m in enumerate(ast_mod.layers):
+        pa_k = f"model.layers.{la}."
+        for k_s, par in [
+            ("self_attn.q_proj.weight", m.q_proj), ("self_attn.o_proj.weight", m.o_proj),
+            ("mlp.gate_proj.weight", m.gate), ("mlp.up_proj.weight", m.up), ("mlp.down_proj.weight", m.down),
+            ("input_layernorm.weight", m.n_in), ("self_attn.q_norm.weight", m.n_qn),
+            ("post_attention_layernorm.weight", m.n_pa), ("pre_feedforward_layernorm.weight", m.n_pf),
+            ("post_feedforward_layernorm.weight", m.n_pff),
+        ]:
+            ast_sd[pa_k + k_s] = par.detach().to(torch.bfloat16).cpu()
+        ast_sd[pa_k + "layer_scalar"] = m.lsc.detach().to(torch.bfloat16).cpu().reshape(ast_sd[pa_k + "layer_scalar"].shape)
+    ast_sf = OUT_DIR / "assistant_v9_permuted.safetensors"
+    st_save_file(ast_sd, str(ast_sf))
+    bhmod.pack_assistant_body_from_safetensors(ast_sf, OUT_AST_Q2, body_bits=2, block_size=64, has_fwht=False)
+    bhmod.pack_assistant_body_from_safetensors(ast_sf, OUT_AST_Q4, body_bits=4, block_size=64, has_fwht=True)
+    ast_sf.unlink(missing_ok=True)
+    del opt_a, sch_a, ast_sd, best_asd, W_cand_g, W_ast_cand
+
+    h_ast_chunks = []
+    with torch.no_grad():
+        for b0 in range(0, len(ast_seqs), 32):
+            bais = list(range(b0, min(b0 + 32, len(ast_seqs))))
+            gis = [ast_seqs[ai] for ai in bais]
+            te_s = torch.stack([emb_g[torch.from_numpy(all_seq_ids[gi, 1:]).long().to(device)].float() * ESCALE for gi in gis])
+            bh_s = ast_h_final[b0 : b0 + len(bais), :-1].to(device).float()
+            k58_s = torch.stack([cap_kv58["k_rope"][gi].to(device) for gi in gis])
+            v58_s = torch.stack([cap_kv58["v_norm"][gi].to(device) for gi in gis])
+            k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
+            v59_s = torch.stack([cap_kv59["v_norm"][gi].to(device) for gi in gis])
+            h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s).cpu())
+    del ast_mod, cap_kv58, cap_kv59
+    torch.cuda.empty_cache()
+
+    H_ast_all = torch.cat(h_ast_chunks, dim=0).reshape(-1, 1024)
+    H_stud_tgt = ast_h_final[:, 1:, :].reshape(-1, D_MOD)
+    top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
+    top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
+    emb_g_c = emb_g.to(dtype=compute_dtype)
+    del emb_g
+    with torch.no_grad():
+        for i0 in range(0, H_stud_tgt.shape[0], 512):
+            i1 = min(i0 + 512, H_stud_tgt.shape[0])
+            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_g_c.T).float() / SOFTCAP)
+            tv, ti = torch.topk(lg_b, k=64, dim=-1)
+            top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
+            top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
+    del emb_g_c
+    student_argmax_ids = torch.tensor(v70.select_first_valid_trie_ids(top_ids_t, trie), dtype=torch.long)
+    del H_stud_tgt, ast_h_final
+
+    act_bundle = OUT_DIR / "v9_0_bhdr_acts.pt"
+    torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
+    bh_rpt = bhmod.train_from_activations(act_bundle, tok_path, OUT_BHDR, d_byte=384, max_bytes=48, steps=2400, batch_size=256, lr=3e-3, device=str(device))
+    act_bundle.unlink(missing_ok=True)
+    bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)
+    val_h = H_ast_all[-256:].numpy().astype(np.float32)
+    val_g = student_argmax_ids[-256:].tolist()
+    beam_hits = sum(1 for hv, gv in zip(val_h, val_g) if bhmod.decode_bhdr_np_beam(bh_loaded, trie, hv, beam_width=2)[0] == gv)
+    bh_metrics = {**bh_rpt["metrics"], "heldout_beam_top1_acc_vs_v9_argmax": round(beam_hits / 256.0, 4)}
+    del H_ast_all, student_argmax_ids, top_ids_t, top_probs_t
+
+    all_artifact_paths = (
+        t16c_final_path, OUT_CRTR, head_crtr_final_path, OUT_C8D, OUT_AST_Q2, OUT_AST_Q4, OUT_BHDR,
+    )
+    persist_set = set(all_artifact_paths) if persist_t16c_and_head else {OUT_CRTR, OUT_C8D, OUT_AST_Q2, OUT_AST_Q4, OUT_BHDR}
+    artifacts = {}
+    for fp_out in all_artifact_paths:
+        sz_b = fp_out.stat().st_size
+        hx_b = _sha256_file(fp_out)
+        if DRIVE_DIR is not None and fp_out in persist_set:
+            _drive_safe_copy(fp_out, DRIVE_DIR / fp_out.name)
+        artifacts[fp_out.name] = {"bytes": sz_b, "sha256": hx_b}
+
+    report = {
+        "version": f"V9.0-FASTKERNEL-SPARSE10OF84-HEAD10OF32-DISPERSION-QAT{mode_tag}",
+        "gpu": gpu_name,
+        "elapsed_s": round(time.perf_counter() - t0_all, 2),
+        "t16c_bytes": t16c_final_path.stat().st_size,
+        "t16c_gib": round(t16c_final_path.stat().st_size / (1024**3), 4),
+        "colblock_mats": cb_cnt,
+        "l59_cos": layer_logs[-1]["vlm_txt_cos"] if layer_logs else 0.0,
+        "val_kl": round(val_kl, 4),
+        "val_top1_agree": round(val_top1, 4),
+        "val_top5_agree": round(val_top5, 4),
+        "post_cell60_kept": bool(keep_c60),
+        "crtr_mean_recall": round(float(np.mean([r["crtr_recall"] for r in layer_logs])), 5),
+        "head_crtr_mean_recall": round(float(np.mean([r["head_crtr_recall"] for r in layer_logs])), 5),
+        "assistant_align": {"kl_before": round(akl0, 4), "kl_after": round(akl1, 4), "top1_before": round(aagr0, 4), "top1_after": round(aagr1, 4)},
+        "bhdr": bh_metrics,
+        "artifacts": artifacts,
+    }
+    OUT_REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    sums = "\n".join(f"{v['sha256']}  {k}" for k, v in artifacts.items()) + "\n"
+    (OUT_DIR / "SHA256SUMS.txt").write_text(sums, encoding="utf-8")
+    if DRIVE_DIR is not None:
+        _drive_safe_copy(OUT_REPORT, DRIVE_DIR / OUT_REPORT.name)
+        _drive_safe_copy(OUT_DIR / "SHA256SUMS.txt", DRIVE_DIR / "SHA256SUMS.txt")
+        # Remove obsolete .partial and ckpt_v9_0 bloat so Drive FUSE upload queue stays clean
+        part_p = DRIVE_DIR / (OUT_T16C.name + ".partial")
+        if part_p.exists():
+            part_p.unlink()
+        shutil.rmtree(DRIVE_DIR / "ckpt_v9_0", ignore_errors=True)
+        expected_sha_map = {k: v["sha256"] for k, v in artifacts.items()}
+        expected_sha_map[OUT_REPORT.name] = _sha256_file(OUT_REPORT)
+        _verify_drive_sha256(DRIVE_DIR, expected_sha_map)
+
+    print(f"[V9.0 {mode_tag or 'COMPLETE'}] elapsed={(time.perf_counter()-t0_all)/60:.1f} min | {OUT_T16C.name}={report['t16c_gib']} GiB | colblock={cb_cnt}", flush=True)
+    if os.environ.get("COLAB_AUTO_UNASSIGN", "1") == "1":
+        _flush_drive_before_unassign()
+        try:
+            from google.colab import runtime
+            runtime.unassign()
+        except Exception as exc:
+            print(f"[Auto-Unassign Note] {exc}", flush=True)
+    return report
+
+
+def recover_aux_from_t16c() -> Dict[str, object]:
+    """Replay all 60 layers from an already-built V9.0 `.t16c` + `head_router.crtr` in ~11 min to regenerate the 5 aux files."""
+    if not torch.cuda.is_available():
+        raise RuntimeError("recover_aux_from_t16c() requires CUDA GPU")
+    if run_selftest() != 0:
+        raise RuntimeError("V9.0 CPU pre-flight selftest failed")
+
+    t0_all = time.perf_counter()
+    device = torch.device("cuda:0")
+    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    if DRIVE_DIR is not None:
+        DRIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else 48)
+
+    t16c_src = _resolve_existing_artifact(OUT_T16C.name, OUT_DIR, DRIVE_DIR)
+    hr_src = _resolve_existing_artifact(OUT_HEAD_CRTR.name, OUT_DIR, DRIVE_DIR)
+    print(f"[V9.0 RECOVER-AUX] t16c={t16c_src} | head_router={hr_src} | GPU={gpu_name}", flush=True)
+    norms_dict, mats_meta = _parse_t16c_index(t16c_src)
+    cb_cnt = sdc.verify_t16c_file(t16c_src)["colblock_mats"]
+    hr_meta, hr_recs = crtr.load_crtr(hr_src)
+    assert len(hr_recs) == V9_N_LAYERS and int(hr_meta["n_blocks"]) == V9_ATTN_HEADS
+
+    from safetensors import safe_open
+    H256_GPU = torch.from_numpy(pa.make_sylvester_hadamard(V9_BLOCK_SIZE)).to(device, dtype=torch.float32)
+    H8_GPU = torch.from_numpy(c8d.H8_NP).to(device, dtype=torch.float32)
+    ctx = _init_v9_stage1_base(device, compute_dtype)
+    sf_path: Path = ctx["sf_path"]  # type: ignore[assignment]
+    D_MOD: int = int(ctx["D_MOD"])
+    N_LAYERS: int = int(ctx["N_LAYERS"])
+    EPS: float = float(ctx["EPS"])
+    ESCALE: float = float(ctx["ESCALE"])
+    NH: int = int(ctx["NH"])
+    NKV_S: int = int(ctx["NKV_S"])
+    NKV_F: int = int(ctx["NKV_F"])
+    HD_S: int = int(ctx["HD_S"])
+    HD_F: int = int(ctx["HD_F"])
+    K_EQ_V: bool = bool(ctx["K_EQ_V"])
+    LAYER_TYPES = ctx["LAYER_TYPES"]
+    THETA_G, PART_G = float(ctx["THETA_G"]), float(ctx["PART_G"])
+    THETA_L, PART_L = float(ctx["THETA_L"]), float(ctx["PART_L"])
+    soft_tok: int = int(ctx["soft_tok"])
+    all_seq_ids: np.ndarray = ctx["all_seq_ids"]  # type: ignore[assignment]
+    N_TEXT_SEQ: int = int(ctx["N_TEXT_SEQ"])
+    N_SEQ: int = int(ctx["N_SEQ"])
+    X_teach_perm: torch.Tensor = ctx["X_teach_perm"]  # type: ignore[assignment]
+    perm_pi: torch.Tensor = ctx["perm_pi"]  # type: ignore[assignment]
+    perm_pi_dev = perm_pi.to(device)
+    del ctx["emb_raw"], ctx["fn_orig"]
+
+    # Fail-closed verification that reconstructed perm_pi matches t16c_src across ALL 60 layers
+    with safe_open(sf_path, framework="pt", device="cpu") as sf:
+        max_pi_diff = 0.0
+        for l_idx in range(N_LAYERS):
+            nk_in = f"model.language_model.layers.{l_idx}.input_layernorm.weight"
+            ref_n = sf.get_tensor(nk_in).float()[perm_pi].numpy().astype(np.float32)
+            got_n = norms_dict[nk_in].astype(np.float32)
+            max_pi_diff = max(max_pi_diff, float(np.max(np.abs(ref_n - got_n))))
+        assert max_pi_diff < 1e-6, f"perm_pi mismatch vs {t16c_src}: max_diff={max_pi_diff:.3e}"
+    print(f"[Recover Verify] perm_pi 100% verified against all 60 layers in {t16c_src.name} (max_diff={max_pi_diff:.2e})", flush=True)
+
+    # Decode quantized 3-bit emb_eff from t16c_src in 16K-row chunks
+    emb_rec = mats_meta["model.language_model.embed_tokens.weight"]
+    vocab_sz = int(emb_rec["d_out"])
+    emb_eff = torch.empty((vocab_sz, D_MOD), dtype=torch.float16)
+    eb_eff_bits = int(emb_rec["n_bits"]) & 0x1F
+    eb_gauss = bool(int(emb_rec["n_bits"]) & p3.T16C_GAUSS_BIT)
+    tblk_emb = p3.tile16_blk_bytes(V9_BLOCK_SIZE, eb_eff_bits | (p3.T16C_GAUSS_BIT if eb_gauss else 0), emb_rec["is_asym"]) * (D_MOD // V9_BLOCK_SIZE)
+    with open(t16c_src, "rb") as fp_emb:
+        for r0 in range(0, vocab_sz, 16384):
+            r1 = min(r0 + 16384, vocab_sz)
+            n_t = (r1 - r0 + 15) // 16
+            fp_emb.seek(int(emb_rec["offset"]) + (r0 // 16) * tblk_emb)
+            pb_c = fp_emb.read(n_t * tblk_emb)
+            w_c = decode_t16c_mat_to_f32(
+                pb_c, r1 - r0, D_MOD, V9_BLOCK_SIZE, emb_rec["n_bits"], emb_rec["is_asym"],
+                None, None, H256_GPU, has_fwht=emb_rec["has_fwht"],
+            )
+            emb_eff[r0:r1] = w_c.to(torch.float16).cpu()
+            del w_c, pb_c
+
+    X_stud_perm = (emb_eff[torch.from_numpy(all_seq_ids)] * ESCALE).to(torch.float16)
+    for si in range(N_TEXT_SEQ, N_SEQ):
+        pos_m = torch.from_numpy(all_seq_ids[si] == soft_tok)
+        X_stud_perm[si, pos_m] = X_teach_perm[si, pos_m]
+    torch.cuda.empty_cache()
+
+    rmsn_gpu, make_rope, apply_rope = _make_gemma4_math_helpers(device, EPS)
+    rope_cs_g, rope_sn_g = make_rope(THETA_G, int(round(HD_F * PART_G)), HD_F)
+    rope_cs_s, rope_sn_s = make_rope(THETA_L, int(round(HD_S * PART_L)), HD_S)
+
+    crtr_layers: List[dict] = []
+    c8db_entries: List[dict] = []
+    layer_logs: List[dict] = []
+    ast_seqs = np.linspace(0, N_TEXT_SEQ - 1, min(128, N_TEXT_SEQ), dtype=int).tolist()
+    cap_kv58: Dict[str, dict] = {"k_rope": {}, "v_norm": {}}
+    cap_kv59: Dict[str, dict] = {"k_rope": {}, "v_norm": {}}
+
+    with open(t16c_src, "rb") as fp_t16c, safe_open(sf_path, framework="pt", device="cpu") as sf:
+        for l_idx in range(N_LAYERS):
+            tl0 = time.perf_counter()
+            pfx = f"model.language_model.layers.{l_idx}"
+            is_f = LAYER_TYPES[l_idx] == "full_attention"
+            nkv, hd = (NKV_F, HD_F) if is_f else (NKV_S, HD_S)
+            rot_d = int(round(hd * (PART_G if is_f else PART_L)))
+            cs_r, sn_r = (rope_cs_g, rope_sn_g) if is_f else (rope_cs_s, rope_sn_s)
+            rep = NH // nkv
+
+            g_in = torch.from_numpy(norms_dict[f"{pfx}.input_layernorm.weight"]).to(device)
+            g_pa = torch.from_numpy(norms_dict[f"{pfx}.post_attention_layernorm.weight"]).to(device)
+            g_pf = torch.from_numpy(norms_dict[f"{pfx}.pre_feedforward_layernorm.weight"]).to(device)
+            g_pff = torch.from_numpy(norms_dict[f"{pfx}.post_feedforward_layernorm.weight"]).to(device)
+            g_qn = torch.from_numpy(norms_dict[f"{pfx}.self_attn.q_norm.weight"]).to(device)
+            g_kn = torch.from_numpy(norms_dict[f"{pfx}.self_attn.k_norm.weight"]).to(device)
+            lsc_fin = float(norms_dict[f"{pfx}.layer_scalar"].reshape(-1)[0])
+
+            # 1) Teacher forward pass (X_teach_perm -> X_teach_next)
+            wq_t = _load_dequant_proj(sf, f"{pfx}.self_attn.q_proj", perm_pi_dev, device, is_perm_col=True)
+            wk_t = _load_dequant_proj(sf, f"{pfx}.self_attn.k_proj", perm_pi_dev, device, is_perm_col=True)
+            wv_t = wk_t if (is_f and K_EQ_V) else _load_dequant_proj(sf, f"{pfx}.self_attn.v_proj", perm_pi_dev, device, is_perm_col=True)
+            wo_t = _load_dequant_proj(sf, f"{pfx}.self_attn.o_proj", perm_pi_dev, device, is_perm_row=True)
+            wg_t = _load_dequant_proj(sf, f"{pfx}.mlp.gate_proj", perm_pi_dev, device, is_perm_col=True)
+            wu_t = _load_dequant_proj(sf, f"{pfx}.mlp.up_proj", perm_pi_dev, device, is_perm_col=True)
+            wd_t = _load_dequant_proj(sf, f"{pfx}.mlp.down_proj", perm_pi_dev, device, is_perm_row=True)
+            g_pa_orig = sf.get_tensor(f"{pfx}.post_attention_layernorm.weight").float()[perm_pi].to(device)
+            g_pff_orig = sf.get_tensor(f"{pfx}.post_feedforward_layernorm.weight").float()[perm_pi].to(device)
+            lsc_orig = float(sf.get_tensor(f"{pfx}.layer_scalar").float().reshape(-1)[0].item())
+
+            X_teach_next = torch.empty_like(X_teach_perm)
+            with torch.no_grad():
+                for b0 in range(0, N_SEQ, MB_FWD):
+                    b1 = min(b0 + MB_FWD, N_SEQ)
+                    xb = X_teach_perm[b0:b1].to(device, dtype=torch.float32)
+                    xn = rmsn_gpu(xb, g_in)
+                    q = apply_rope(rmsn_gpu(F.linear(xn, wq_t).view(b1 - b0, V9_SEQ_LEN, NH, hd), g_qn), cs_r, sn_r, rot_d, hd).transpose(1, 2)
+                    k = apply_rope(rmsn_gpu(F.linear(xn, wk_t).view(b1 - b0, V9_SEQ_LEN, nkv, hd), g_kn), cs_r, sn_r, rot_d, hd).transpose(1, 2)
+                    v = rmsn_gpu(F.linear(xn, wv_t).view(b1 - b0, V9_SEQ_LEN, nkv, hd), None).transpose(1, 2)
+                    ctx_t = F.scaled_dot_product_attention(q, k.repeat_interleave(rep, 1), v.repeat_interleave(rep, 1), is_causal=True, scale=1.0).transpose(1, 2).contiguous().view(b1 - b0, V9_SEQ_LEN, NH * hd)
+                    xm = xb + rmsn_gpu(F.linear(ctx_t, wo_t), g_pa_orig)
+                    xf = rmsn_gpu(xm, g_pf)
+                    act = F.gelu(F.linear(xf, wg_t), approximate="tanh") * F.linear(xf, wu_t)
+                    X_teach_next[b0:b1] = ((xm + rmsn_gpu(F.linear(act, wd_t), g_pff_orig)) * lsc_orig).to(torch.float16).cpu()
+            del wq_t, wk_t, wv_t, wo_t, wg_t, wu_t, wd_t, g_pa_orig, g_pff_orig
+
+            # 2) Decode frozen quantized Student projections from t16c_src
+            wq_q = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.self_attn.q_proj.weight"], H256_GPU)
+            wk_q = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.self_attn.k_proj.weight"], H256_GPU)
+            wv_q = wk_q if (is_f and K_EQ_V) else _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.self_attn.v_proj.weight"], H256_GPU)
+            wo_q = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.self_attn.o_proj.weight"], H256_GPU)
+            wg_fin = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.mlp.gate_proj.weight"], H256_GPU)
+            wu_fin = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.mlp.up_proj.weight"], H256_GPU)
+            wd_fin = _read_t16c_matrix_f32(fp_t16c, mats_meta[f"{pfx}.mlp.down_proj.weight"], H256_GPU)
+
+            xm_stud_cpu = torch.empty_like(X_stud_perm)
+            xf_stud_cpu = torch.empty_like(X_stud_perm)
+            blk_e_cpu = torch.empty((N_SEQ * V9_SEQ_LEN, V9_MLP_BLOCKS), dtype=torch.float32)
+            mod_sal_cpu = torch.empty((N_SEQ * V9_SEQ_LEN,), dtype=torch.float32)
+            hr_rec_l = hr_recs[l_idx] if (2 <= l_idx <= 57) else None
+
+            with torch.no_grad():
+                for b0 in range(0, N_SEQ, MB_FWD):
+                    b1 = min(b0 + MB_FWD, N_SEQ)
+                    xb = X_stud_perm[b0:b1].to(device, dtype=torch.float32)
+                    xn = rmsn_gpu(xb, g_in)
+                    q = apply_rope(rmsn_gpu(F.linear(xn, wq_q).view(b1 - b0, V9_SEQ_LEN, NH, hd), g_qn), cs_r, sn_r, rot_d, hd).transpose(1, 2)
+                    k = apply_rope(rmsn_gpu(F.linear(xn, wk_q).view(b1 - b0, V9_SEQ_LEN, nkv, hd), g_kn), cs_r, sn_r, rot_d, hd).transpose(1, 2)
+                    v = rmsn_gpu(F.linear(xn, wv_q).view(b1 - b0, V9_SEQ_LEN, nkv, hd), None).transpose(1, 2)
+                    if l_idx in (58, 59):
+                        for gi in range(b0, b1):
+                            if gi in ast_seqs:
+                                cap = cap_kv58 if l_idx == 58 else cap_kv59
+                                cap["k_rope"][gi] = k[gi - b0].to(torch.float16).cpu()
+                                cap["v_norm"][gi] = v[gi - b0].to(torch.float16).cpu()
+                    ctx_s = F.scaled_dot_product_attention(q, k.repeat_interleave(rep, 1), v.repeat_interleave(rep, 1), is_causal=True, scale=1.0).transpose(1, 2).contiguous()
+                    if hr_rec_l is not None:
+                        hr_lg = _eval_crtr_rec_gpu(hr_rec_l, xn.reshape(-1, D_MOD))
+                        top_h = torch.topk(hr_lg, V9_ATTN_ROUTED_HEADS, dim=-1).indices
+                        hm = torch.zeros((xn.shape[0] * V9_SEQ_LEN, NH), device=device)
+                        hm.scatter_(1, top_h, 1.0)
+                        ctx_s = ctx_s * hm.view(b1 - b0, V9_SEQ_LEN, NH, 1)
+                    xm = xb + rmsn_gpu(F.linear(ctx_s.view(b1 - b0, V9_SEQ_LEN, NH * hd), wo_q), g_pa)
+                    xf = rmsn_gpu(xm, g_pf)
+                    xm_stud_cpu[b0:b1] = xm.to(torch.float16).cpu()
+                    xf_stud_cpu[b0:b1] = xf.to(torch.float16).cpu()
+                    gg = F.gelu(F.linear(xf, wg_fin), approximate="tanh").reshape(-1, V9_MLP_BLOCKS, V9_BLOCK_SIZE)
+                    blk_e_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = gg.pow(2).sum(dim=-1).to(torch.float32).cpu()
+                    sal_tok = (X_teach_next[b0:b1].to(device, dtype=torch.float32) - xb).pow(2).sum(dim=-1).sqrt() / (xb.pow(2).sum(dim=-1).sqrt() + 1e-6)
+                    mod_sal_cpu[b0 * V9_SEQ_LEN : b1 * V9_SEQ_LEN] = sal_tok.reshape(-1).cpu()
+            del wq_q, wk_q, wv_q, wo_q
+
+            # 3) Train CRTR-V9 (r=64 + MoD) -> INT8 quantize
+            xf_flat = xf_stud_cpu.reshape(-1, D_MOD)
+            n_tr_r = (xf_flat.shape[0] * 9) // 10
+            sal_q28 = float(torch.quantile(mod_sal_cpu, 0.28).item())
+            mod_y = (mod_sal_cpu > sal_q28).float()
+            r_net, r_met = crtr.train_layer_router(
+                xf_flat[:n_tr_r], blk_e_cpu[:n_tr_r], xf_flat[n_tr_r:], blk_e_cpu[n_tr_r:],
+                top_p=float(V9_SHARED_BLOCKS + V9_ROUTED_BLOCKS) / float(V9_MLP_BLOCKS),
+                rank=V9_CRTR_RANK, steps=160, lr=3e-3,
+                mod_targets_tr=mod_y[:n_tr_r], mod_targets_va=mod_y[n_tr_r:],
+                device=str(device), seed=100 + l_idx,
+            )
+            r_q = crtr.quantize_layer_for_crtr(r_net, V9_BLOCK_SIZE)
+            crtr_layers.append(r_q)
+
+            # 4) Train C8DB adapter on frozen Student MLP (under quantized INT8 r_q mask)
+            adp_d = c8d.Cuneiform8DPatternAdapter(d_out=D_MOD, d_in=V9_FF, rank=32, n_experts=8, top_k=2, temperature=0.5, gate_scale=1.0).to(device)
+            opt_c8 = torch.optim.AdamW(adp_d.parameters(), lr=4e-3, weight_decay=1e-4)
+            for _ in range(60):
+                opt_c8.zero_grad()
+                bs_q = torch.randint(0, N_SEQ, (min(32, N_SEQ),), device="cpu")
+                xf_b = xf_stud_cpu[bs_q].to(device, dtype=torch.float32).reshape(-1, D_MOD)
+                xm_b = xm_stud_cpu[bs_q].to(device, dtype=torch.float32).reshape(-1, D_MOD)
+                xt_b = X_teach_next[bs_q].to(device, dtype=torch.float32).reshape(-1, D_MOD)
+                with torch.no_grad():
+                    r_log = _eval_crtr_rec_gpu(r_q, xf_b)
+                    r_spec = torch.topk(r_log[:, V9_SHARED_BLOCKS:], V9_ROUTED_BLOCKS, dim=-1).indices + V9_SHARED_BLOCKS
+                    blk_m = torch.zeros((xf_b.shape[0], V9_MLP_BLOCKS), device=device)
+                    blk_m[:, :V9_SHARED_BLOCKS] = 1.0
+                    blk_m.scatter_(1, r_spec, 1.0)
+                    col_m = blk_m.repeat_interleave(V9_BLOCK_SIZE, dim=-1)
+                    act_q = (F.gelu(F.linear(xf_b, wg_fin), approximate="tanh") * F.linear(xf_b, wu_fin)) * col_m
+                    base_d = F.linear(act_q, wd_fin)
+                delta_d, _, lb_d = adp_d(act_q)
+                xs_b = (xm_b + rmsn_gpu(base_d + delta_d, g_pff)) * lsc_fin
+                mag_t = torch.log(xt_b.pow(2).sum(dim=-1).clamp(min=1e-8))
+                mag_s = torch.log(xs_b.pow(2).sum(dim=-1).clamp(min=1e-8))
+                loss_c8 = (1.0 - F.cosine_similarity(xs_b, xt_b, dim=-1).mean()) + 0.15 * F.mse_loss(mag_s, mag_t) + 0.25 * F.mse_loss(xs_b, xt_b) + 0.005 * lb_d
+                loss_c8.backward()
+                torch.nn.utils.clip_grad_norm_(adp_d.parameters(), 1.0)
+                opt_c8.step()
+
+            ct_d, ex_d = adp_d.cpu().export_quantized_arrays()
+            exp_r_d = [c8d._c6d_radicals("general", "core", "transform", "native", "layer", "positive", e) for e in range(8)]
+            c8db_entries.append({
+                "name": f"{pfx}.mlp.down_proj.weight", "d_out": D_MOD, "d_in": V9_FF, "rank": 32,
+                "top_k": 2, "c6d": exp_r_d[0], "temperature": 0.5, "gate_scale": 1.0,
+                "centroids": ct_d, "expert_radicals": exp_r_d, "experts": ex_d,
+            })
+
+            # 5) Advance Student state with EXACT quantized INT8 CRTR & quantized INT8 C8DB
+            with torch.no_grad():
+                for b0 in range(0, N_SEQ, MB_FWD):
+                    b1 = min(b0 + MB_FWD, N_SEQ)
+                    xf_b = xf_stud_cpu[b0:b1].to(device, dtype=torch.float32).reshape(-1, D_MOD)
+                    xm_b = xm_stud_cpu[b0:b1].to(device, dtype=torch.float32).reshape(-1, D_MOD)
+                    r_log = _eval_crtr_rec_gpu(r_q, xf_b)
+                    r_spec = torch.topk(r_log[:, V9_SHARED_BLOCKS:], V9_ROUTED_BLOCKS, dim=-1).indices + V9_SHARED_BLOCKS
+                    blk_m = torch.zeros((xf_b.shape[0], V9_MLP_BLOCKS), device=device)
+                    blk_m[:, :V9_SHARED_BLOCKS] = 1.0
+                    blk_m.scatter_(1, r_spec, 1.0)
+                    col_m = blk_m.repeat_interleave(V9_BLOCK_SIZE, dim=-1)
+                    act_q = (F.gelu(F.linear(xf_b, wg_fin), approximate="tanh") * F.linear(xf_b, wu_fin)) * col_m
+                    down_q = F.linear(act_q, wd_fin) + _eval_c8d_gpu(act_q, ct_d, ex_d, H8_GPU)
+                    X_stud_perm[b0:b1] = ((xm_b + rmsn_gpu(down_q, g_pff)) * lsc_fin).reshape(b1 - b0, V9_SEQ_LEN, D_MOD).to(torch.float16).cpu()
+
+            X_teach_perm = X_teach_next
+            cos_l = float(F.cosine_similarity(X_stud_perm[-32:].reshape(-1, D_MOD).float(), X_teach_perm[-32:].reshape(-1, D_MOD).float(), dim=-1).mean().item())
+            layer_logs.append({"l": l_idx, "vlm_txt_cos": round(cos_l, 5), "crtr_recall": r_met["val_recall_after"], "head_crtr_recall": 0.75743})
+            print(f"  [Recover L{l_idx:02d}/59] cos={cos_l:.5f} crtr_rec={r_met['val_recall_after']:.3f} dt={time.perf_counter()-tl0:.1f}s", flush=True)
+            del wg_fin, wu_fin, wd_fin, xm_stud_cpu, xf_stud_cpu, blk_e_cpu, mod_sal_cpu, adp_d, opt_c8
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    return _run_stage3_distill_and_export(
+        ctx=ctx, device=device, compute_dtype=compute_dtype, gpu_name=gpu_name, gpu_vram_gb=gpu_vram_gb, t0_all=t0_all,
+        rmsn_gpu=rmsn_gpu, X_stud_perm=X_stud_perm, X_teach_perm=X_teach_perm, emb_eff=emb_eff, ast_seqs=ast_seqs,
+        cap_kv58=cap_kv58, cap_kv59=cap_kv59, fn_vec_np=norms_dict["model.language_model.norm.weight"],
+        crtr_layers=crtr_layers, head_crtr_layers=None, c8db_entries=c8db_entries, layer_logs=layer_logs, cb_cnt=cb_cnt,
+        t16c_final_path=t16c_src, head_crtr_final_path=hr_src, persist_t16c_and_head=False, apply_wiener=False,
+        train_post_cell60=True, mode_tag="-RECOVER-AUX",
+    )
 
 
 def run_pipeline() -> Dict[str, object]:
@@ -2334,8 +3426,9 @@ def run_pipeline() -> Dict[str, object]:
     bh_metrics = {**bh_rpt["metrics"], "heldout_beam_top1_acc_vs_v9_argmax": round(beam_hits / 256.0, 4)}
     del H_ast_all, student_argmax_ids, top_ids_t, top_probs_t
 
+    all_artifact_paths = (OUT_T16C, OUT_CRTR, OUT_HEAD_CRTR, OUT_C8D, OUT_AST_Q2, OUT_AST_Q4, OUT_BHDR)
     artifacts = {}
-    for fp_out in (OUT_T16C, OUT_CRTR, OUT_HEAD_CRTR, OUT_C8D, OUT_AST_Q2, OUT_AST_Q4, OUT_BHDR):
+    for fp_out in all_artifact_paths:
         s_b, h_b = persist_v9(fp_out)
         artifacts[fp_out.name] = {"bytes": s_b, "sha256": h_b}
 
@@ -2357,13 +3450,22 @@ def run_pipeline() -> Dict[str, object]:
         "artifacts": artifacts,
     }
     OUT_REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    persist_v9(OUT_REPORT)
+    sums = "\n".join(f"{v['sha256']}  {k}" for k, v in artifacts.items()) + "\n"
+    (OUT_DIR / "SHA256SUMS.txt").write_text(sums, encoding="utf-8")
     if DRIVE_DIR is not None:
-        sums = "\n".join(f"{v['sha256']}  {k}" for k, v in artifacts.items()) + "\n"
-        (DRIVE_DIR / "SHA256SUMS.txt").write_text(sums, encoding="utf-8")
+        persist_v9(OUT_REPORT)
+        persist_v9(OUT_DIR / "SHA256SUMS.txt")
+        part_p = DRIVE_DIR / (OUT_T16C.name + ".partial")
+        if part_p.exists():
+            part_p.unlink()
+        shutil.rmtree(DRIVE_DIR / "ckpt_v9_0", ignore_errors=True)
+        expected_sha_map = {k: v["sha256"] for k, v in artifacts.items()}
+        expected_sha_map[OUT_REPORT.name] = _sha256_file(OUT_REPORT)
+        _verify_drive_sha256(DRIVE_DIR, expected_sha_map)
     print(f"[V9.0 COMPLETE] elapsed={(time.perf_counter()-t0_all)/60:.1f} min | {OUT_T16C.name}={report['t16c_gib']} GiB | colblock={cb_cnt}", flush=True)
 
     if os.environ.get("COLAB_AUTO_UNASSIGN", "1") == "1":
+        _flush_drive_before_unassign()
         try:
             from google.colab import runtime
             runtime.unassign()
@@ -2376,9 +3478,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Language-U Gemma 4 31B V9.0 Sparse-Active QAT Builder")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--recover-aux", action="store_true", help="Replay frozen V9.0 .t16c to rebuild the 5 aux files (~11 min on L4)")
     args = ap.parse_args()
-    if args.selftest or (not args.run and not torch.cuda.is_available()):
+    if args.selftest or (not args.run and not args.recover_aux and not torch.cuda.is_available()):
         return run_selftest()
+    if args.recover_aux:
+        recover_aux_from_t16c()
+        return 0
     run_pipeline()
     return 0
 
