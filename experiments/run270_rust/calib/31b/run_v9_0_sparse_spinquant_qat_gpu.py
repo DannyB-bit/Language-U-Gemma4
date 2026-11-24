@@ -1004,30 +1004,50 @@ def _build_decontaminated_corpus(tk, max_text_seq: int = 896, seq_len: int = V9_
         return True
 
     turns: List[Tuple[str, str, str]] = []
-    for row in load_dataset("openai/gsm8k", "main", split="train"):
-        q, a = row["question"].strip(), row["answer"].strip()
-        if is_clean_pair(q + " " + a):
-            turns.append(("math", q, a))
-            if len(turns) >= 400:
-                break
+    try:
+        for row in load_dataset("openai/gsm8k", "main", split="train"):
+            q, a = row["question"].strip(), row["answer"].strip()
+            if is_clean_pair(q + " " + a):
+                turns.append(("math", q, a))
+                if len(turns) >= 400:
+                    break
+    except Exception as e:
+        print(f"[Corpus] Notice: gsm8k load ({e}), continuing...", flush=True)
 
-    for row in load_dataset("mbpp", "sanitized", split="train"):
-        q = row.get("prompt", "").strip()
-        a = row.get("code", "").strip()
-        if q and a and is_clean_pair(q + " " + a):
-            turns.append(("code", f"Write a clean Python function:\n{q}", f"```python\n{a}\n```"))
-            if len(turns) >= 650:
+    mbpp_names = ("google-research-datasets/mbpp", "mbpp")
+    for mbpp_name in mbpp_names:
+        try:
+            for row in load_dataset(mbpp_name, "sanitized", split="train"):
+                q = row.get("prompt", "").strip()
+                a = row.get("code", "").strip()
+                if q and a and is_clean_pair(q + " " + a):
+                    turns.append(("code", f"Write a clean Python function:\n{q}", f"```python\n{a}\n```"))
+                    if len(turns) >= 650:
+                        break
+            if any(t[0] == "code" for t in turns):
                 break
+        except Exception as e:
+            print(f"[Corpus] Notice: {mbpp_name} load ({e}), trying next...", flush=True)
 
-    for row in load_dataset("allenai/sciq", split="train"):
-        q = row.get("question", "").strip()
-        sup = row.get("support", "").strip()
-        ans = row.get("correct_answer", "").strip()
-        if q and ans and is_clean_pair(q + " " + sup + " " + ans):
-            body = f"{sup}\nAnswer: {ans}" if sup else ans
-            turns.append(("science", q, body))
-            if len(turns) >= max_text_seq:
-                break
+    try:
+        for row in load_dataset("allenai/sciq", split="train"):
+            q = row.get("question", "").strip()
+            sup = row.get("support", "").strip()
+            ans = row.get("correct_answer", "").strip()
+            if q and ans and is_clean_pair(q + " " + sup + " " + ans):
+                body = f"{sup}\nAnswer: {ans}" if sup else ans
+                turns.append(("science", q, body))
+                if len(turns) >= max_text_seq:
+                    break
+    except Exception as e:
+        print(f"[Corpus] Notice: sciq load ({e}), continuing...", flush=True)
+
+    if len(turns) < 32:
+        for cat, q, a in vc.V4_CAL_PAIRS:
+            if is_clean_pair(q + " " + a):
+                turns.append((cat, q, a))
+                if len(turns) >= max_text_seq:
+                    break
 
     verify_corpus_decontaminated([f"{q}\n{a}" for _, q, a in turns], holdout_4grams=h4)
 
