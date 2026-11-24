@@ -163,14 +163,20 @@ def _write_mat_record(
 ) -> int:
     """Serialize one `T16CMat` record matching `t16c::T16CModel::load` byte-for-byte."""
     exp_p = expected_tile16_bytes(d_out, d_in, bsize, n_bits, is_asym)
-    pb_u8 = np.ascontiguousarray(pbytes, dtype=np.uint8).ravel()
+    if isinstance(pbytes, (bytes, bytearray, memoryview)):
+        pb_u8 = np.frombuffer(pbytes, dtype=np.uint8)
+    else:
+        pb_u8 = np.ascontiguousarray(pbytes, dtype=np.uint8).ravel()
     if pb_u8.size != exp_p:
         raise ValueError(f"{name}: packed length {pb_u8.size} != expected {exp_p}")
 
     inv_f32: Optional[np.ndarray] = None
     inv_kind = 0
     if inv_s is not None:
-        inv_f32 = np.ascontiguousarray(inv_s, dtype="<f4").ravel()
+        if isinstance(inv_s, (bytes, bytearray, memoryview)):
+            inv_f32 = np.frombuffer(inv_s, dtype="<f4")
+        else:
+            inv_f32 = np.ascontiguousarray(inv_s, dtype="<f4").ravel()
         if inv_f32.size != d_in:
             raise ValueError(f"{name}: inv_s len {inv_f32.size} != d_in {d_in}")
         inv_kind = 1
@@ -180,10 +186,10 @@ def _write_mat_record(
     su_f32 = sv_f32 = u_i8 = v_i8 = None
     if low_rank is not None:
         su_raw, sv_raw, u_raw, v_raw = low_rank
-        su_f32 = np.ascontiguousarray(su_raw, dtype="<f4").ravel()
-        sv_f32 = np.ascontiguousarray(sv_raw, dtype="<f4").ravel()
-        u_i8 = np.ascontiguousarray(u_raw, dtype=np.int8)
-        v_i8 = np.ascontiguousarray(v_raw, dtype=np.int8)
+        su_f32 = (np.frombuffer(su_raw, dtype="<f4") if isinstance(su_raw, (bytes, bytearray, memoryview)) else np.ascontiguousarray(su_raw, dtype="<f4")).ravel()
+        sv_f32 = (np.frombuffer(sv_raw, dtype="<f4") if isinstance(sv_raw, (bytes, bytearray, memoryview)) else np.ascontiguousarray(sv_raw, dtype="<f4")).ravel()
+        u_i8 = (np.frombuffer(u_raw, dtype=np.int8) if isinstance(u_raw, (bytes, bytearray, memoryview)) else np.ascontiguousarray(u_raw, dtype=np.int8))
+        v_i8 = (np.frombuffer(v_raw, dtype=np.int8) if isinstance(v_raw, (bytes, bytearray, memoryview)) else np.ascontiguousarray(v_raw, dtype=np.int8))
         lr_rk = int(sv_f32.size)
         if su_f32.size != d_out or u_i8.shape != (d_out, lr_rk) or v_i8.shape != (lr_rk, d_in):
             raise ValueError(f"{name}: invalid low_rank shapes su={su_f32.shape} u={u_i8.shape} v={v_i8.shape}")

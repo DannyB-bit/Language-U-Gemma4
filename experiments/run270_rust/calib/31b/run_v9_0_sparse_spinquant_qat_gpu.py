@@ -30,6 +30,7 @@ import argparse
 import ctypes
 import gc
 import hashlib
+import io
 import json
 import math
 import os
@@ -710,7 +711,10 @@ def finalize_t16c_payload(
     nb_raw, asym = p3.MODE_TO_T16C[mode_i]
     eff_bits = nb_raw & 0x1F
     hdr_bits = nb_raw
-    arr = np.asarray(pb_buf, dtype=np.uint8)
+    if isinstance(pb_buf, (bytes, bytearray, memoryview)):
+        arr = np.frombuffer(pb_buf, dtype=np.uint8)
+    else:
+        arr = np.asarray(pb_buf, dtype=np.uint8)
     if is_rowmajor:
         arr = rmmod.transpose_planes_col_to_rowmajor(arr, do, di, bsize, eff_bits, asym)
         hdr_bits |= p3.T16C_ROWMAJOR_BIT
@@ -784,9 +788,13 @@ def run_selftest() -> int:
             pay_check = sdc.transpose_colblock_bytes(pay_out, 32, 512, V9_BLOCK_SIZE, eff_c, asym_c, to_colblock=False)
         else:
             pay_check = pay_out
+        with io.BytesIO() as bio_chk:
+            p3._write_mat_record(bio_chk, 0, "chk_mat", 32, 512, V9_BLOCK_SIZE, hdr_out, asym_c, True, pay_out, None, None)
+            wr_rec_ok = bio_chk.tell() > len(pay_out)
         ok_m = (
             hdr_out == exp_hdr
             and len(pay_out) == p3.expected_tile16_bytes(32, 512, V9_BLOCK_SIZE, hdr_out, asym_c)
+            and wr_rec_ok
             and torch.isfinite(u_dec).all().item()
             and float((sc_dec - 0.25).abs().max().item()) < 1e-3
             and (bi_dec is None or torch.isfinite(bi_dec).all().item())
@@ -1089,7 +1097,7 @@ def run_pipeline() -> Dict[str, object]:
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    MB_FWD = 256 if gpu_vram_gb >= 64.0 else 96
+    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else 48)
 
     def persist_v9(src: Path) -> Tuple[int, str]:
         sz = src.stat().st_size
@@ -1623,7 +1631,7 @@ def run_pipeline() -> Dict[str, object]:
                     if b0 < 256:
                         x_mlp_ev.append(xf_f[::4])
                     act = F.gelu(F.linear(xf, wg_t), approximate="tanh") * F.linear(xf, wu_t)
-                    if b0 < 512:
+                    if b0 < 64:
                         act_samples.append(act[:, ::2, :].reshape(-1, V9_FF).abs().to(torch.float16).cpu())
                     xo = (xm + rmsn_gpu(F.linear(act, wd_t), g_pff.detach())) * lsc_init
                     X_teach_next[b0:b1] = xo.to(torch.float16).cpu()
@@ -1642,6 +1650,7 @@ def run_pipeline() -> Dict[str, object]:
             wu_t = wu_t[pi_l_g, :].contiguous()
             wd_t = wd_t[:, pi_l_g].contiguous()
             del act_samples, act_cat
+            torch.cuda.empty_cache()
 
             # 3) SmoothQuant + FWHT + GPU Cholesky Hessian GPTQ + ALS INT8 Low-Rank Residual
             def quantize_proj(
