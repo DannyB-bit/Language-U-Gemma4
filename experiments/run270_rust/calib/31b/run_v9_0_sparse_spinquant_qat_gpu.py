@@ -1963,14 +1963,15 @@ def _init_v9_stage1_base(device: torch.device, compute_dtype: torch.dtype) -> Di
         vis_model.load_state_dict(vis_sd, strict=False)
         mm_embed.load_state_dict(mm_sd, strict=False)
 
-    vis_model = vis_model.to(device, dtype=compute_dtype).eval()
-    mm_embed = mm_embed.to(device, dtype=compute_dtype).eval()
+    vis_dtype = compute_dtype if compute_dtype == torch.bfloat16 else torch.float32
+    vis_model = vis_model.to(device, dtype=vis_dtype).eval()
+    mm_embed = mm_embed.to(device, dtype=vis_dtype).eval()
     X_teach = (emb_raw[torch.from_numpy(all_seq_ids)] * ESCALE).to(torch.float16)
     with torch.no_grad():
         for vi, im in enumerate(vlm_imgs):
             si = N_TEXT_SEQ + vi
             proc_out = img_proc(images=im, return_tensors="pt")
-            pv = proc_out["pixel_values"].to(device, dtype=compute_dtype)
+            pv = proc_out["pixel_values"].to(device, dtype=vis_dtype)
             pos_ids = proc_out["image_position_ids"].to(device)
             vo = vis_model(pixel_values=pv, pixel_position_ids=pos_ids).last_hidden_state
             vm = mm_embed(vo).squeeze(0)[:16].to(torch.float16).cpu()
@@ -2261,9 +2262,10 @@ def _run_stage3_distill_and_export(
                     t_a = t_a[perm_pi, :].contiguous()
                 ast_sd[k] = t_a
 
+        ast_dtype = compute_dtype if compute_dtype == torch.bfloat16 else torch.float32
         ast_mod = Gemma4AssistantTrain(
             ast_sd, d_mod=D_MOD, nh=NH, nkv_s=NKV_S, nkv_f=NKV_F, hd_s=HD_S, hd_f=HD_F,
-            theta_l=THETA_L, part_l=PART_L, theta_g=THETA_G, part_g=PART_G, seq_len=V9_SEQ_LEN, eps=EPS, compute_dtype=compute_dtype,
+            theta_l=THETA_L, part_l=PART_L, theta_g=THETA_G, part_g=PART_G, seq_len=V9_SEQ_LEN, eps=EPS, compute_dtype=ast_dtype,
         ).to(device)
         with torch.no_grad():
             ast_h_final = torch.empty((len(ast_seqs), V9_SEQ_LEN, D_MOD), dtype=torch.float16)
@@ -2328,10 +2330,10 @@ def _run_stage3_distill_and_export(
                 zs = SOFTCAP * torch.tanh((hst.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
                 ps, ys_t1 = F.softmax(zs / TAU_AST, dim=-1), zs.argmax(dim=-1)
             za = ha.reshape(-1, 1024) @ W_ast_cand.T
-            hpost = F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+            hpost = F.linear(ha.to(ast_dtype), ast_mod.post.to(ast_dtype)).float()
             bh2 = torch.cat([bh_s[:, :1], hpost[:, :-1]], dim=1)
             ha2 = ast_mod.forward_seq(te_s, bh2, k58_s, v58_s, k59_s, v59_s)
-            hpost2 = F.linear(ha2.to(compute_dtype), ast_mod.post.to(compute_dtype)).float()
+            hpost2 = F.linear(ha2.to(ast_dtype), ast_mod.post.to(ast_dtype)).float()
             loss_a = (
                 ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za / TAU_AST, dim=-1))).sum(dim=-1) * (TAU_AST * TAU_AST)).mean()
                 + 0.5 * F.cross_entropy(za, ys_t1)
@@ -2494,7 +2496,7 @@ def recover_aux_from_t16c() -> Dict[str, object]:
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else 48)
+    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else (48 if gpu_vram_gb >= 20.0 else 24))
 
     t16c_src = _resolve_existing_artifact(OUT_T16C.name, OUT_DIR, DRIVE_DIR)
     hr_src = _resolve_existing_artifact(OUT_HEAD_CRTR.name, OUT_DIR, DRIVE_DIR)
@@ -2774,7 +2776,7 @@ def run_pipeline() -> Dict[str, object]:
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else 48)
+    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else (48 if gpu_vram_gb >= 20.0 else 24))
 
     def persist_v9(src: Path) -> Tuple[int, str]:
         sz = src.stat().st_size
@@ -4295,7 +4297,7 @@ def run_ablate_2_and_3() -> Dict[str, object]:
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else 48)
+    MB_FWD = 256 if gpu_vram_gb >= 64.0 else (64 if gpu_vram_gb >= 30.0 else (48 if gpu_vram_gb >= 20.0 else 24))
 
     t16c_src = _resolve_existing_artifact(OUT_T16C.name, OUT_DIR, DRIVE_DIR)
     print(f"[V9.0 ABLATE-2-AND-3] src={t16c_src} | GPU={gpu_name} ({gpu_vram_gb:.1f} GB)", flush=True)
