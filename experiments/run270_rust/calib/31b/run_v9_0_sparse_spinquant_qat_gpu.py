@@ -1500,17 +1500,23 @@ def run_pipeline() -> Dict[str, object]:
     ckpt_hr_p = CKPT_DIR / "head_crtr_layers.pt"
     ckpt_c8_p = CKPT_DIR / "c8db_entries.pt"
 
-    # Restore checkpoint from Google Drive if local runtime restarted cleanly
-    if not ckpt_meta_p.is_file() and DRIVE_DIR is not None:
+    # Recover finalized OUT_T16C back to tmp_t16c if Stage 3 crashed after os.replace()
+    if ckpt_meta_p.is_file() and not tmp_t16c.is_file() and OUT_T16C.is_file():
+        os.replace(OUT_T16C, tmp_t16c)
+
+    # Restore checkpoint from Google Drive if local runtime restarted cleanly or tmp_t16c is absent
+    if (not ckpt_meta_p.is_file() or not tmp_t16c.is_file()) and DRIVE_DIR is not None:
         d_ck = DRIVE_DIR / "ckpt_v9_0"
         d_part = DRIVE_DIR / (OUT_T16C.name + ".partial")
         if (d_ck / "stage2_v9_ckpt.pt").is_file() and d_part.is_file():
             print(f"[V9.0 Drive Restore] Restoring Stage 2 checkpoint from {DRIVE_DIR}...", flush=True)
-            shutil.copy2(d_part, tmp_t16c)
+            if not tmp_t16c.is_file():
+                shutil.copy2(d_part, tmp_t16c)
             for fn_ck in ("stage2_v9_ckpt.pt", "x_teach.pt", "x_stud.pt", "crtr_layers.pt", "head_crtr_layers.pt", "c8db_entries.pt"):
                 src_ck = d_ck / fn_ck
-                if src_ck.is_file():
-                    shutil.copy2(src_ck, CKPT_DIR / fn_ck)
+                dst_ck = CKPT_DIR / fn_ck
+                if src_ck.is_file() and not dst_ck.is_file():
+                    shutil.copy2(src_ck, dst_ck)
 
     # Write initial header + norms (resume if partial exists on Drive/local)
     resumed_layer = 0
@@ -2087,24 +2093,11 @@ def run_pipeline() -> Dict[str, object]:
         fn_eff_g = fn_g
 
     with torch.no_grad():
-        top_v, top_i = [], []
         val_mask = iv_fn
         kl_vals = []
         top1_hits = 0
         top5_hits = 0
         val_cnt = int(val_mask.sum().item())
-        for r0 in range(0, vocab_sz, 8192):
-            zc = SOFTCAP * torch.tanh((hs_ans @ emb_g[r0 : r0 + 8192].T) / SOFTCAP)
-            tv, ti = torch.topk(zc, 64, dim=-1)
-            top_v.append(tv); top_i.append(ti + r0)
-        cand_v = torch.cat(top_v, dim=-1)
-        cand_i = torch.cat(top_i, dim=-1)
-        b_v, b_idx = torch.topk(cand_v, 64, dim=-1)
-        top_ids = torch.gather(cand_i, 1, b_idx).cpu()
-        top_probs = F.softmax(b_v, dim=-1).cpu()
-        # Evaluate held-out top-1 / top-5 agreement vs teacher in Pi space
-        zt_v = SOFTCAP * torch.tanh((ht_ans[val_mask] @ emb_g[top_ids[val_mask].to(device).unique()].T) / SOFTCAP) if val_cnt > 0 else None
-        del zt_v
         for b0 in range(0, val_cnt, 512):
             idx_sl = torch.nonzero(val_mask, as_tuple=False).squeeze(1)[b0 : b0 + 512]
             lt = SOFTCAP * torch.tanh((ht_ans[idx_sl] @ emb_g.T) / SOFTCAP)
@@ -2119,6 +2112,8 @@ def run_pipeline() -> Dict[str, object]:
         val_top1 = float(top1_hits / max(val_cnt, 1))
         val_top5 = float(top5_hits / max(val_cnt, 1))
         print(f"[Stage 3 Teacher-KL Val] kl={val_kl:.4f} | top1_agree={val_top1*100:.2f}% | top5_agree={val_top5*100:.2f}%", flush=True)
+    del hs_ans, ht_ans, xub_fn
+    torch.cuda.empty_cache()
 
     ast_dir = Path(snapshot_download("google/gemma-4-31B-it-assistant", local_dir="/tmp/gemma4_ast", ignore_patterns=["*.bin", "*.pt"]))
     ast_sf_raw = ast_dir / "model.safetensors"
@@ -2263,13 +2258,16 @@ def run_pipeline() -> Dict[str, object]:
     H_stud_tgt = ast_h_final[:, 1:, :].reshape(-1, D_MOD)
     top_ids_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.int32)
     top_probs_t = torch.empty((H_stud_tgt.shape[0], 64), dtype=torch.float32)
+    emb_g_c = emb_g.to(dtype=compute_dtype)
+    del emb_g
     with torch.no_grad():
         for i0 in range(0, H_stud_tgt.shape[0], 512):
             i1 = min(i0 + 512, H_stud_tgt.shape[0])
-            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_g.to(dtype=compute_dtype).T).float() / SOFTCAP)
+            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_g_c.T).float() / SOFTCAP)
             tv, ti = torch.topk(lg_b, k=64, dim=-1)
             top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
             top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
+    del emb_g_c
     student_argmax_ids = torch.tensor(v70.select_first_valid_trie_ids(top_ids_t, trie), dtype=torch.long)
     del H_stud_tgt, ast_h_final
 
