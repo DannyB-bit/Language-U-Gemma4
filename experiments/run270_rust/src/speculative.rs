@@ -334,6 +334,177 @@ pub fn verify_greedy_draft_batch(
     })
 }
 
+/// Node in a flat speculative prefix tree (`nodes.len() <= 32`, `nodes[0]` is always root `y_0`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpecTreeNode {
+    pub token_id: u32,
+    /// Parent slot index (`-1` for root `0`, `0..i as i32` for descendants).
+    pub parent: i32,
+    /// Sequence offset relative to root (`0` for root `0`, `parent.depth + 1` for children).
+    pub depth: usize,
+    /// Bitmask over `0..32` where bit `j` is `1` iff slot `j` is on the ancestor path `0..=self`.
+    pub ancestor_mask: u32,
+}
+
+/// Deduplicated speculative prefix-tree builder (`<= 24..32` nodes) fusing EAGLE-3 / BHDR beams
+/// and n-gram / suffix-table candidate sequences into a single batched target verification pass.
+#[derive(Debug, Clone)]
+pub struct SpecTreeBuilder {
+    pub nodes: Vec<SpecTreeNode>,
+    pub max_nodes: usize,
+}
+
+impl SpecTreeBuilder {
+    pub fn new(root_token: u32, max_nodes: usize) -> Self {
+        let cap = max_nodes.clamp(1, 24);
+        let mut nodes = Vec::with_capacity(cap);
+        nodes.push(SpecTreeNode {
+            token_id: root_token,
+            parent: -1,
+            depth: 0,
+            ancestor_mask: 1u32,
+        });
+        Self { nodes, max_nodes: cap }
+    }
+
+    /// Insert a child `token_id` under `parent_slot`, deduplicating if that exact child already exists.
+    /// Returns `Some(slot_idx)` if present or inserted within `max_nodes`, else `None`.
+    pub fn insert_child(&mut self, parent_slot: usize, token_id: u32) -> Option<usize> {
+        if parent_slot >= self.nodes.len() {
+            return None;
+        }
+        for (idx, n) in self.nodes.iter().enumerate() {
+            if n.parent == parent_slot as i32 && n.token_id == token_id {
+                return Some(idx);
+            }
+        }
+        if self.nodes.len() >= self.max_nodes {
+            return None;
+        }
+        let idx = self.nodes.len();
+        let p = self.nodes[parent_slot];
+        self.nodes.push(SpecTreeNode {
+            token_id,
+            parent: parent_slot as i32,
+            depth: p.depth + 1,
+            ancestor_mask: p.ancestor_mask | (1u32 << idx),
+        });
+        Some(idx)
+    }
+
+    /// Graft an entire candidate sequence `[d_1, d_2, ...]` starting under root `0`, stopping at `eos` or `max_nodes`.
+    pub fn graft_sequence(&mut self, seq: &[u32], eos: &[u32]) -> usize {
+        let mut cur = 0usize;
+        let mut added = 0usize;
+        for &tok in seq {
+            let prev_len = self.nodes.len();
+            match self.insert_child(cur, tok) {
+                Some(next_slot) => {
+                    if self.nodes.len() > prev_len {
+                        added += 1;
+                    }
+                    cur = next_slot;
+                    if eos.contains(&tok) {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        added
+    }
+
+    pub fn depths_and_masks(&self) -> Vec<(usize, u32)> {
+        self.nodes.iter().map(|n| (n.depth, n.ancestor_mask)).collect()
+    }
+}
+
+/// Outcome of lossless greedy verification over a flat speculative prefix tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecTreeOutcome {
+    pub accepted_drafts: Vec<u32>,
+    /// Slot indices `[0, s_1, ..., s_acc]` along the accepted path (to commit into KV cache).
+    pub accepted_slots: Vec<usize>,
+    pub next_pending: Option<u32>,
+    pub hit_stop: bool,
+    /// Maximum possible chain depth present in the tree (for acceptance telemetry).
+    pub max_tree_depth: usize,
+}
+
+/// Lossless greedy verification over a flat speculative prefix tree `nodes` (`nodes[0]` = `y_0`).
+/// Applies optional `guard_fn(slot_logits, accepted_so_far)` ONLY along the active winning path
+/// so token output is 100% bit-exact with sequential `k=1` greedy decoding!
+pub fn verify_greedy_tree_batch<G>(
+    nodes: &[SpecTreeNode],
+    batch_logits: &mut [f32],
+    vocab: usize,
+    eos: &[u32],
+    remaining_after_y0: usize,
+    mut guard_fn: G,
+) -> Result<SpecTreeOutcome, String>
+where
+    G: FnMut(&mut [f32], &[u32]),
+{
+    if nodes.is_empty() || nodes[0].parent != -1 || nodes[0].depth != 0 {
+        return Err("verify_greedy_tree_batch requires non-empty tree rooted at slot 0".into());
+    }
+    if vocab == 0 || batch_logits.len() != nodes.len() * vocab {
+        return Err(format!(
+            "verify_greedy_tree_batch logits len {} != {} * {vocab}",
+            batch_logits.len(),
+            nodes.len()
+        ));
+    }
+    if remaining_after_y0 == 0 {
+        return Err("remaining_after_y0 must be >= 1".into());
+    }
+    let max_tree_depth = nodes.iter().map(|n| n.depth).max().unwrap_or(0);
+    let mut accepted_drafts: Vec<u32> = Vec::with_capacity(max_tree_depth);
+    let mut accepted_slots: Vec<usize> = Vec::with_capacity(1 + max_tree_depth);
+    accepted_slots.push(0);
+    let mut cur_slot = 0usize;
+
+    loop {
+        let slot_logits = &mut batch_logits[cur_slot * vocab..(cur_slot + 1) * vocab];
+        guard_fn(slot_logits, &accepted_drafts);
+        let target_tok = argmax_f32(slot_logits);
+
+        // Check if any child of `cur_slot` predicted `target_tok`.
+        let matched_child = nodes
+            .iter()
+            .enumerate()
+            .skip(cur_slot + 1)
+            .find(|&(_, n)| n.parent == cur_slot as i32 && n.token_id == target_tok)
+            .map(|(idx, _)| idx);
+
+        match matched_child {
+            Some(child_slot) => {
+                accepted_drafts.push(target_tok);
+                accepted_slots.push(child_slot);
+                if eos.contains(&target_tok) || accepted_drafts.len() >= remaining_after_y0 {
+                    return Ok(SpecTreeOutcome {
+                        accepted_drafts,
+                        accepted_slots,
+                        next_pending: None,
+                        hit_stop: true,
+                        max_tree_depth,
+                    });
+                }
+                cur_slot = child_slot;
+            }
+            None => {
+                return Ok(SpecTreeOutcome {
+                    accepted_drafts,
+                    accepted_slots,
+                    next_pending: Some(target_tok),
+                    hit_stop: false,
+                    max_tree_depth,
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +720,45 @@ mod tests {
         let mut extra = valid;
         extra.push(0);
         assert!(engine.load_seed_bytes(&extra).is_err());
+    }
+
+    #[test]
+    fn verify_greedy_tree_batch_accepts_alternate_sibling_branch_exact() {
+        let mut tb = SpecTreeBuilder::new(100, 12);
+        // Primary chain: 100 -> 11 -> 12
+        let s1 = tb.insert_child(0, 11).unwrap();
+        let _s2 = tb.insert_child(s1, 12).unwrap();
+        // Alternate sibling branch under root: 100 -> 21 -> 22 -> 23
+        let a1 = tb.insert_child(0, 21).unwrap();
+        let a2 = tb.insert_child(a1, 22).unwrap();
+        let a3 = tb.insert_child(a2, 23).unwrap();
+        // Deduplication check: inserting 21 under root returns existing slot `a1`
+        assert_eq!(tb.insert_child(0, 21), Some(a1));
+
+        let vocab = 64usize;
+        let n = tb.nodes.len();
+        let mut logits = vec![-5.0f32; n * vocab];
+        // Target picks alternate branch: slot 0 -> 21, slot a1 -> 22, slot a2 -> 23, slot a3 -> 55 (bonus token!)
+        logits[0 * vocab + 21] = 9.0;
+        logits[s1 * vocab + 9] = 9.0; // rejected branch shouldn't even be touched by guard_fn!
+        logits[a1 * vocab + 22] = 9.0;
+        logits[a2 * vocab + 23] = 9.0;
+        logits[a3 * vocab + 55] = 9.0;
+
+        let mut guard_calls = Vec::new();
+        let out = verify_greedy_tree_batch(&tb.nodes, &mut logits, vocab, &[1], 10, |_lg, acc| {
+            guard_calls.push(acc.to_vec());
+        })
+        .unwrap();
+
+        assert_eq!(out.accepted_drafts, vec![21, 22, 23]);
+        assert_eq!(out.accepted_slots, vec![0, a1, a2, a3]);
+        assert_eq!(out.next_pending, Some(55));
+        assert!(!out.hit_stop);
+        assert_eq!(
+            guard_calls,
+            vec![vec![], vec![21], vec![21, 22], vec![21, 22, 23]],
+            "guard_fn must execute strictly along the winning ancestor path"
+        );
     }
 }

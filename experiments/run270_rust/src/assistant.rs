@@ -465,6 +465,258 @@ impl AssistantRuntime {
         Ok((h_final, next_backbone))
     }
 
+    /// Execute the 4-layer KV-sharing assistant backbone using a caller-provided zero-copy
+    /// cross-attention closure `attend_fn(is_full, q, q_pos) -> Result<Vec<f32>, String>`,
+    /// avoiding `materialize_chronological_kv()` full-sequence heap decompression on `GlyphKV`!
+    pub fn forward_backbone_step_with_attend<A>(
+        &self,
+        tok_embed: &[f32],
+        backbone_h: &[f32],
+        q_pos: usize,
+        mut attend_fn: A,
+    ) -> Result<(Vec<f32>, Vec<f32>), String>
+    where
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+    {
+        let bh = self.cfg.backbone_hidden;
+        if tok_embed.len() != bh || backbone_h.len() != bh {
+            return Err(format!(
+                "assistant embed/backbone len ({}, {}) != {bh}",
+                tok_embed.len(),
+                backbone_h.len()
+            ));
+        }
+        let mut concat = Vec::with_capacity(2 * bh);
+        concat.extend_from_slice(tok_embed);
+        concat.extend_from_slice(backbone_h);
+
+        let native = self.model.native.as_ref();
+        let pre = self.model.mat("pre_projection.weight")?;
+        let mut state = pre.project_batch(&concat, 1, native, self.threads)?;
+        let eps = self.cfg.eps;
+        let d = self.cfg.d;
+
+        for l in 0..self.cfg.n_layers {
+            let p = format!("model.layers.{l}.");
+            let is_full = self.cfg.layer_full[l];
+            let hd = if is_full { self.cfg.hd_full } else { self.cfg.hd_slide };
+            let theta = if is_full { self.cfg.theta_global } else { self.cfg.theta_local };
+            let partial = if is_full { self.cfg.partial_global } else { self.cfg.partial_local };
+            let rot_dims = ((hd as f32) * partial).round() as usize;
+
+            let g_in = self.model.norm(&format!("{p}input_layernorm.weight"))?;
+            let inp = rmsn_raw(&state, Some(g_in), eps);
+
+            let mut q = self.model.mat(&format!("{p}self_attn.q_proj.weight"))?.project_batch(&inp, 1, native, self.threads)?;
+            let qn = self.model.norm(&format!("{p}self_attn.q_norm.weight"))?;
+            qk_norm_raw_inplace(&mut q, self.cfg.n_heads, hd, Some(qn), eps);
+            let inv_f = rope_inv_freqs(theta, rot_dims, hd);
+            let mut rcos = vec![0.0f32; inv_f.len()];
+            let mut rsin = vec![0.0f32; inv_f.len()];
+            rope_cos_sin_for_pos(&inv_f, q_pos as u32, &mut rcos, &mut rsin);
+            for h in 0..self.cfg.n_heads {
+                rope_head_with_cos_sin(&mut q[h * hd..(h + 1) * hd], &rcos, &rsin, hd);
+            }
+
+            let ctx = attend_fn(is_full, &q, q_pos)?;
+            let attn_o = self.model.mat(&format!("{p}self_attn.o_proj.weight"))?.project_batch(&ctx, 1, native, self.threads)?;
+            let g_pa = self.model.norm(&format!("{p}post_attention_layernorm.weight"))?;
+            let norm_a = rmsn_raw(&attn_o, Some(g_pa), eps);
+            for i in 0..d {
+                state[i] += norm_a[i];
+            }
+
+            let g_pf = self.model.norm(&format!("{p}pre_feedforward_layernorm.weight"))?;
+            let inp2 = rmsn_raw(&state, Some(g_pf), eps);
+            let gate = self.model.mat(&format!("{p}mlp.gate_proj.weight"))?.project_batch(&inp2, 1, native, self.threads)?;
+            let up = self.model.mat(&format!("{p}mlp.up_proj.weight"))?.project_batch(&inp2, 1, native, self.threads)?;
+            let act: Vec<f32> = gate.iter().zip(up.iter()).map(|(&a, &b)| gelu_tanh_fast_f32(a) * b).collect();
+            let down = self.model.mat(&format!("{p}mlp.down_proj.weight"))?.project_batch(&act, 1, native, self.threads)?;
+            let g_pff = self.model.norm(&format!("{p}post_feedforward_layernorm.weight"))?;
+            let norm_d = rmsn_raw(&down, Some(g_pff), eps);
+            let ls = self.model.norm(&format!("{p}layer_scalar"))?[0];
+            for i in 0..d {
+                state[i] = (state[i] + norm_d[i]) * ls;
+            }
+        }
+
+        let fn_w = self.model.norm("model.norm.weight")?;
+        let h_final = rmsn_raw(&state, Some(fn_w), eps);
+        let next_backbone = self.model.mat("post_projection.weight")?.project_batch(&h_final, 1, native, self.threads)?;
+        Ok((h_final, next_backbone))
+    }
+
+    /// Draft an EAGLE-3 speculative prefix tree (`SpecTreeBuilder`) of up to `max_nodes` nodes
+    /// using direct zero-copy cross-attention (`attend_fn`), fusing:
+    /// - Primary autoregressive rollout (`depth = 1..max_depth`),
+    /// - Top-K `BHDR` / LM-head beam side-branches at early depths (`depth = 1, 2`), plus 1-step
+    ///   autoregressive continuation on the strongest depth-1 alternate branch,
+    /// - Optional zero-cost `CNGM` / online-suffix sequence grafted into the same prefix tree!
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_tree_with_attend<F, A>(
+        &self,
+        first_tok: u32,
+        mut embed_fn: F,
+        first_backbone_h: &[f32],
+        start_q_pos: usize,
+        max_depth: usize,
+        max_nodes: usize,
+        ngram_hint: &[u32],
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+        mut attend_fn: A,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+    {
+        let mut tree = crate::speculative::SpecTreeBuilder::new(first_tok, max_nodes);
+        if !ngram_hint.is_empty() {
+            tree.graft_sequence(ngram_hint, eos);
+        }
+        let mut cur_slot = 0usize;
+        let mut cur_tok = first_tok;
+        let mut cur_backbone = first_backbone_h.to_vec();
+        let mut margin_stopped = 0usize;
+        let mut total_skipped = 0i64;
+        let mut alt_branch_root: Option<(usize, u32, Vec<f32>)> = None;
+
+        let predict_top_cands = |h_final: &[f32],
+                                 prev_tok: u32,
+                                 want_k: usize,
+                                 tot_sk: &mut i64|
+         -> Result<Vec<(u32, f32)>, String> {
+            let mut effective_bans = ban_tokens.to_vec();
+            if !ban_tokens.is_empty() && !(236770..=236820).contains(&prev_tok) && !effective_bans.contains(&prev_tok) {
+                effective_bans.push(prev_tok);
+            }
+            if let Some((ref bh, ref trie)) = self.byte_head {
+                bh.decode_top_k_tokens(h_final, trie, &effective_bans, want_k.max(4), want_k)
+            } else {
+                if !self.cfg.has_lm_head {
+                    return Err("draft_tree_with_attend requires byte_head or assistant embed_tokens".into());
+                }
+                let native = self.model.native.as_ref();
+                let (mut logits, sk) = if let Some(sf) = lmhead_cs_sieve {
+                    self.model.mat("model.embed_tokens.weight")?.project_lmhead_cs(
+                        h_final,
+                        1,
+                        native,
+                        self.threads,
+                        Some(&self.embed_tile_norms_fp16),
+                        want_k.max(16),
+                        sf,
+                    )?
+                } else {
+                    (
+                        self.model.mat("model.embed_tokens.weight")?.project_batch(h_final, 1, native, self.threads)?,
+                        0,
+                    )
+                };
+                *tot_sk += sk;
+                for &tid in &effective_bans {
+                    let u = tid as usize;
+                    if u < logits.len() {
+                        logits[u] = -1.0e9;
+                    }
+                }
+                let mut best: Vec<(u32, f32)> = Vec::with_capacity(want_k);
+                for (i, &v) in logits.iter().enumerate() {
+                    if best.len() < want_k {
+                        best.push((i as u32, v));
+                        best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                    } else if v > best[want_k - 1].1 {
+                        best[want_k - 1] = (i as u32, v);
+                        best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                    }
+                }
+                Ok(best)
+            }
+        };
+
+        for step in 0..max_depth {
+            if tree.nodes.len() >= tree.max_nodes {
+                break;
+            }
+            let tok_emb = embed_fn(cur_tok)?;
+            let q_pos = start_q_pos + step;
+            let (h_final, next_h) =
+                self.forward_backbone_step_with_attend(&tok_emb, &cur_backbone, q_pos, &mut attend_fn)?;
+            let branch_k = if step == 0 {
+                4
+            } else if step <= 2 {
+                3
+            } else {
+                1
+            };
+            let cands = predict_top_cands(&h_final, cur_tok, branch_k, &mut total_skipped)?;
+            if cands.is_empty() {
+                break;
+            }
+            let (top1_tok, top1_v) = cands[0];
+            let top2_v = cands.get(1).map_or(top1_v - 30.0, |c| c.1);
+            if step >= 2 && min_logit_margin > 0.0 && (top1_v - top2_v) < min_logit_margin {
+                margin_stopped += 1;
+                break;
+            }
+            let Some(primary_slot) = tree.insert_child(cur_slot, top1_tok) else {
+                break;
+            };
+            // Attach high-likelihood sibling branches at early depths (`step <= 2`).
+            for (ci, &(alt_tok, alt_lp)) in cands.iter().enumerate().skip(1) {
+                if top1_v - alt_lp <= 3.5 {
+                    if let Some(alt_slot) = tree.insert_child(cur_slot, alt_tok) {
+                        if step == 0 && ci == 1 && !eos.contains(&alt_tok) {
+                            alt_branch_root = Some((alt_slot, alt_tok, next_h.clone()));
+                        }
+                    }
+                }
+            }
+            if eos.contains(&top1_tok) {
+                break;
+            }
+            cur_slot = primary_slot;
+            cur_tok = top1_tok;
+            cur_backbone = next_h;
+        }
+
+        // Expand 2-step lookahead on the strongest depth-1 alternate sibling if node budget allows!
+        if let Some((mut alt_slot, mut alt_tok, mut alt_h)) = alt_branch_root {
+            for sub_step in 1..=2usize.min(max_depth.saturating_sub(1)) {
+                if tree.nodes.len() >= tree.max_nodes {
+                    break;
+                }
+                let tok_emb = embed_fn(alt_tok)?;
+                let q_pos = start_q_pos + sub_step;
+                let (h_final, next_h) =
+                    self.forward_backbone_step_with_attend(&tok_emb, &alt_h, q_pos, &mut attend_fn)?;
+                let cands = predict_top_cands(&h_final, alt_tok, 2, &mut total_skipped)?;
+                if cands.is_empty() {
+                    break;
+                }
+                let (pred_tok, lp1) = cands[0];
+                let Some(ns) = tree.insert_child(alt_slot, pred_tok) else {
+                    break;
+                };
+                if let Some(&(alt2, lp2)) = cands.get(1) {
+                    if sub_step == 1 && lp1 - lp2 <= 2.5 {
+                        let _ = tree.insert_child(alt_slot, alt2);
+                    }
+                }
+                if eos.contains(&pred_tok) {
+                    break;
+                }
+                alt_slot = ns;
+                alt_tok = pred_tok;
+                alt_h = next_h;
+            }
+        }
+
+        Ok((tree, margin_stopped, total_skipped))
+    }
+
     /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
     ///
     /// Returns `(predicted_next_token, next_backbone_hidden_state, logits)`.

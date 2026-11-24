@@ -14,13 +14,17 @@ use run270_rust::cortical_router::{CorticalRouterBank, DistrictRouterBank};
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{
-    attn_decode_range, gelu_tanh_fast_f32, gelu_tanh_inplace_parallel, qk_norm_raw_inplace,
-    rmsn_raw, rmsn_raw_into, rope_cos_sin_for_pos, rope_head_with_cos_sin, rope_inv_freqs,
+    attn_decode_range, attn_decode_tree, gelu_tanh_fast_f32, gelu_tanh_inplace_parallel,
+    qk_norm_raw_inplace, rmsn_raw, rmsn_raw_into, rope_cos_sin_for_pos, rope_head_with_cos_sin,
+    rope_inv_freqs,
 };
 use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_context_dma_roundtrip, save_ppm};
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
-use run270_rust::speculative::{argmax_f32, verify_greedy_draft_batch, AdaptiveDraftController, FastNGramProposalEngine};
+use run270_rust::speculative::{
+    argmax_f32, verify_greedy_draft_batch, verify_greedy_tree_batch, AdaptiveDraftController,
+    FastNGramProposalEngine, SpecTreeBuilder,
+};
 use run270_rust::t16c::T16CLoadPolicy;
 use run270_rust::tokenizer::Tokenizer;
 use run270_rust::tri_modal::{
@@ -990,6 +994,13 @@ fn print_runtime_telemetry(rt: &Runtime31B, pinned_bytes: usize, embed_bytes: us
             rt.cortical_gate_skipped_blks, rt.cortical_gate_total_blks, pct
         );
     }
+    if rt.attn_sparse_total_heads > 0 {
+        let pct = 100.0 * (rt.attn_sparse_skipped_heads as f64) / (rt.attn_sparse_total_heads as f64);
+        println!(
+            "ATTN_SPARSE skipped_heads={} total_heads={} saved_pct={:.1}%",
+            rt.attn_sparse_skipped_heads, rt.attn_sparse_total_heads, pct
+        );
+    }
     if rt.mod_thresh > 0.0 {
         let pct = if rt.mod_total_layers > 0 {
             100.0 * (rt.mod_skipped_layers as f64) / (rt.mod_total_layers as f64)
@@ -1041,6 +1052,53 @@ fn print_runtime_telemetry(rt: &Runtime31B, pinned_bytes: usize, embed_bytes: us
     );
 }
 
+fn expand_head_mask(head_cmask: &[u8], hd: usize, o_bsize: usize) -> (Vec<u8>, Vec<u8>) {
+    let n_heads = head_cmask.len();
+    let q_tiles_per_head = hd.div_ceil(16);
+    let mut q_rmask = vec![0u8; n_heads * q_tiles_per_head];
+    let blks_per_head = if o_bsize > 0 && hd >= o_bsize && hd.is_multiple_of(o_bsize) {
+        hd / o_bsize
+    } else {
+        1
+    };
+    let mut o_cmask = vec![0u8; n_heads * blks_per_head];
+    for (h, &active) in head_cmask.iter().enumerate() {
+        if active != 0 {
+            q_rmask[h * q_tiles_per_head..(h + 1) * q_tiles_per_head].fill(1);
+            o_cmask[h * blks_per_head..(h + 1) * blks_per_head].fill(1);
+        }
+    }
+    (q_rmask, o_cmask)
+}
+
+fn union_col_masks(tok_masks: &[Vec<u8>], n_blks: usize) -> Vec<u8> {
+    let mut cmask = vec![0u8; n_blks];
+    for tm in tok_masks {
+        for (dst, &src) in cmask.iter_mut().zip(tm.iter()) {
+            if src != 0 {
+                *dst = 1;
+            }
+        }
+    }
+    cmask
+}
+
+fn expand_col_to_row_mask(cmask: &[u8], bsize: usize, d_out: usize) -> Vec<u8> {
+    let tiles_per_blk = bsize / 16;
+    let mut rmask = vec![0u8; d_out.div_ceil(16)];
+    for (b, &active) in cmask.iter().enumerate() {
+        if active != 0 {
+            let t0 = b * tiles_per_blk;
+            for dt in 0..tiles_per_blk {
+                if t0 + dt < rmask.len() {
+                    rmask[t0 + dt] = 1;
+                }
+            }
+        }
+    }
+    rmask
+}
+
 struct Runtime31B {
     cfg: Gemma4Cfg,
     sf: Option<SafeTensors>,
@@ -1068,12 +1126,19 @@ struct Runtime31B {
     cs_down_norms: Vec<Option<Vec<u16>>>,
     cs_skipped_blocks: u64,
     mlp_top_p: f32,
+    shared_mlp_blocks: usize,
     mlp_sparse_skipped_blks: u64,
     mlp_sparse_total_blks: u64,
     cortical_router: Option<CorticalRouterBank>,
+    head_router: Option<CorticalRouterBank>,
+    attn_head_top_p: f32,
+    attn_shared_heads: usize,
     mod_thresh: f32,
+    mod_zero_kv: bool,
     mod_skipped_layers: u64,
     mod_total_layers: u64,
+    attn_sparse_skipped_heads: u64,
+    attn_sparse_total_heads: u64,
     cortical_gate_skipped_blks: u64,
     cortical_gate_total_blks: u64,
     profile_components: bool,
@@ -1094,6 +1159,7 @@ struct Runtime31B {
     kv_compressed_bytes: usize,
     kv: Vec<LayerKv>,
     glyph_kv: Vec<Option<GlyphKvLayer>>,
+    ephemeral_tree_kv: Vec<(Vec<f32>, Vec<f32>)>,
     vision: Option<run270_rust::vision::VisionWeights>,
     threads: usize,
     ssd_bytes_read: u64,
@@ -1158,6 +1224,64 @@ impl Runtime31B {
             }
             layer_kv.k.truncate(target);
             layer_kv.v.truncate(target);
+        }
+        Ok(())
+    }
+
+    fn commit_tree_slots(&mut self, base_kv_len: usize, accepted_slots: &[usize]) -> Result<(), String> {
+        if self.kv_quant.is_glyph() {
+            if self.ephemeral_tree_kv.len() != self.cfg.n_layers {
+                return Err(format!(
+                    "commit_tree_slots: ephemeral_tree_kv len {} != n_layers {}",
+                    self.ephemeral_tree_kv.len(),
+                    self.cfg.n_layers
+                ));
+            }
+            for l in 0..self.cfg.n_layers {
+                let is_full = self.cfg.layer_full[l];
+                let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
+                let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
+                let stride = n_kv * hd;
+                let gkv = self.glyph_kv[l]
+                    .as_mut()
+                    .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                if gkv.total_seen() != base_kv_len {
+                    return Err(format!(
+                        "commit_tree_slots layer {l}: total_seen {} != base_kv_len {base_kv_len}",
+                        gkv.total_seen()
+                    ));
+                }
+                let (ref tk, ref tv) = self.ephemeral_tree_kv[l];
+                for &slot in accepted_slots {
+                    let kt = &tk[slot * stride..(slot + 1) * stride];
+                    let vt = if gkv.k_eq_v {
+                        &[][..]
+                    } else {
+                        &tv[slot * stride..(slot + 1) * stride]
+                    };
+                    gkv.append_token(kt, vt, self.native_t16c.as_deref())?;
+                }
+            }
+            self.ephemeral_tree_kv.clear();
+            return Ok(());
+        }
+        for (l, layer_kv) in self.kv.iter_mut().enumerate() {
+            let is_full = self.cfg.layer_full[l];
+            let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
+            let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
+            let stride = n_kv * hd;
+            let base_off = base_kv_len * stride;
+            for (dst_i, &slot) in accepted_slots.iter().enumerate() {
+                if dst_i != slot {
+                    let src_off = base_off + slot * stride;
+                    let dst_off = base_off + dst_i * stride;
+                    layer_kv.k.copy_within(src_off..src_off + stride, dst_off);
+                    layer_kv.v.copy_within(src_off..src_off + stride, dst_off);
+                }
+            }
+            let new_len = base_off + accepted_slots.len() * stride;
+            layer_kv.k.truncate(new_len);
+            layer_kv.v.truncate(new_len);
         }
         Ok(())
     }
@@ -1292,6 +1416,48 @@ impl Runtime31B {
         Ok(out)
     }
 
+    fn embed_token_ro(&self, tid: u32) -> Result<Vec<f32>, String> {
+        let d = self.cfg.d;
+        let escale = (d as f32).sqrt();
+        let ti = tid as usize;
+        if ti >= self.cfg.vocab {
+            return Err(format!("token {tid} out of bounds"));
+        }
+        let mut out = Vec::with_capacity(d);
+        let em_key = "model.language_model.embed_tokens.weight";
+        match &self.embed {
+            Embed31B::Streamed => {
+                let sf = self.sf.as_ref().ok_or("streamed embed requires --model")?;
+                let meta = sf.tensors.get(em_key).ok_or_else(|| format!("missing {em_key}"))?;
+                let raw = sf.read_raw_slice(meta, ti * d * 2, d * 2)?;
+                for c in raw.chunks_exact(2) {
+                    out.push(bf16_to_f32(u16::from_le_bytes([c[0], c[1]])) * escale);
+                }
+            }
+            Embed31B::ResidentBf16(tbl) => {
+                for &b in &tbl[ti * d..(ti + 1) * d] {
+                    out.push(bf16_to_f32(b) * escale);
+                }
+            }
+            Embed31B::Packed(pm) => {
+                let row = pm.decode_row(ti)?;
+                for v in row {
+                    out.push(v * escale);
+                }
+            }
+            Embed31B::T16C { mat, .. } => {
+                let row = mat.decode_row(ti)?;
+                if row.len() != d {
+                    return Err(format!("T16C embed decode_row len {} != d {d}", row.len()));
+                }
+                for v in row {
+                    out.push(v * escale);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn forward_batch(&mut self, ids: &[u32], start_pos: usize, verbose_layers: bool) -> Result<Vec<f32>, String> {
         self.forward_batch_mode(ids, start_pos, verbose_layers, false)
     }
@@ -1311,7 +1477,48 @@ impl Runtime31B {
         self.forward_batch_with_embeds(states, seq_len, start_pos, verbose_layers, all_final, None)
     }
 
+    fn forward_batch_tree(
+        &mut self,
+        ids: &[u32],
+        start_pos: usize,
+        tree_depths: &[usize],
+        ancestor_masks: &[u32],
+    ) -> Result<Vec<f32>, String> {
+        let seq_len = ids.len();
+        if seq_len == 0 || seq_len > 32 || tree_depths.len() != seq_len || ancestor_masks.len() != seq_len {
+            return Err(format!(
+                "invalid forward_batch_tree dims: ids={} depths={} masks={}",
+                seq_len,
+                tree_depths.len(),
+                ancestor_masks.len()
+            ));
+        }
+        let states = self.embed_batch(ids)?;
+        self.forward_batch_with_embeds_ext(
+            states,
+            seq_len,
+            start_pos,
+            false,
+            true,
+            None,
+            Some((tree_depths, ancestor_masks)),
+        )
+    }
+
     fn forward_batch_with_embeds(
+        &mut self,
+        states: Vec<f32>,
+        seq_len: usize,
+        start_pos: usize,
+        verbose_layers: bool,
+        all_final: bool,
+        vis_kv_ends: Option<&[usize]>,
+    ) -> Result<Vec<f32>, String> {
+        self.forward_batch_with_embeds_ext(states, seq_len, start_pos, verbose_layers, all_final, vis_kv_ends, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_with_embeds_ext(
         &mut self,
         mut states: Vec<f32>,
         seq_len: usize,
@@ -1319,6 +1526,7 @@ impl Runtime31B {
         verbose_layers: bool,
         all_final: bool,
         vis_kv_ends: Option<&[usize]>,
+        tree_spec: Option<(&[usize], &[u32])>,
     ) -> Result<Vec<f32>, String> {
         if seq_len == 0 {
             return Err("empty token slice".into());
@@ -1346,13 +1554,23 @@ impl Runtime31B {
         let cs_down_norms = &self.cs_down_norms;
         let cs_skip_thresh = self.cs_skip_thresh;
         let mlp_top_p = self.mlp_top_p;
+        let shared_mlp_blocks = self.shared_mlp_blocks;
         let cortical_router = &self.cortical_router;
+        let head_router = &self.head_router;
+        let attn_head_top_p = self.attn_head_top_p;
+        let attn_shared_heads = self.attn_shared_heads;
         let mod_thresh = self.mod_thresh;
+        let mod_zero_kv = self.mod_zero_kv;
         let profile_components = self.profile_components;
         let kv_quant = self.kv_quant;
         let fp8_lut = &self.fp8_lut;
         let kv = &mut self.kv;
         let glyph_kv = &mut self.glyph_kv;
+        let ephemeral_tree_kv = &mut self.ephemeral_tree_kv;
+        if tree_spec.is_some() && kv_quant.is_glyph() {
+            ephemeral_tree_kv.clear();
+            ephemeral_tree_kv.resize_with(cfg.n_layers, || (Vec::new(), Vec::new()));
+        }
         let threads = self.threads;
         let mut read_bytes = 0u64;
         let mut cold_read_bytes = 0u64;
@@ -1365,6 +1583,8 @@ impl Runtime31B {
         let c8d_bank = &self.c8d_bank;
         let mut mod_skipped_step = 0u64;
         let mut mod_total_step = 0u64;
+        let mut attn_sp_skipped_step = 0u64;
+        let mut attn_sp_total_step = 0u64;
         let mut cortical_gate_skipped_step = 0u64;
         let mut cortical_gate_total_step = 0u64;
         let mut pov_consensus_step = 0.0f64;
@@ -1610,7 +1830,7 @@ impl Runtime31B {
             let mut rope_cos_global = vec![0.0f32; seq_len * half_rot_global];
             let mut rope_sin_global = vec![0.0f32; seq_len * half_rot_global];
             for t in 0..seq_len {
-                let pos = (start_pos + t) as u32;
+                let pos = (start_pos + tree_spec.map_or(t, |(depths, _)| depths[t])) as u32;
                 if half_rot_local > 0 {
                     rope_cos_sin_for_pos(
                         &inv_f_local,
@@ -1685,17 +1905,23 @@ impl Runtime31B {
                 if mod_skip_layer {
                     mod_skipped_step += 1;
                     let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                    let mut k_batch = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
-                    let mut v_batch = if is_full && cfg.attention_k_eq_v {
-                        k_batch.clone()
+                    let (mut k_batch, mut v_batch) = if mod_zero_kv {
+                        let kv_elems = seq_len * n_kv * hd;
+                        (vec![0.0f32; kv_elems], vec![0.0f32; kv_elems])
                     } else {
-                        run_proj_masked(l, "self_attn.v_proj", &inp, None, None, true)?
+                        let kb = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
+                        let vb = if is_full && cfg.attention_k_eq_v {
+                            kb.clone()
+                        } else {
+                            run_proj_masked(l, "self_attn.v_proj", &inp, None, None, true)?
+                        };
+                        (kb, vb)
                     };
                     if let Some(t0) = t_ap0 {
                         prof_attn_step += t0.elapsed().as_secs_f64();
                     }
                     let t_kv0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                    {
+                    if !mod_zero_kv {
                         let kn = get_norm(&format!("{pfx}.self_attn.k_norm.weight"))?;
                         let kv_stride = n_kv * hd;
                         for t in 0..seq_len {
@@ -1711,18 +1937,22 @@ impl Runtime31B {
                         }
                     }
                     if kv_quant.is_glyph() {
-                        let gkv = glyph_kv[l]
-                            .as_mut()
-                            .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
-                        let stride = n_kv * hd;
-                        for t in 0..seq_len {
-                            let kt = &k_batch[t * stride..(t + 1) * stride];
-                            let vt = if gkv.k_eq_v {
-                                &[][..]
-                            } else {
-                                &v_batch[t * stride..(t + 1) * stride]
-                            };
-                            gkv.append_token(kt, vt, native_t16c.as_deref())?;
+                        if tree_spec.is_some() {
+                            ephemeral_tree_kv[l] = (k_batch, v_batch);
+                        } else {
+                            let gkv = glyph_kv[l]
+                                .as_mut()
+                                .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                            let stride = n_kv * hd;
+                            for t in 0..seq_len {
+                                let kt = &k_batch[t * stride..(t + 1) * stride];
+                                let vt = if gkv.k_eq_v {
+                                    &[][..]
+                                } else {
+                                    &v_batch[t * stride..(t + 1) * stride]
+                                };
+                                gkv.append_token(kt, vt, native_t16c.as_deref())?;
+                            }
                         }
                     } else {
                         match kv_quant {
@@ -1766,8 +1996,49 @@ impl Runtime31B {
                     continue;
                 }
 
+                let head_masks_opt: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<Vec<u8>>>)> =
+                    if let Some(hr) = head_router.as_ref() {
+                        if attn_head_top_p < 0.9999 && l >= 2 && l + 2 < cfg.n_layers {
+                            let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                            let tok_masks = hr.layers[l].predict_per_token_col_masks(
+                                &inp,
+                                seq_len,
+                                attn_shared_heads,
+                                attn_head_top_p,
+                            )?;
+                            let head_cmask = union_col_masks(&tok_masks, n_heads);
+                            let head_tok_masks = if seq_len > 1 { Some(tok_masks) } else { None };
+                            if let Some(t0) = tr0 {
+                                prof_router_step += t0.elapsed().as_secs_f64();
+                            }
+                            let o_bsize = t16c_mats
+                                .as_ref()
+                                .and_then(|mats| {
+                                    mats.get(&format!("{pfx}.self_attn.o_proj.weight"))
+                                        .or_else(|| mats.get(&format!("model.layers.{l}.self_attn.o_proj.weight")))
+                                        .map(|m| m.block_size)
+                                })
+                                .unwrap_or(256);
+                            let (q_rmask, o_cmask) = expand_head_mask(&head_cmask, hd, o_bsize);
+                            attn_sp_total_step += (seq_len * n_heads) as u64;
+                            if let Some(ref htm) = head_tok_masks {
+                                let sk_h: usize = htm.iter().map(|v| v.iter().filter(|&&b| b == 0).count()).sum();
+                                attn_sp_skipped_step += sk_h as u64;
+                            } else {
+                                let sk_h = head_cmask.iter().filter(|&&b| b == 0).count();
+                                attn_sp_skipped_step += (seq_len * sk_h) as u64;
+                            }
+                            Some((head_cmask, q_rmask, o_cmask, head_tok_masks))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                 let t_ap0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, None, None, true)?;
+                let q_rm_ref = head_masks_opt.as_ref().map(|(_, qm, _, _)| qm.as_slice());
+                let mut q_batch = run_proj_masked(l, "self_attn.q_proj", &inp, q_rm_ref, None, true)?;
                 let k_raw = run_proj_masked(l, "self_attn.k_proj", &inp, None, None, true)?;
                 let mut v_batch = if is_full && cfg.attention_k_eq_v {
                     k_raw.clone()
@@ -1847,87 +2118,164 @@ impl Runtime31B {
                 let q_stride = n_heads * hd;
                 let mut ctx_batch = vec![0.0f32; seq_len * q_stride];
                 if kv_quant.is_glyph() {
-                    let gkv = glyph_kv[l]
-                        .as_mut()
-                        .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
-                    let base_t = gkv.total_seen();
-                    let stride = n_kv * hd;
-                    for t in 0..seq_len {
-                        let kt = &k_batch[t * stride..(t + 1) * stride];
-                        let vt = if gkv.k_eq_v {
-                            &[][..]
-                        } else {
-                            &v_batch[t * stride..(t + 1) * stride]
-                        };
-                        gkv.append_token(kt, vt, native_t16c.as_deref())?;
-                    }
-                    let gkv_ref: &GlyphKvLayer = &*gkv;
-                    let nat_ref = native_t16c.as_deref();
-                    if seq_len > 1 && threads > 1 {
-                        let tok_chunk = seq_len.div_ceil(threads);
-                        let inner_thr = (threads / seq_len).max(1);
-                        let err_slot = std::sync::Mutex::new(None::<String>);
-                        std::thread::scope(|s| {
-                            for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
-                                let t_base = ci * tok_chunk;
-                                let n_tok = dst_chunk.len() / q_stride;
-                                let q_ref = &q_batch;
-                                let err_ref = &err_slot;
-                                s.spawn(move || {
-                                    for dt in 0..n_tok {
-                                        let t = t_base + dt;
-                                        let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
-                                        let kv_end = if !is_full {
-                                            vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                                        } else {
-                                            base_t + t
-                                        };
-                                        match gkv_ref.attend_range(
-                                            q_t,
-                                            base_t + t,
-                                            kv_end,
-                                            start_pos + t,
-                                            1.0,
-                                            nat_ref,
-                                            inner_thr,
-                                        ) {
-                                            Ok(c_t) => {
-                                                dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
-                                            }
-                                            Err(e) => {
-                                                let mut guard = err_ref.lock().unwrap();
-                                                if guard.is_none() {
-                                                    *guard = Some(e);
+                    if let Some((tree_depths, ancestor_masks)) = tree_spec {
+                        let gkv_ref = glyph_kv[l]
+                            .as_ref()
+                            .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                        let base_t = gkv_ref.total_seen();
+                        let nat_ref = native_t16c.as_deref();
+                        if seq_len > 1 && threads > 1 {
+                            let tok_chunk = seq_len.div_ceil(threads);
+                            let inner_thr = (threads / seq_len).max(1);
+                            let err_slot = std::sync::Mutex::new(None::<String>);
+                            let k_ref = &k_batch;
+                            let v_ref = &v_batch;
+                            let q_ref = &q_batch;
+                            std::thread::scope(|s| {
+                                for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
+                                    let t_base = ci * tok_chunk;
+                                    let n_tok = dst_chunk.len() / q_stride;
+                                    let err_r = &err_slot;
+                                    s.spawn(move || {
+                                        for dt in 0..n_tok {
+                                            let t = t_base + dt;
+                                            let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
+                                            match gkv_ref.attend_tree_ephemeral(
+                                                q_t,
+                                                base_t,
+                                                k_ref,
+                                                v_ref,
+                                                seq_len,
+                                                ancestor_masks[t],
+                                                tree_depths,
+                                                start_pos + tree_depths[t],
+                                                1.0,
+                                                nat_ref,
+                                                inner_thr,
+                                            ) {
+                                                Ok(c_t) => {
+                                                    dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
                                                 }
-                                                return;
+                                                Err(e) => {
+                                                    let mut guard = err_r.lock().unwrap();
+                                                    if guard.is_none() {
+                                                        *guard = Some(e);
+                                                    }
+                                                    return;
+                                                }
                                             }
                                         }
-                                    }
-                                });
+                                    });
+                                }
+                            });
+                            if let Some(e) = err_slot.into_inner().unwrap() {
+                                return Err(e);
                             }
-                        });
-                        if let Some(e) = err_slot.into_inner().unwrap() {
-                            return Err(e);
+                        } else {
+                            for t in 0..seq_len {
+                                let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                                let c_t = gkv_ref.attend_tree_ephemeral(
+                                    q_t,
+                                    base_t,
+                                    &k_batch,
+                                    &v_batch,
+                                    seq_len,
+                                    ancestor_masks[t],
+                                    tree_depths,
+                                    start_pos + tree_depths[t],
+                                    1.0,
+                                    nat_ref,
+                                    threads,
+                                )?;
+                                ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                            }
                         }
+                        ephemeral_tree_kv[l] = (k_batch, v_batch);
                     } else {
+                        let gkv = glyph_kv[l]
+                            .as_mut()
+                            .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                        let base_t = gkv.total_seen();
+                        let stride = n_kv * hd;
                         for t in 0..seq_len {
-                            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
-                            let kv_end = if !is_full {
-                                vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                            let kt = &k_batch[t * stride..(t + 1) * stride];
+                            let vt = if gkv.k_eq_v {
+                                &[][..]
                             } else {
-                                base_t + t
+                                &v_batch[t * stride..(t + 1) * stride]
                             };
-                            let c_t = gkv_ref.attend_range(
-                                q_t,
-                                base_t + t,
-                                kv_end,
-                                start_pos + t,
-                                1.0,
-                                nat_ref,
-                                threads,
-                            )?;
-                            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                            gkv.append_token(kt, vt, native_t16c.as_deref())?;
                         }
+                        let gkv_ref: &GlyphKvLayer = &*gkv;
+                        let nat_ref = native_t16c.as_deref();
+                        if seq_len > 1 && threads > 1 {
+                            let tok_chunk = seq_len.div_ceil(threads);
+                            let inner_thr = (threads / seq_len).max(1);
+                            let err_slot = std::sync::Mutex::new(None::<String>);
+                            std::thread::scope(|s| {
+                                for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
+                                    let t_base = ci * tok_chunk;
+                                    let n_tok = dst_chunk.len() / q_stride;
+                                    let q_ref = &q_batch;
+                                    let err_ref = &err_slot;
+                                    s.spawn(move || {
+                                        for dt in 0..n_tok {
+                                            let t = t_base + dt;
+                                            let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
+                                            let kv_end = if !is_full {
+                                                vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                                            } else {
+                                                base_t + t
+                                            };
+                                            match gkv_ref.attend_range(
+                                                q_t,
+                                                base_t + t,
+                                                kv_end,
+                                                start_pos + t,
+                                                1.0,
+                                                nat_ref,
+                                                inner_thr,
+                                            ) {
+                                                Ok(c_t) => {
+                                                    dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
+                                                }
+                                                Err(e) => {
+                                                    let mut guard = err_ref.lock().unwrap();
+                                                    if guard.is_none() {
+                                                        *guard = Some(e);
+                                                    }
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            if let Some(e) = err_slot.into_inner().unwrap() {
+                                return Err(e);
+                            }
+                        } else {
+                            for t in 0..seq_len {
+                                let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                                let kv_end = if !is_full {
+                                    vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
+                                } else {
+                                    base_t + t
+                                };
+                                let c_t = gkv_ref.attend_range(
+                                    q_t,
+                                    base_t + t,
+                                    kv_end,
+                                    start_pos + t,
+                                    1.0,
+                                    nat_ref,
+                                    threads,
+                                )?;
+                                ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                            }
+                        }
+                        drop(k_batch);
+                        drop(v_batch);
                     }
                 } else {
                     match kv_quant {
@@ -1952,7 +2300,28 @@ impl Runtime31B {
                     let base_t = kv[l].k.len() / (n_kv * hd);
                     kv[l].k.extend_from_slice(&k_batch);
                     kv[l].v.extend_from_slice(&v_batch);
-                    if seq_len > 1 && threads > 1 {
+                    drop(k_batch);
+                    drop(v_batch);
+                    if let Some((tree_depths, ancestor_masks)) = tree_spec {
+                        for t in 0..seq_len {
+                            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                            let c_t = attn_decode_tree(
+                                q_t,
+                                &kv[l].k,
+                                &kv[l].v,
+                                base_t,
+                                seq_len,
+                                ancestor_masks[t],
+                                tree_depths,
+                                start_pos + tree_depths[t],
+                                n_heads,
+                                n_kv,
+                                hd,
+                                sw,
+                            );
+                            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+                        }
+                    } else if seq_len > 1 && threads > 1 {
                         let tok_chunk = seq_len.div_ceil(threads);
                         let k_seq_ref = &kv[l].k;
                         let v_seq_ref = &kv[l].v;
@@ -1990,14 +2359,24 @@ impl Runtime31B {
                     }
                 }
                 drop(q_batch);
-                drop(k_batch);
-                drop(v_batch);
 
+                if let Some((ref hcm, _, _, ref htm_opt)) = head_masks_opt {
+                    for t in 0..seq_len {
+                        let base_ctx = t * q_stride;
+                        for h in 0..n_heads {
+                            let active = hcm[h] != 0 && htm_opt.as_ref().is_none_or(|htm| htm[t][h] != 0);
+                            if !active {
+                                ctx_batch[base_ctx + h * hd..base_ctx + (h + 1) * hd].fill(0.0);
+                            }
+                        }
+                    }
+                }
                 if let Some(t0) = t_kv0 {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_ao0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let attn_o = run_proj_masked(l, "self_attn.o_proj", &ctx_batch, None, None, true)?;
+                let o_cm_ref = head_masks_opt.as_ref().map(|(_, _, om, _)| om.as_slice());
+                let attn_o = run_proj_masked(l, "self_attn.o_proj", &ctx_batch, None, o_cm_ref, true)?;
                 if let Some(t0) = t_ao0 {
                     prof_attn_step += t0.elapsed().as_secs_f64();
                 }
@@ -2102,7 +2481,7 @@ impl Runtime31B {
                         }
                     })
                 };
-                let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if eff_mlp_top_p < 0.9999 {
+                let predicted_masks: Option<(Vec<u8>, Vec<u8>, usize, Option<Vec<Vec<u8>>>)> = if eff_mlp_top_p < 0.9999 {
                     if let (Some(cr), Some(mats)) = (cortical_router.as_ref(), t16c_mats.as_ref()) {
                         let check_proj_blk = |suf: &str, l_key: &str| -> Option<usize> {
                             let k1 = format!("model.language_model.layers.{l}.{suf}.weight");
@@ -2110,7 +2489,7 @@ impl Runtime31B {
                             let k1_lb = format!("{k1}.{l_key}");
                             let m = mats.get(&k1).or_else(|| mats.get(&k2)).or_else(|| mats.get(&k1_lb))?;
                             let eb = m.n_bits & 0x1F;
-                            if !m.is_streamed() && (eb == 5 || eb == 8) { None } else { Some(m.block_size) }
+                            if !m.is_streamed() && eb == 8 { None } else { Some(m.block_size) }
                         };
                         let gb = check_proj_blk("mlp.gate_proj", "lb_u");
                         let ub = check_proj_blk("mlp.up_proj", "lb_u");
@@ -2118,13 +2497,23 @@ impl Runtime31B {
                         let bsize = cr.block_size;
                         if gb == Some(bsize) && ub == Some(bsize) && db == Some(bsize) && bsize > 0 && cfg.ff % bsize == 0 {
                             let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                            let (rmask, cmask, blk_sz) = cr.layers[l].predict_masks(&inp2, seq_len, eff_mlp_top_p)?;
+                            let _ = &tree_spec;
+                            let tok_masks = cr.layers[l].predict_per_token_col_masks(
+                                &inp2,
+                                seq_len,
+                                shared_mlp_blocks,
+                                eff_mlp_top_p,
+                            )?;
+                            let cmask = union_col_masks(&tok_masks, cr.layers[l].n_blocks);
+                            let rmask = expand_col_to_row_mask(&cmask, bsize, cfg.ff);
+                            let blk_sz = bsize;
+                            let tok_cmasks = if seq_len > 1 { Some(tok_masks) } else { None };
                             if let Some(t0) = tr0 {
                                 prof_router_step += t0.elapsed().as_secs_f64();
                             }
                             cortical_gate_total_step += cmask.len() as u64;
                             cortical_gate_skipped_step += cmask.iter().filter(|&&v| v == 0).count() as u64;
-                            Some((rmask, cmask, blk_sz))
+                            Some((rmask, cmask, blk_sz, tok_cmasks))
                         } else {
                             None
                         }
@@ -2174,18 +2563,35 @@ impl Runtime31B {
                     lod_total_d_step += n_dist_shards as u64;
                     lod_active_d_step += active_d_slices.len() as u64;
 
-                    let rm_ref = predicted_masks.as_ref().map(|(r, _, _)| r.as_slice());
-                    let cm_ref = predicted_masks.as_ref().map(|(_, c, _)| c.as_slice());
+                    let rm_ref = predicted_masks.as_ref().map(|(r, _, _, _)| r.as_slice());
+                    let cm_ref = predicted_masks.as_ref().map(|(_, c, _, _)| c.as_slice());
+                    let cr_bsize_opt = predicted_masks.as_ref().map(|(_, _, b, _)| *b);
                     let mut gelu_gate = run_proj_masked(l, "mlp.gate_proj", &inp2, rm_ref, None, true)?;
                     let mut add_lod_rows = |mat: &run270_rust::t16c::T16CMat, s0: usize, s1: usize, dst: &mut [f32]| -> Result<(), String> {
                         let w_sl = s1.saturating_sub(s0);
                         if w_sl == 0 || mat.d_out != w_sl {
                             return Err(format!("GTA-LOD row slice ({s0}..{s1}) mismatch vs mat {} d_out={}", mat.name, mat.d_out));
                         }
-                        if mat.is_streamed() {
-                            cold_read_bytes += mat.packed_bytes_len as u64;
+                        let sub_rm = if s0 % 16 == 0 && s1 % 16 == 0 {
+                            rm_ref.and_then(|rm| rm.get(s0 / 16..s1 / 16))
+                        } else {
+                            None
+                        };
+                        if sub_rm.is_some_and(|sr| sr.iter().all(|&v| v == 0)) {
+                            return Ok(());
                         }
-                        let delta = mat.project_batch(&inp2, seq_len, native_t16c.as_deref(), threads)?;
+                        let delta = if let Some(sr) = sub_rm {
+                            let act_tiles = sr.iter().filter(|&&v| v != 0).count();
+                            if mat.is_streamed() {
+                                cold_read_bytes += (mat.packed_bytes_len * act_tiles / sr.len().max(1)) as u64;
+                            }
+                            mat.project_batch_sparse(&inp2, seq_len, native_t16c.as_deref(), threads, Some(sr), None)?.0
+                        } else {
+                            if mat.is_streamed() {
+                                cold_read_bytes += mat.packed_bytes_len as u64;
+                            }
+                            mat.project_batch(&inp2, seq_len, native_t16c.as_deref(), threads)?
+                        };
                         for t in 0..seq_len {
                             let d_row = &delta[t * w_sl..(t + 1) * w_sl];
                             let y_row = &mut dst[t * ff + s0..t * ff + s1];
@@ -2212,10 +2618,11 @@ impl Runtime31B {
                     }
 
                     let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                    if let Some((_, ref cmask, bsize)) = predicted_masks {
+                    if let Some((_, ref cmask, bsize, ref tok_cmasks_opt)) = predicted_masks {
                         for t in 0..seq_len {
                             let base = t * ff;
-                            for (b, &active) in cmask.iter().enumerate() {
+                            let tc = tok_cmasks_opt.as_ref().map_or(cmask.as_slice(), |v| v[t].as_slice());
+                            for (b, &active) in tc.iter().enumerate() {
                                 if active != 0 {
                                     for x in &mut gelu_gate[base + b * bsize..base + (b + 1) * bsize] {
                                         *x = gelu_tanh_fast_f32(*x);
@@ -2250,11 +2657,12 @@ impl Runtime31B {
                         prof_up_step += t0.elapsed().as_secs_f64();
                     }
 
-                    let act: Vec<f32> = if let Some((_, ref cmask, bsize)) = predicted_masks {
+                    let act: Vec<f32> = if let Some((_, ref cmask, bsize, ref tok_cmasks_opt)) = predicted_masks {
                         let mut out_a = vec![0.0f32; seq_len * ff];
                         for t in 0..seq_len {
                             let base = t * ff;
-                            for (b, &active) in cmask.iter().enumerate() {
+                            let tc = tok_cmasks_opt.as_ref().map_or(cmask.as_slice(), |v| v[t].as_slice());
+                            for (b, &active) in tc.iter().enumerate() {
                                 if active != 0 {
                                     let off = base + b * bsize;
                                     for j in 0..bsize {
@@ -2277,14 +2685,31 @@ impl Runtime31B {
                         if w_sl == 0 || mat.d_in != w_sl || mat.d_out != d {
                             return Err(format!("GTA-LOD col slice ({s0}..{s1}) mismatch vs mat {} ({}x{})", mat.name, mat.d_out, mat.d_in));
                         }
+                        let sub_cm = match (cm_ref, cr_bsize_opt) {
+                            (Some(cm), Some(cb)) if cb == mat.block_size && cb > 0 && s0 % cb == 0 && s1 % cb == 0 => {
+                                cm.get(s0 / cb..s1 / cb)
+                            }
+                            _ => None,
+                        };
+                        if sub_cm.is_some_and(|sc| sc.iter().all(|&v| v == 0)) {
+                            return Ok(());
+                        }
                         let mut act_sub = Vec::with_capacity(seq_len * w_sl);
                         for t in 0..seq_len {
                             act_sub.extend_from_slice(&act[t * ff + s0..t * ff + s1]);
                         }
-                        if mat.is_streamed() {
-                            cold_read_bytes += mat.packed_bytes_len as u64;
-                        }
-                        let delta = mat.project_batch(&act_sub, seq_len, native_t16c.as_deref(), threads)?;
+                        let delta = if let Some(sc) = sub_cm {
+                            let act_blks = sc.iter().filter(|&&v| v != 0).count();
+                            if mat.is_streamed() {
+                                cold_read_bytes += (mat.packed_bytes_len * act_blks / sc.len().max(1)) as u64;
+                            }
+                            mat.project_batch_sparse(&act_sub, seq_len, native_t16c.as_deref(), threads, None, Some(sc))?.0
+                        } else {
+                            if mat.is_streamed() {
+                                cold_read_bytes += mat.packed_bytes_len as u64;
+                            }
+                            mat.project_batch(&act_sub, seq_len, native_t16c.as_deref(), threads)?
+                        };
                         for (yv, &dv) in dst.iter_mut().zip(delta.iter()) {
                             *yv += dv;
                         }
@@ -2335,7 +2760,7 @@ impl Runtime31B {
                         }
                         let ue = up_mat.n_bits & 0x1F;
                         let de = down_mat.n_bits & 0x1F;
-                        if (!up_mat.is_streamed() && (ue == 5 || ue == 8)) || (!down_mat.is_streamed() && (de == 5 || de == 8)) {
+                        if (!up_mat.is_streamed() && ue == 8) || (!down_mat.is_streamed() && de == 8) {
                             return None;
                         }
                         let bsize = down_mat.block_size;
@@ -2396,7 +2821,7 @@ impl Runtime31B {
                         }
                     };
 
-                    if let Some((ref rmask, ref cmask, bsize)) = predicted_masks {
+                    if let Some((ref rmask, ref cmask, bsize, ref tok_cmasks_opt)) = predicted_masks {
                         let slab_g = gate_mat.read_sparse_slab(Some(rmask), None)?;
                         cold_read_bytes += slab_g.bytes_read;
                         let (gelu_gate, slab_u) = std::thread::scope(|sc| -> Result<(Vec<f32>, run270_rust::t16c::StreamedSparseSlab), String> {
@@ -2422,7 +2847,8 @@ impl Runtime31B {
                             let ff = cfg.ff;
                             for t in 0..seq_len {
                                 let base = t * ff;
-                                for (b, &active) in cmask.iter().enumerate() {
+                                let tc = tok_cmasks_opt.as_ref().map_or(cmask.as_slice(), |v| v[t].as_slice());
+                                for (b, &active) in tc.iter().enumerate() {
                                     if active != 0 {
                                         for x in &mut gg[base + b * bsize..base + (b + 1) * bsize] {
                                             *x = gelu_tanh_fast_f32(*x);
@@ -2573,7 +2999,7 @@ impl Runtime31B {
                 } else {
                 // V6.1 Predictive Cortical Column Routing (when --cortical-router is loaded) skips `(1 - mlp_top_p)`
                 // of `gate_proj` DRAM reads too; otherwise preserves exact 1-pass `gate_proj` routing unchanged.
-                let mut gelu_gate = if let Some((ref rmask, _, _)) = predicted_masks {
+                let mut gelu_gate = if let Some((ref rmask, _, _, _)) = predicted_masks {
                     run_proj_masked(l, "mlp.gate_proj", &inp2, Some(rmask), None, true)?
                 } else {
                     run_proj_masked(l, "mlp.gate_proj", &inp2, None, None, true)?
@@ -2582,12 +3008,12 @@ impl Runtime31B {
                     prof_gate_step += t0.elapsed().as_secs_f64();
                 }
                 let t_gl0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                if let Some((_, ref cmask, bsize)) = predicted_masks {
+                if let Some((_, ref cmask, bsize, ref tok_cm_opt)) = predicted_masks {
                     let ff = cfg.ff;
                     for t in 0..seq_len {
                         let base = t * ff;
                         for (b, &active) in cmask.iter().enumerate() {
-                            if active != 0 {
+                            if active != 0 && tok_cm_opt.as_ref().is_none_or(|tm| tm[t][b] != 0) {
                                 for x in &mut gelu_gate[base + b * bsize..base + (b + 1) * bsize] {
                                     *x = gelu_tanh_fast_f32(*x);
                                 }
@@ -2602,8 +3028,9 @@ impl Runtime31B {
                 if let Some(t0) = t_gl0 {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
-                let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if predicted_masks.is_some() {
-                    predicted_masks
+                let pred_tok_cmasks = predicted_masks.as_ref().and_then(|(_, _, _, tm)| tm.clone());
+                let sparse_masks: Option<(Vec<u8>, Vec<u8>, usize)> = if let Some((rm, cm, bsz, _)) = predicted_masks {
+                    Some((rm, cm, bsz))
                 } else if mlp_top_p < 0.9999 {
                     t16c_mats.as_ref().and_then(|mats| {
                         let ku1 = format!("model.language_model.layers.{l}.mlp.up_proj.weight");
@@ -2616,7 +3043,7 @@ impl Runtime31B {
                         let dm = mats.get(&kd1).or_else(|| mats.get(&kd2)).or_else(|| mats.get(&kd1_lb))?;
                         let ue = um.n_bits & 0x1F;
                         let de = dm.n_bits & 0x1F;
-                        if ue == 5 || ue == 8 || de == 5 || de == 8 {
+                        if ue == 8 || de == 8 {
                             return None;
                         }
                         let bsize = dm.block_size;
@@ -2675,7 +3102,7 @@ impl Runtime31B {
                     for t in 0..seq_len {
                         let base = t * ff;
                         for (b, &active) in cmask.iter().enumerate() {
-                            if active != 0 {
+                            if active != 0 && pred_tok_cmasks.as_ref().is_none_or(|tm| tm[t][b] != 0) {
                                 let off = base + b * bsize;
                                 for j in 0..bsize {
                                     out_a[off + j] = gelu_gate[off + j] * up[off + j];
@@ -2727,6 +3154,8 @@ impl Runtime31B {
         self.mlp_sparse_total_blks += mlp_sp_total_step + cold_sp_total_step;
         self.mod_skipped_layers += mod_skipped_step;
         self.mod_total_layers += mod_total_step;
+        self.attn_sparse_skipped_heads += attn_sp_skipped_step;
+        self.attn_sparse_total_heads += attn_sp_total_step;
         self.cortical_gate_skipped_blks += cortical_gate_skipped_step;
         self.cortical_gate_total_blks += cortical_gate_total_step;
         self.pov_consensus_sum += pov_consensus_step;
@@ -2776,7 +3205,16 @@ impl Runtime31B {
     }
 
     fn compute_logits_batch(&mut self, hidden_batch: &[f32], seq_len: usize) -> Result<Vec<f32>, String> {
-        self.compute_logits_batch_mode(hidden_batch, seq_len, true)
+        self.compute_logits_batch_mode_seeded(hidden_batch, seq_len, true, None)
+    }
+
+    fn compute_logits_batch_seeded(
+        &mut self,
+        hidden_batch: &[f32],
+        seq_len: usize,
+        seed_row_ids: Option<&[i32]>,
+    ) -> Result<Vec<f32>, String> {
+        self.compute_logits_batch_mode_seeded(hidden_batch, seq_len, true, seed_row_ids)
     }
 
     fn compute_logits_batch_mode(
@@ -2784,6 +3222,16 @@ impl Runtime31B {
         hidden_batch: &[f32],
         seq_len: usize,
         allow_lmhead_cs: bool,
+    ) -> Result<Vec<f32>, String> {
+        self.compute_logits_batch_mode_seeded(hidden_batch, seq_len, allow_lmhead_cs, None)
+    }
+
+    fn compute_logits_batch_mode_seeded(
+        &mut self,
+        hidden_batch: &[f32],
+        seq_len: usize,
+        allow_lmhead_cs: bool,
+        seed_row_ids: Option<&[i32]>,
     ) -> Result<Vec<f32>, String> {
         let d = self.cfg.d;
         let vocab = self.cfg.vocab;
@@ -2837,14 +3285,16 @@ impl Runtime31B {
             Embed31B::T16C { mat, native } => {
                 if allow_lmhead_cs {
                     if let (Some(sieve_frac), Some(norms)) = (self.lmhead_cs_sieve, self.embed_tile_norms.as_deref()) {
-                        let (y, sk) = mat.project_lmhead_cs(
+                        let k_keep = if seed_row_ids.is_some() && sieve_frac > 0.0 { 1 } else { 32 };
+                        let (y, sk) = mat.project_lmhead_cs_seeded(
                             hidden_batch,
                             seq_len,
                             native.as_deref(),
                             self.threads,
                             Some(norms),
-                            32,
+                            k_keep,
                             sieve_frac,
+                            seed_row_ids,
                         )?;
                         if sk > 0 {
                             lm_sk = sk as u64;
@@ -2979,12 +3429,19 @@ fn load_runtime_31b(
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
             mlp_top_p: 1.0,
+            shared_mlp_blocks: 0,
             mlp_sparse_skipped_blks: 0,
             mlp_sparse_total_blks: 0,
             cortical_router: None,
+            head_router: None,
+            attn_head_top_p: 1.0,
+            attn_shared_heads: 4,
             mod_thresh: 0.0,
+            mod_zero_kv: false,
             mod_skipped_layers: 0,
             mod_total_layers: 0,
+            attn_sparse_skipped_heads: 0,
+            attn_sparse_total_heads: 0,
             cortical_gate_skipped_blks: 0,
             cortical_gate_total_blks: 0,
             profile_components: false,
@@ -3005,6 +3462,7 @@ fn load_runtime_31b(
             kv_compressed_bytes: 0,
             kv,
             glyph_kv,
+            ephemeral_tree_kv: Vec::new(),
             vision: None,
             threads,
             ssd_bytes_read: 0,
@@ -3175,12 +3633,19 @@ fn load_runtime_31b_t16c(
             cs_down_norms: Vec::new(),
             cs_skipped_blocks: 0,
             mlp_top_p: 1.0,
+            shared_mlp_blocks: 0,
             mlp_sparse_skipped_blks: 0,
             mlp_sparse_total_blks: 0,
             cortical_router: None,
+            head_router: None,
+            attn_head_top_p: 1.0,
+            attn_shared_heads: 4,
             mod_thresh: 0.0,
+            mod_zero_kv: false,
             mod_skipped_layers: 0,
             mod_total_layers: 0,
+            attn_sparse_skipped_heads: 0,
+            attn_sparse_total_heads: 0,
             cortical_gate_skipped_blks: 0,
             cortical_gate_total_blks: 0,
             profile_components: false,
@@ -3201,6 +3666,7 @@ fn load_runtime_31b_t16c(
             kv_compressed_bytes: 0,
             kv,
             glyph_kv,
+            ephemeral_tree_kv: Vec::new(),
             vision,
             threads,
             ssd_bytes_read: 0,
@@ -3699,6 +4165,30 @@ fn run() -> Result<(), String> {
     let spec_seed_arg = get("--spec-seed");
     let spec_assistant_arg = get("--spec-assistant");
     let spec_byte_head_arg = get("--spec-byte-head");
+    let spec_tree_nodes: Option<usize> = match get("--spec-tree") {
+        Some(s) => {
+            let n: usize = s.parse().map_err(|_| format!("invalid --spec-tree '{s}'"))?;
+            if !(2..=24).contains(&n) {
+                return Err(format!("--spec-tree must be in 2..=24, got {n}"));
+            }
+            Some(n)
+        }
+        None => None,
+    };
+    let spec_tree_depth: usize = match get("--spec-tree-depth") {
+        Some(s) => {
+            let d: usize = s.parse().map_err(|_| format!("invalid --spec-tree-depth '{s}'"))?;
+            if !(1..=16).contains(&d) {
+                return Err(format!("--spec-tree-depth must be in 1..=16, got {d}"));
+            }
+            d
+        }
+        None => 5,
+    };
+    let pin_lod_districts: usize = match get("--pin-lod-districts") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --pin-lod-districts '{s}'"))?,
+        None => 0,
+    };
     let eval_nll = args.iter().any(|a| a == "--eval-nll");
     let eval_nll_after_turn = args.iter().any(|a| a == "--eval-nll-after-turn");
     let eval_nll_start_pos: Option<usize> = match get("--eval-nll-start-pos") {
@@ -3707,7 +4197,7 @@ fn run() -> Result<(), String> {
     };
     let dump_seq_logits = get("--dump-seq-logits");
     let eval_teacher_logits = get("--eval-teacher-logits");
-    let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos");
+    let assistant_step_pos = args.iter().any(|a| a == "--assistant-step-pos") || spec_tree_nodes.is_some();
     let assistant_min_margin: f32 = match get("--assistant-min-margin") {
         Some(s) => s.parse().map_err(|_| format!("invalid --assistant-min-margin '{s}'"))?,
         None => default_assistant_min_margin(spec_assistant_arg.is_some(), spec_byte_head_arg.is_some()),
@@ -3729,7 +4219,24 @@ fn run() -> Result<(), String> {
     if !mlp_top_p.is_finite() || mlp_top_p <= 0.0 || mlp_top_p > 1.0 {
         return Err(format!("--mlp-top-p must be finite in (0.0, 1.0], got {mlp_top_p}"));
     }
+    let shared_mlp_blocks: usize = match get("--shared-mlp-blocks") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --shared-mlp-blocks '{s}'"))?,
+        None => 0,
+    };
     let cortical_router_arg = get("--cortical-router");
+    let head_router_arg = get("--head-router");
+    let attn_head_top_p: f32 = match get("--attn-head-top-p") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --attn-head-top-p '{s}'"))?,
+        None => 1.0,
+    };
+    if !attn_head_top_p.is_finite() || attn_head_top_p <= 0.0 || attn_head_top_p > 1.0 {
+        return Err(format!("--attn-head-top-p must be finite in (0.0, 1.0], got {attn_head_top_p}"));
+    }
+    let attn_shared_heads: usize = match get("--attn-shared-heads") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --attn-shared-heads '{s}'"))?,
+        None => 4,
+    };
+    let mod_zero_kv = args.iter().any(|a| a == "--mod-zero-kv");
     let lod_shared_arg = get("--lod-shared");
     let lod_district_dir_arg = get("--lod-district-dir");
     let district_router_arg = get("--district-router");
@@ -3754,8 +4261,8 @@ fn run() -> Result<(), String> {
         Some(s) => parse_lmhead_cs_mode(&s)?,
         None => Some(0.0),
     };
-    if (spec_seed_arg.is_some() || spec_assistant_arg.is_some()) && !speculative {
-        return Err("--spec-seed and --spec-assistant require --speculative".into());
+    if (spec_seed_arg.is_some() || spec_assistant_arg.is_some() || spec_tree_nodes.is_some()) && !speculative {
+        return Err("--spec-seed, --spec-assistant, and --spec-tree require --speculative".into());
     }
     if spec_byte_head_arg.is_some() && (!speculative || spec_assistant_arg.is_none()) {
         return Err("--spec-byte-head requires --speculative and --spec-assistant".into());
@@ -3886,6 +4393,7 @@ fn run() -> Result<(), String> {
         );
     }
     rt.mlp_top_p = mlp_top_p;
+    rt.shared_mlp_blocks = shared_mlp_blocks;
     if let Some(ref crp) = cortical_router_arg {
         if rt.t16c_mats.is_none() {
             return Err("--cortical-router requires --t16c resident quantized runtime".into());
@@ -3908,6 +4416,32 @@ fn run() -> Result<(), String> {
             cr.byte_len() as f64 / (1024.0 * 1024.0)
         );
         rt.cortical_router = Some(cr);
+    }
+    rt.attn_head_top_p = attn_head_top_p;
+    rt.attn_shared_heads = attn_shared_heads;
+    rt.mod_zero_kv = mod_zero_kv;
+    if let Some(ref hrp) = head_router_arg {
+        if rt.t16c_mats.is_none() {
+            return Err("--head-router requires --t16c resident quantized runtime".into());
+        }
+        let hr = CorticalRouterBank::load(Path::new(hrp))?;
+        if hr.n_layers != rt.cfg.n_layers || hr.d_model != rt.cfg.d || hr.n_blocks != rt.cfg.n_heads {
+            return Err(format!(
+                "head router {} dims (L={} d={} heads={}) incompatible with model (L={} d={} heads={})",
+                hrp, hr.n_layers, hr.d_model, hr.n_blocks, rt.cfg.n_layers, rt.cfg.d, rt.cfg.n_heads
+            ));
+        }
+        eprintln!(
+            "[run31b] loaded HeadRouter {}: layers={} rank={} heads={} top_p={:.3} shared={} ({:.2} MB)",
+            hrp,
+            hr.n_layers,
+            hr.rank,
+            hr.n_blocks,
+            attn_head_top_p,
+            attn_shared_heads,
+            hr.byte_len() as f64 / (1024.0 * 1024.0)
+        );
+        rt.head_router = Some(hr);
     }
     if let Some(ref lsh_p) = lod_shared_arg {
         let sh_m = run270_rust::t16c::T16CModel::load(Path::new(lsh_p), None, true)?;
@@ -3932,7 +4466,11 @@ fn run() -> Result<(), String> {
             let cand3 = Path::new(&format!("{ldd_p}_d{di}.t16c")).to_path_buf();
             let chosen = [cand1, cand2, cand3].into_iter().find(|p| p.is_file());
             if let Some(cp) = chosen {
-                let dm = run270_rust::t16c::T16CModel::load_with_policy(&cp, None, true, &cold_all)?;
+                let dm = if di < pin_lod_districts {
+                    run270_rust::t16c::T16CModel::load(&cp, None, true)?
+                } else {
+                    run270_rust::t16c::T16CModel::load_with_policy(&cp, None, true, &cold_all)?
+                };
                 d_shards.push(dm.mats);
             } else if di == 0 {
                 return Err(format!("--lod-district-dir {ldd_p}: could not find lod_d0.t16c shard"));
@@ -4147,6 +4685,8 @@ fn run() -> Result<(), String> {
             rt.cortical_gate_total_blks = 0;
             rt.mod_skipped_layers = 0;
             rt.mod_total_layers = 0;
+            rt.attn_sparse_skipped_heads = 0;
+            rt.attn_sparse_total_heads = 0;
             rt.prof_attn_s = 0.0;
             rt.prof_gate_s = 0.0;
             rt.prof_up_s = 0.0;
@@ -4480,6 +5020,161 @@ fn run() -> Result<(), String> {
             }
 
             let rem = max_tokens - generated.len();
+            let td = std::time::Instant::now();
+
+            if let Some(max_tree_nodes) = spec_tree_nodes {
+                let max_depth_step = spec_tree_depth.min(rem.saturating_sub(1));
+                let eff_tree_cap = max_tree_nodes.min(1 + rem.saturating_sub(1).saturating_mul(3)).max(1);
+                let tree_opt: Option<SpecTreeBuilder> = if max_depth_step == 0 || eff_tree_cap <= 1 {
+                    None
+                } else {
+                    let ngram_hint = ngram.propose_sequence(&history, max_depth_step);
+                    if let Some((ref ast, sl_l, fl_l)) = assistant_state {
+                        let max_tt = cur_kv_len.saturating_sub(1);
+                        let (tree_b, m_stop, ast_sk) = ast.draft_tree_with_attend(
+                            y0,
+                            |tok| rt.embed_token_ro(tok),
+                            &last_backbone_h,
+                            cur_kv_len,
+                            max_depth_step,
+                            eff_tree_cap,
+                            &ngram_hint,
+                            &eos,
+                            closed_thought_bans,
+                            assistant_min_margin,
+                            lmhead_cs_sieve,
+                            |is_full, q, q_pos| {
+                                let l_idx = if is_full { fl_l } else { sl_l };
+                                if rt.kv_quant.is_glyph() {
+                                    let gkv = rt.glyph_kv[l_idx]
+                                        .as_ref()
+                                        .ok_or_else(|| format!("missing glyph KV at layer {l_idx}"))?;
+                                    gkv.attend_range(
+                                        q,
+                                        max_tt,
+                                        max_tt,
+                                        q_pos,
+                                        1.0,
+                                        rt.native_t16c.as_deref(),
+                                        rt.threads,
+                                    )
+                                } else {
+                                    let hd_ast = if is_full { rt.cfg.global_hd } else { rt.cfg.hd };
+                                    let n_kv_ast = if is_full { rt.cfg.n_global_kv } else { rt.cfg.n_kv };
+                                    let sw = if is_full { None } else { Some(rt.cfg.window) };
+                                    Ok(attn_decode_range(
+                                        q,
+                                        &rt.kv[l_idx].k,
+                                        &rt.kv[l_idx].v,
+                                        max_tt,
+                                        max_tt,
+                                        q_pos,
+                                        ast.cfg.n_heads,
+                                        n_kv_ast,
+                                        hd_ast,
+                                        sw,
+                                    ))
+                                }
+                            },
+                        )?;
+                        spec_margin_stopped += m_stop;
+                        if ast_sk > 0 {
+                            ast_lm_skipped_blocks += ast_sk as u64;
+                        }
+                        if tree_b.nodes.len() > 1 { Some(tree_b) } else { None }
+                    } else if !ngram_hint.is_empty() {
+                        let mut tb = SpecTreeBuilder::new(y0, eff_tree_cap);
+                        tb.graft_sequence(&ngram_hint, &eos);
+                        if tb.nodes.len() > 1 { Some(tb) } else { None }
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(tree_b) = tree_opt {
+                    let n_nodes = tree_b.nodes.len();
+                    let batch_ids: Vec<u32> = tree_b.nodes.iter().map(|n| n.token_id).collect();
+                    let tree_depths: Vec<usize> = tree_b.nodes.iter().map(|n| n.depth).collect();
+                    let ancestor_masks: Vec<u32> = tree_b.nodes.iter().map(|n| n.ancestor_mask).collect();
+                    let max_d = tree_depths.iter().copied().max().unwrap_or(1).max(1);
+                    spec_batches += 1;
+                    spec_drafted += max_d;
+
+                    let h_batch = rt.forward_batch_tree(&batch_ids, cur_kv_len, &tree_depths, &ancestor_masks)?;
+                    let mut seed_row_ids = vec![-1i32; n_nodes];
+                    for p_idx in 0..n_nodes {
+                        if let Some(child) = tree_b.nodes.iter().skip(p_idx + 1).find(|c| c.parent == p_idx as i32) {
+                            seed_row_ids[p_idx] = child.token_id as i32;
+                        }
+                    }
+                    let mut l_batch = rt.compute_logits_batch_seeded(&h_batch, n_nodes, Some(&seed_row_ids))?;
+                    let base_gen = generated.clone();
+                    let outcome = verify_greedy_tree_batch(
+                        &tree_b.nodes,
+                        &mut l_batch,
+                        vocab,
+                        &eos,
+                        rem,
+                        |slot_logits, acc_so_far| {
+                            let mut sim_gen = Vec::with_capacity(base_gen.len() + acc_so_far.len());
+                            sim_gen.extend_from_slice(&base_gen);
+                            sim_gen.extend_from_slice(acc_so_far);
+                            apply_degeneracy_guard(slot_logits, &ids, &sim_gen);
+                        },
+                    )?;
+                    let acc = outcome.accepted_drafts.len();
+                    let last_slot = *outcome.accepted_slots.last().unwrap_or(&0);
+                    spec_accepted += acc;
+                    ctrl.observe(acc, max_d);
+                    rt.commit_tree_slots(cur_kv_len, &outcome.accepted_slots)?;
+                    last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
+                    for &tok in &outcome.accepted_drafts {
+                        let s_idx = generated.len();
+                        generated.push(tok);
+                        ngram.observe_transition(&history, tok);
+                        history.push(tok);
+                        println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
+                    }
+                    let mut next_pending = if outcome.hit_stop { None } else { outcome.next_pending };
+                    if let Some(ref mut gate) = tri_gate {
+                        let mut slot_logits = l_batch[last_slot * vocab..(last_slot + 1) * vocab].to_vec();
+                        let (cap, _dec) = evaluate_tri_modal_step(
+                            generated.len(),
+                            &last_backbone_h,
+                            &mut slot_logits,
+                            !outcome.hit_stop && next_pending.is_some(),
+                            lmhead_cs_sieve,
+                            cs_skip_thresh,
+                            c8d_cold_va,
+                            &mut rt,
+                            gate,
+                            tri_modal_gate,
+                        )?;
+                        if tri_modal_gate {
+                            tri_draft_cap = cap;
+                            if !outcome.hit_stop && next_pending.is_some() {
+                                let post_gen = generated.clone();
+                                apply_degeneracy_guard(&mut slot_logits, &ids, &post_gen);
+                                next_pending = Some(argmax_f32(&slot_logits));
+                            }
+                        }
+                    }
+                    pending = next_pending;
+                    eprintln!(
+                        "[run31b] spec_tree batch={} nodes={} max_d={} accepted={} (+1={}) ewma={:.2} in {:.2}s vm={:?}",
+                        spec_batches,
+                        n_nodes,
+                        max_d,
+                        acc,
+                        acc + 1,
+                        ctrl.acceptance_ewma(),
+                        td.elapsed().as_secs_f64(),
+                        proc_status_kb()
+                    );
+                    continue;
+                }
+            }
+
             let draft_budget = if tri_modal_gate {
                 ctrl.current_k().min(tri_draft_cap).min(rem.saturating_sub(1))
             } else {
@@ -4549,8 +5244,6 @@ fn run() -> Result<(), String> {
             } else {
                 Vec::new()
             };
-
-            let td = std::time::Instant::now();
             if drafts.is_empty() {
                 spec_fallback_k1 += 1;
                 let h = rt.forward_batch(&[y0], cur_kv_len, false)?;
@@ -5265,5 +5958,58 @@ mod tests {
         assert!(resolve_eval_nll_start_pos(&chat_ids, Some(1), true).is_err());
         assert!(resolve_eval_nll_start_pos(&chat_ids, Some(chat_ids.len() - 1), false).is_err());
         assert!(resolve_eval_nll_start_pos(&[2, 818, 5279, 529], None, true).is_err());
+    }
+
+    #[test]
+    fn head_cmask_expansion_covers_sliding_and_global_head_dims() {
+        let mut hcm = vec![0u8; 32];
+        hcm[0] = 1;
+        hcm[5] = 1;
+        // Sliding layer: hd=256, o_bsize=256 -> 16 q-tiles/head, 1 o-blk/head
+        let (q_s, o_s) = expand_head_mask(&hcm, 256, 256);
+        assert_eq!(q_s.len(), 32 * 16);
+        assert_eq!(o_s.len(), 32);
+        assert!(q_s[0..16].iter().all(|&v| v == 1));
+        assert!(q_s[16..80].iter().all(|&v| v == 0));
+        assert!(q_s[80..96].iter().all(|&v| v == 1));
+        assert_eq!(o_s[0], 1);
+        assert_eq!(o_s[1], 0);
+        assert_eq!(o_s[5], 1);
+        // Global layer: hd=512, o_bsize=256 -> 32 q-tiles/head, 2 o-blks/head
+        let (q_g, o_g) = expand_head_mask(&hcm, 512, 256);
+        assert_eq!(q_g.len(), 32 * 32);
+        assert_eq!(o_g.len(), 32 * 2);
+        assert!(q_g[5 * 32..6 * 32].iter().all(|&v| v == 1));
+        assert_eq!(&o_g[10..12], &[1u8, 1u8]);
+        assert!(&o_g[2..4] == &[0u8, 0u8]);
+    }
+
+    #[test]
+    fn union_col_masks_and_row_expansion_cover_every_k1_token_mask() {
+        let n_blks = 84usize;
+        let bsize = 256usize;
+        let ff = n_blks * bsize;
+        for seq_len in [1usize, 4, 8, 16] {
+            let mut tok_masks = Vec::with_capacity(seq_len);
+            for t in 0..seq_len {
+                let mut m = vec![0u8; n_blks];
+                m[0..4].fill(1);
+                m[(4 + t * 5) % n_blks] = 1;
+                m[(17 + t * 11) % n_blks] = 1;
+                tok_masks.push(m);
+            }
+            let cm = union_col_masks(&tok_masks, n_blks);
+            let rm = expand_col_to_row_mask(&cm, bsize, ff);
+            assert_eq!(rm.len(), ff / 16);
+            let tiles_per_blk = bsize / 16;
+            for (t, tm) in tok_masks.iter().enumerate() {
+                for (b, &act) in tm.iter().enumerate() {
+                    if act != 0 {
+                        assert_eq!(cm[b], 1, "union missed active block {b} at seq_len={seq_len} tok={t}");
+                        assert!(rm[b * tiles_per_blk..(b + 1) * tiles_per_blk].iter().all(|&r| r == 1));
+                    }
+                }
+            }
+        }
     }
 }

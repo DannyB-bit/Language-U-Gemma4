@@ -697,6 +697,110 @@ impl ByteHeadDecoder {
         };
         Ok((best_tok, top1_logp, top2_logp, best_depth))
     }
+
+    /// Exact trie-constrained beam search returning up to `top_k` distinct completed `(token_id, logprob)` candidates
+    /// sorted descending by log-probability for EAGLE-3 speculative token-tree expansion.
+    pub fn decode_top_k_tokens(
+        &self,
+        h_final: &[f32],
+        trie: &BpePrefixTrie,
+        ban_tokens: &[u32],
+        beam_width: usize,
+        top_k: usize,
+    ) -> Result<Vec<(u32, f32)>, String> {
+        let k_req = top_k.max(1);
+        let bw = beam_width.max(k_req).max(2);
+        let (s0, ctx) = self.init_state_and_ctx(h_final)?;
+
+        struct Beam {
+            cum_logp: f32,
+            node: u32,
+            depth: usize,
+            state: Vec<f32>,
+        }
+        struct NextCand {
+            cum_logp: f32,
+            child: u32,
+            depth: usize,
+            parent_idx: usize,
+            sym: u16,
+        }
+
+        let mut beams = vec![Beam {
+            cum_logp: 0.0f32,
+            node: 0u32,
+            depth: 0usize,
+            state: s0,
+        }];
+        let mut completed: Vec<(f32, u32)> = Vec::new();
+
+        for step_idx in 0..=self.max_bytes {
+            let allow_expand = step_idx < self.max_bytes;
+            let mut next_cands: Vec<NextCand> = Vec::new();
+
+            for (bi, bm) in beams.iter().enumerate() {
+                let lps = self.node_log_probs(&bm.state, trie, bm.node, ban_tokens);
+                for (sym, lp) in lps {
+                    let tot = bm.cum_logp + lp;
+                    if sym == SYM_EOT {
+                        if let Some(tid) = trie.terminal_token(bm.node) {
+                            completed.push((tot, tid));
+                        }
+                    } else if allow_expand {
+                        if let Some(child) = trie.step(bm.node, sym) {
+                            next_cands.push(NextCand {
+                                cum_logp: tot,
+                                child,
+                                depth: bm.depth + 1,
+                                parent_idx: bi,
+                                sym,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !allow_expand || next_cands.is_empty() {
+                break;
+            }
+            next_cands.sort_unstable_by(|a, b| b.cum_logp.total_cmp(&a.cum_logp));
+            if next_cands.len() > bw {
+                next_cands.truncate(bw);
+            }
+
+            completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            if completed.len() >= k_req && next_cands[0].cum_logp <= completed[k_req - 1].0 {
+                break;
+            }
+
+            let mut next_beams = Vec::with_capacity(next_cands.len());
+            for c in next_cands {
+                let nstate = self.gru_step(&beams[c.parent_idx].state, c.sym, &ctx);
+                next_beams.push(Beam {
+                    cum_logp: c.cum_logp,
+                    node: c.child,
+                    depth: c.depth,
+                    state: nstate,
+                });
+            }
+            beams = next_beams;
+        }
+
+        if completed.is_empty() {
+            return Err("ByteHeadDecoder::decode_top_k_tokens: no valid unbanned token reached <eot>".into());
+        }
+        completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let mut out = Vec::with_capacity(k_req.min(completed.len()));
+        for (lp, tid) in completed {
+            if !out.iter().any(|&(t, _)| t == tid) {
+                out.push((tid, lp));
+                if out.len() >= k_req {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

@@ -276,6 +276,82 @@ pub fn attn_decode_range(
     ctx
 }
 
+/// Ancestor-masked speculative token-tree attention over committed prefix `[0..base_t)` plus
+/// active tree slots `j in 0..tree_len` where `(ancestor_mask >> j) & 1 != 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn attn_decode_tree(
+    q: &[f32],
+    k_seq: &[f32],
+    v_seq: &[f32],
+    base_t: usize,
+    tree_len: usize,
+    ancestor_mask: u32,
+    tree_depths: &[usize],
+    pos: usize,
+    n_heads: usize,
+    n_kv: usize,
+    hd: usize,
+    sw: Option<usize>,
+) -> Vec<f32> {
+    let gqa = n_heads / n_kv;
+    let mut ctx = vec![0f32; n_heads * hd];
+    let mut scores: Vec<(usize, f32)> = Vec::with_capacity(base_t + tree_len);
+    for hq in 0..n_heads {
+        let kvh = hq / gqa;
+        let qh = &q[hq * hd..(hq + 1) * hd];
+        scores.clear();
+        let mut max_s = f32::NEG_INFINITY;
+        for tt in 0..base_t {
+            if let Some(w) = sw {
+                if pos.abs_diff(tt) >= w {
+                    continue;
+                }
+            }
+            let base = tt * n_kv * hd + kvh * hd;
+            let s = dot_f32_4way(qh, &k_seq[base..base + hd]);
+            if s > max_s {
+                max_s = s;
+            }
+            scores.push((tt, s));
+        }
+        for j in 0..tree_len.min(32) {
+            if ((ancestor_mask >> j) & 1) == 0 {
+                continue;
+            }
+            let logical_p = base_t + tree_depths[j];
+            if let Some(w) = sw {
+                if pos.abs_diff(logical_p) >= w {
+                    continue;
+                }
+            }
+            let slot = base_t + j;
+            let base = slot * n_kv * hd + kvh * hd;
+            let s = dot_f32_4way(qh, &k_seq[base..base + hd]);
+            if s > max_s {
+                max_s = s;
+            }
+            scores.push((slot, s));
+        }
+        let mut wsum = 0.0f32;
+        for &mut (_, ref mut s) in &mut scores {
+            let e = (*s - max_s).exp();
+            *s = e;
+            wsum += e;
+        }
+        let inv_wsum = if wsum > 1e-30 { 1.0f32 / wsum } else { 0.0f32 };
+        let dst = &mut ctx[hq * hd..(hq + 1) * hd];
+        for &(slot, e) in &scores {
+            let p = e * inv_wsum;
+            let base = slot * n_kv * hd + kvh * hd;
+            let vs = &v_seq[base..base + hd];
+            for (d_val, &v_val) in dst.iter_mut().zip(vs.iter()) {
+                *d_val += p * v_val;
+            }
+        }
+    }
+    ctx
+}
+
 #[inline]
 pub fn gelu_tanh_scalar(x: f32) -> f32 {
     let x64 = x as f64;

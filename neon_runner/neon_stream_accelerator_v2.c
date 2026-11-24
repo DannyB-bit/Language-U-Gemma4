@@ -2940,6 +2940,7 @@ static inline float quantize_t5_subblk_i8(
 
 #define T16C_GAUSS_BIT    0x80
 #define T16C_ROWMAJOR_BIT 0x40
+#define T16C_COLBLOCK_BIT 0x20
 
 static volatile int g_andvcnt_abits = 5;
 
@@ -3119,7 +3120,7 @@ static inline float t16c_plane_weight(int gauss_lut, int eff_bits, int p) {
     return (float)(1u << p);
 }
 
-static int gemm_ternary5_tile16_batch(
+static int gemm_ternary5_tile16_sparse_batch(
     const uint8_t* NEON_RESTRICT packed,
     const uint16_t* NEON_RESTRICT tile_norm_fp16,
     const float* NEON_RESTRICT x,
@@ -3127,8 +3128,11 @@ static int gemm_ternary5_tile16_batch(
     int d_out,
     int d_in,
     int block_size,
+    int is_colblock,
     int k_tokens,
     float cs_skip_thresh,
+    const uint8_t* NEON_RESTRICT row_tile_mask,
+    const uint8_t* NEON_RESTRICT col_blk_mask,
     int num_threads,
     int64_t* NEON_RESTRICT out_skipped
 ) {
@@ -3136,6 +3140,7 @@ static int gemm_ternary5_tile16_batch(
     const int n_blks = d_in / block_size;
     const int quintets = (block_size + 4) / 5;
     const size_t tblk_bytes = (size_t)32 + (size_t)quintets * (size_t)16;
+    const size_t next_blk_stride = is_colblock ? ((size_t)n_tiles * tblk_bytes) : tblk_bytes;
     const int use_cs = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL);
 
 #if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
@@ -3144,16 +3149,19 @@ static int gemm_ternary5_tile16_batch(
         return 0;
     }
 
-    /* 13 quintets = 65 ternary weights per sub-block -> |sum| <= 65*127 = 8255 (fits int16x8_t cleanly). */
+    /* 13 quintets = 65 ternary weights per sub-block -> |sum| <= 65*127 = 8255 (fits int16x8_t cleanly).
+     * Up to 24 quantized activation slots (~124 KB for d_in=5376) stay L2-resident so a 24-node speculative
+     * token tree streams weights from LPDDR4 DRAM only ONCE instead of 6x! */
     const int sub_q = 13;
     const int n_subs_blk = (quintets + sub_q - 1) / sub_q;
     const int q_pad = n_subs_blk * sub_q * 5;
+    const int max_slots = 24;
 
-    const size_t xq_bytes = (size_t)4 * (size_t)n_blks * (size_t)q_pad;
-    const size_t xsc_elems = (size_t)4 * (size_t)n_blks * (size_t)n_subs_blk;
+    const size_t xq_bytes = (size_t)max_slots * (size_t)n_blks * (size_t)q_pad;
+    const size_t xsc_elems = (size_t)max_slots * (size_t)n_blks * (size_t)n_subs_blk;
     int8_t* xq = (int8_t*)neon_alloc(xq_bytes);
     float* xsc = (float*)neon_alloc(xsc_elems * sizeof(float));
-    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float)) : NULL;
+    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)max_slots * (size_t)n_blks * sizeof(float)) : NULL;
     int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
 
     if (!xq || !xsc || (use_cs && !blk_xnorm) || (out_skipped != NULL && !tile_skips)) {
@@ -3175,7 +3183,7 @@ static int gemm_ternary5_tile16_batch(
 
     int64_t total_skipped = 0;
     const int dual = x_needs_dual_plane(x, d_in, k_tokens);
-    const int kc_step = dual ? 2 : 4;
+    const int kc_step = dual ? 12 : 24;
 
     for (int k0 = 0; k0 < k_tokens; k0 += kc_step) {
         const int kc = (k_tokens - k0 >= kc_step) ? kc_step : (k_tokens - k0);
@@ -3184,6 +3192,9 @@ static int gemm_ternary5_tile16_batch(
         for (int kk = 0; kk < kc; kk++) {
             const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
             for (int blk = 0; blk < n_blks; blk++) {
+                if (col_blk_mask != NULL && col_blk_mask[blk] == 0) {
+                    continue;
+                }
                 const float* xb = xk + (size_t)blk * (size_t)block_size;
                 if (use_cs) {
                     float n2 = 0.0f;
@@ -3226,7 +3237,10 @@ static int gemm_ternary5_tile16_batch(
         #pragma omp parallel for schedule(static)
 #endif
         for (t = 0; t < n_tiles; t++) {
-            const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+            if (row_tile_mask != NULL && row_tile_mask[t] == 0) {
+                if (tile_skips) tile_skips[t] = n_blks;
+                continue;
+            }
             const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
             int32_t t_skip = 0;
             int8x16x2_t t27_0, t27_1, t27_2;
@@ -3240,6 +3254,10 @@ static int gemm_ternary5_tile16_batch(
                 /* Zero-spill Cortex-A72 k=1 decode fast path (<= 25 live Q-registers, register-resident b0..b3). */
                 float32x4_t acc00 = vdupq_n_f32(0), acc01 = vdupq_n_f32(0), acc02 = vdupq_n_f32(0), acc03 = vdupq_n_f32(0);
                 for (int blk = 0; blk < n_blks; blk++) {
+                    if (col_blk_mask != NULL && col_blk_mask[blk] == 0) {
+                        t_skip++;
+                        continue;
+                    }
                     if (use_cs) {
                         float xn = blk_xnorm[(size_t)blk];
                         float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
@@ -3249,9 +3267,12 @@ static int gemm_ternary5_tile16_batch(
                         }
                     }
 
-                    const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                    const size_t blk_idx = is_colblock
+                        ? ((size_t)blk * (size_t)n_tiles + (size_t)t)
+                        : ((size_t)t * (size_t)n_blks + (size_t)blk);
+                    const uint8_t* bptr = packed + blk_idx * tblk_bytes;
                     if (blk + 1 < n_blks) {
-                        const uint8_t* nptr = bptr + tblk_bytes;
+                        const uint8_t* nptr = bptr + next_blk_stride;
                         neon_prefetch(nptr);
                         neon_prefetch(nptr + 256);
                         neon_prefetch(nptr + 512);
@@ -3328,6 +3349,10 @@ static int gemm_ternary5_tile16_batch(
                 float32x4_t acc00 = vdupq_n_f32(0), acc01 = vdupq_n_f32(0), acc02 = vdupq_n_f32(0), acc03 = vdupq_n_f32(0);
                 float32x4_t acc10 = vdupq_n_f32(0), acc11 = vdupq_n_f32(0), acc12 = vdupq_n_f32(0), acc13 = vdupq_n_f32(0);
                 for (int blk = 0; blk < n_blks; blk++) {
+                    if (col_blk_mask != NULL && col_blk_mask[blk] == 0) {
+                        t_skip++;
+                        continue;
+                    }
                     if (use_cs) {
                         float xn = blk_xnorm[(size_t)blk];
                         float wnorm = fp16_to_fp32(tile_norm_fp16[(size_t)t * (size_t)n_blks + (size_t)blk]);
@@ -3337,9 +3362,12 @@ static int gemm_ternary5_tile16_batch(
                         }
                     }
 
-                    const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                    const size_t blk_idx = is_colblock
+                        ? ((size_t)blk * (size_t)n_tiles + (size_t)t)
+                        : ((size_t)t * (size_t)n_blks + (size_t)blk);
+                    const uint8_t* bptr = packed + blk_idx * tblk_bytes;
                     if (blk + 1 < n_blks) {
-                        const uint8_t* nptr = bptr + tblk_bytes;
+                        const uint8_t* nptr = bptr + next_blk_stride;
                         neon_prefetch(nptr);
                         neon_prefetch(nptr + 256);
                         neon_prefetch(nptr + 512);
@@ -3429,12 +3457,16 @@ static int gemm_ternary5_tile16_batch(
                 continue;
             }
 
-            float32x4_t acc00 = vdupq_n_f32(0), acc01 = vdupq_n_f32(0), acc02 = vdupq_n_f32(0), acc03 = vdupq_n_f32(0);
-            float32x4_t acc10 = vdupq_n_f32(0), acc11 = vdupq_n_f32(0), acc12 = vdupq_n_f32(0), acc13 = vdupq_n_f32(0);
-            float32x4_t acc20 = vdupq_n_f32(0), acc21 = vdupq_n_f32(0), acc22 = vdupq_n_f32(0), acc23 = vdupq_n_f32(0);
-            float32x4_t acc30 = vdupq_n_f32(0), acc31 = vdupq_n_f32(0), acc32 = vdupq_n_f32(0), acc33 = vdupq_n_f32(0);
+            /* Single-pass multi-slot L1-hot path (slots <= 24): loads each DRAM weight block ONCE
+             * into L1D (`tblk_bytes <= 864 B`) and evaluates 4 activation slots at a time in NEON registers. */
+            float tile_acc[24][16];
+            memset(tile_acc, 0, (size_t)slots * 16u * sizeof(float));
 
             for (int blk = 0; blk < n_blks; blk++) {
+                if (col_blk_mask != NULL && col_blk_mask[blk] == 0) {
+                    t_skip++;
+                    continue;
+                }
                 if (use_cs) {
                     float max_xnorm = 0.0f;
                     for (int kk = 0; kk < kc; kk++) {
@@ -3448,9 +3480,12 @@ static int gemm_ternary5_tile16_batch(
                     }
                 }
 
-                const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                const size_t blk_idx = is_colblock
+                    ? ((size_t)blk * (size_t)n_tiles + (size_t)t)
+                    : ((size_t)t * (size_t)n_blks + (size_t)blk);
+                const uint8_t* bptr = packed + blk_idx * tblk_bytes;
                 if (blk + 1 < n_blks) {
-                    const uint8_t* nptr = bptr + tblk_bytes;
+                    const uint8_t* nptr = bptr + next_blk_stride;
                     neon_prefetch(nptr);
                     neon_prefetch(nptr + 256);
                     neon_prefetch(nptr + 512);
@@ -3478,113 +3513,90 @@ static int gemm_ternary5_tile16_batch(
                     vs3 = vld1q_f32(sc + 12);
                 }
 
-                const uint8_t* qp = bptr + 32;
-                float bsum[4][16] = {{0}};
+                for (int sl0 = 0; sl0 < slots; sl0 += 4) {
+                    const int sl_cnt = (slots - sl0 >= 4) ? 4 : (slots - sl0);
+                    const uint8_t* qp = bptr + 32;
+                    float bsum[4][16] = {{0}};
 
-                for (int sb = 0; sb < n_subs_blk; sb++) {
-                    int g_end = (sb + 1) * sub_q;
-                    if (g_end > quintets) g_end = quintets;
-                    int16x8_t i0L = vdupq_n_s16(0), i0H = vdupq_n_s16(0);
-                    int16x8_t i1L = vdupq_n_s16(0), i1H = vdupq_n_s16(0);
-                    int16x8_t i2L = vdupq_n_s16(0), i2H = vdupq_n_s16(0);
-                    int16x8_t i3L = vdupq_n_s16(0), i3H = vdupq_n_s16(0);
+                    for (int sb = 0; sb < n_subs_blk; sb++) {
+                        int g_end = (sb + 1) * sub_q;
+                        if (g_end > quintets) g_end = quintets;
+                        int16x8_t i0L = vdupq_n_s16(0), i0H = vdupq_n_s16(0);
+                        int16x8_t i1L = vdupq_n_s16(0), i1H = vdupq_n_s16(0);
+                        int16x8_t i2L = vdupq_n_s16(0), i2H = vdupq_n_s16(0);
+                        int16x8_t i3L = vdupq_n_s16(0), i3H = vdupq_n_s16(0);
 
-                    const size_t x_off = (size_t)blk * (size_t)q_pad + (size_t)sb * (size_t)sub_q * 5u;
-                    const int8_t* x0p = xq + ((size_t)0 * (size_t)n_blks) * (size_t)q_pad + x_off;
-                    const int8_t* x1p = xq + ((size_t)1 * (size_t)n_blks) * (size_t)q_pad + x_off;
-                    const int8_t* x2p = xq + ((size_t)2 * (size_t)n_blks) * (size_t)q_pad + x_off;
-                    const int8_t* x3p = xq + ((size_t)3 * (size_t)n_blks) * (size_t)q_pad + x_off;
+                        const size_t x_off = (size_t)blk * (size_t)q_pad + (size_t)sb * (size_t)sub_q * 5u;
+                        const int8_t* x0p = xq + ((size_t)(sl0 + 0) * (size_t)n_blks) * (size_t)q_pad + x_off;
+                        const int8_t* x1p = (sl_cnt > 1) ? (xq + ((size_t)(sl0 + 1) * (size_t)n_blks) * (size_t)q_pad + x_off) : x0p;
+                        const int8_t* x2p = (sl_cnt > 2) ? (xq + ((size_t)(sl0 + 2) * (size_t)n_blks) * (size_t)q_pad + x_off) : x0p;
+                        const int8_t* x3p = (sl_cnt > 3) ? (xq + ((size_t)(sl0 + 3) * (size_t)n_blks) * (size_t)q_pad + x_off) : x0p;
 
-                    for (int g = sb * sub_q; g < g_end; g++, qp += 16, x0p += 5, x1p += 5, x2p += 5, x3p += 5) {
-                        uint8x16_t bv = vld1q_u8(qp);
-                        int8x16_t w[5];
-                        unpack5_neon_tile16(bv, t27_0, t27_1, t27_2, t9_3, t9_4, &w[0], &w[1], &w[2], &w[3], &w[4]);
-                        if (slots == 1) {
-                            for (int p = 0; p < 5; p++) {
-                                int8x16_t wp = w[p];
-                                int8x16_t vx0 = vdupq_n_s8(x0p[p]);
-                                i0L = vmlal_s8(i0L, vget_low_s8(wp), vget_low_s8(vx0));
-                                i0H = vmlal_high_s8(i0H, wp, vx0);
-                            }
-                        } else {
-                            for (int p = 0; p < 5; p++) {
-                                int8x16_t wp = w[p];
-                                int8x8_t wl = vget_low_s8(wp);
-                                int8x16_t vx0 = vdupq_n_s8(x0p[p]);
-                                int8x16_t vx1 = vdupq_n_s8(x1p[p]);
-                                i0L = vmlal_s8(i0L, wl, vget_low_s8(vx0)); i0H = vmlal_high_s8(i0H, wp, vx0);
-                                i1L = vmlal_s8(i1L, wl, vget_low_s8(vx1)); i1H = vmlal_high_s8(i1H, wp, vx1);
-                                if (slots > 2) {
-                                    int8x16_t vx2 = vdupq_n_s8(x2p[p]);
-                                    i2L = vmlal_s8(i2L, wl, vget_low_s8(vx2)); i2H = vmlal_high_s8(i2H, wp, vx2);
+                        for (int g = sb * sub_q; g < g_end; g++, qp += 16, x0p += 5, x1p += 5, x2p += 5, x3p += 5) {
+                            uint8x16_t bv = vld1q_u8(qp);
+                            int8x16_t w[5];
+                            unpack5_neon_tile16(bv, t27_0, t27_1, t27_2, t9_3, t9_4, &w[0], &w[1], &w[2], &w[3], &w[4]);
+                            if (sl_cnt == 1) {
+                                for (int p = 0; p < 5; p++) {
+                                    int8x16_t wp = w[p];
+                                    int8x16_t vx0 = vdupq_n_s8(x0p[p]);
+                                    i0L = vmlal_s8(i0L, vget_low_s8(wp), vget_low_s8(vx0));
+                                    i0H = vmlal_high_s8(i0H, wp, vx0);
                                 }
-                                if (slots > 3) {
-                                    int8x16_t vx3 = vdupq_n_s8(x3p[p]);
-                                    i3L = vmlal_s8(i3L, wl, vget_low_s8(vx3)); i3H = vmlal_high_s8(i3H, wp, vx3);
+                            } else {
+                                for (int p = 0; p < 5; p++) {
+                                    int8x16_t wp = w[p];
+                                    int8x8_t wl = vget_low_s8(wp);
+                                    int8x16_t vx0 = vdupq_n_s8(x0p[p]);
+                                    int8x16_t vx1 = vdupq_n_s8(x1p[p]);
+                                    i0L = vmlal_s8(i0L, wl, vget_low_s8(vx0)); i0H = vmlal_high_s8(i0H, wp, vx0);
+                                    i1L = vmlal_s8(i1L, wl, vget_low_s8(vx1)); i1H = vmlal_high_s8(i1H, wp, vx1);
+                                    if (sl_cnt > 2) {
+                                        int8x16_t vx2 = vdupq_n_s8(x2p[p]);
+                                        i2L = vmlal_s8(i2L, wl, vget_low_s8(vx2)); i2H = vmlal_high_s8(i2H, wp, vx2);
+                                    }
+                                    if (sl_cnt > 3) {
+                                        int8x16_t vx3 = vdupq_n_s8(x3p[p]);
+                                        i3L = vmlal_s8(i3L, wl, vget_low_s8(vx3)); i3H = vmlal_high_s8(i3H, wp, vx3);
+                                    }
                                 }
                             }
                         }
+
+                        #define T5_FLUSH_SB(ds, iL, iH) do { \
+                            float ss = xsc[((size_t)(sl0 + (ds)) * (size_t)n_blks + (size_t)blk) * (size_t)n_subs_blk + (size_t)sb]; \
+                            float32x4_t vss = vdupq_n_f32(ss); \
+                            float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iL))), vss); \
+                            float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iL)), vss); \
+                            float32x4_t f2 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iH))), vss); \
+                            float32x4_t f3 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iH)), vss); \
+                            vst1q_f32(bsum[ds],      vaddq_f32(vld1q_f32(bsum[ds]),      f0)); \
+                            vst1q_f32(bsum[ds] + 4,  vaddq_f32(vld1q_f32(bsum[ds] + 4),  f1)); \
+                            vst1q_f32(bsum[ds] + 8,  vaddq_f32(vld1q_f32(bsum[ds] + 8),  f2)); \
+                            vst1q_f32(bsum[ds] + 12, vaddq_f32(vld1q_f32(bsum[ds] + 12), f3)); \
+                        } while (0)
+                        T5_FLUSH_SB(0, i0L, i0H);
+                        if (sl_cnt > 1) T5_FLUSH_SB(1, i1L, i1H);
+                        if (sl_cnt > 2) T5_FLUSH_SB(2, i2L, i2H);
+                        if (sl_cnt > 3) T5_FLUSH_SB(3, i3L, i3H);
+                        #undef T5_FLUSH_SB
                     }
 
-                    #define T5_FLUSH_SB(sl, iL, iH) do { \
-                        float ss = xsc[((size_t)(sl) * (size_t)n_blks + (size_t)blk) * (size_t)n_subs_blk + (size_t)sb]; \
-                        float32x4_t vss = vdupq_n_f32(ss); \
-                        float32x4_t f0 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iL))), vss); \
-                        float32x4_t f1 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iL)), vss); \
-                        float32x4_t f2 = vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(iH))), vss); \
-                        float32x4_t f3 = vmulq_f32(vcvtq_f32_s32(vmovl_high_s16(iH)), vss); \
-                        vst1q_f32(bsum[sl],      vaddq_f32(vld1q_f32(bsum[sl]),      f0)); \
-                        vst1q_f32(bsum[sl] + 4,  vaddq_f32(vld1q_f32(bsum[sl] + 4),  f1)); \
-                        vst1q_f32(bsum[sl] + 8,  vaddq_f32(vld1q_f32(bsum[sl] + 8),  f2)); \
-                        vst1q_f32(bsum[sl] + 12, vaddq_f32(vld1q_f32(bsum[sl] + 12), f3)); \
-                    } while (0)
-                    T5_FLUSH_SB(0, i0L, i0H);
-                    if (slots > 1) T5_FLUSH_SB(1, i1L, i1H);
-                    if (slots > 2) T5_FLUSH_SB(2, i2L, i2H);
-                    if (slots > 3) T5_FLUSH_SB(3, i3L, i3H);
-                    #undef T5_FLUSH_SB
-                }
-
-                acc00 = vfmaq_f32(acc00, vs0, vld1q_f32(bsum[0]));
-                acc01 = vfmaq_f32(acc01, vs1, vld1q_f32(bsum[0] + 4));
-                acc02 = vfmaq_f32(acc02, vs2, vld1q_f32(bsum[0] + 8));
-                acc03 = vfmaq_f32(acc03, vs3, vld1q_f32(bsum[0] + 12));
-                if (slots > 1) {
-                    acc10 = vfmaq_f32(acc10, vs0, vld1q_f32(bsum[1]));
-                    acc11 = vfmaq_f32(acc11, vs1, vld1q_f32(bsum[1] + 4));
-                    acc12 = vfmaq_f32(acc12, vs2, vld1q_f32(bsum[1] + 8));
-                    acc13 = vfmaq_f32(acc13, vs3, vld1q_f32(bsum[1] + 12));
-                }
-                if (slots > 2) {
-                    acc20 = vfmaq_f32(acc20, vs0, vld1q_f32(bsum[2]));
-                    acc21 = vfmaq_f32(acc21, vs1, vld1q_f32(bsum[2] + 4));
-                    acc22 = vfmaq_f32(acc22, vs2, vld1q_f32(bsum[2] + 8));
-                    acc23 = vfmaq_f32(acc23, vs3, vld1q_f32(bsum[2] + 12));
-                }
-                if (slots > 3) {
-                    acc30 = vfmaq_f32(acc30, vs0, vld1q_f32(bsum[3]));
-                    acc31 = vfmaq_f32(acc31, vs1, vld1q_f32(bsum[3] + 4));
-                    acc32 = vfmaq_f32(acc32, vs2, vld1q_f32(bsum[3] + 8));
-                    acc33 = vfmaq_f32(acc33, vs3, vld1q_f32(bsum[3] + 12));
+                    for (int ds = 0; ds < sl_cnt; ds++) {
+                        float* ta = tile_acc[sl0 + ds];
+                        vst1q_f32(ta + 0,  vfmaq_f32(vld1q_f32(ta + 0),  vs0, vld1q_f32(bsum[ds] + 0)));
+                        vst1q_f32(ta + 4,  vfmaq_f32(vld1q_f32(ta + 4),  vs1, vld1q_f32(bsum[ds] + 4)));
+                        vst1q_f32(ta + 8,  vfmaq_f32(vld1q_f32(ta + 8),  vs2, vld1q_f32(bsum[ds] + 8)));
+                        vst1q_f32(ta + 12, vfmaq_f32(vld1q_f32(ta + 12), vs3, vld1q_f32(bsum[ds] + 12)));
+                    }
                 }
             }
 
-            float tmp[4][16];
-            vst1q_f32(tmp[0], acc00); vst1q_f32(tmp[0] + 4, acc01); vst1q_f32(tmp[0] + 8, acc02); vst1q_f32(tmp[0] + 12, acc03);
-            if (slots > 1) {
-                vst1q_f32(tmp[1], acc10); vst1q_f32(tmp[1] + 4, acc11); vst1q_f32(tmp[1] + 8, acc12); vst1q_f32(tmp[1] + 12, acc13);
-            }
-            if (slots > 2) {
-                vst1q_f32(tmp[2], acc20); vst1q_f32(tmp[2] + 4, acc21); vst1q_f32(tmp[2] + 8, acc22); vst1q_f32(tmp[2] + 12, acc23);
-            }
-            if (slots > 3) {
-                vst1q_f32(tmp[3], acc30); vst1q_f32(tmp[3] + 4, acc31); vst1q_f32(tmp[3] + 8, acc32); vst1q_f32(tmp[3] + 12, acc33);
-            }
             if (dual) {
                 for (int kk = 0; kk < kc; kk++) {
                     float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
-                    const float* t_hi = tmp[kk * 2];
-                    const float* t_lo = tmp[kk * 2 + 1];
+                    const float* t_hi = tile_acc[kk * 2];
+                    const float* t_lo = tile_acc[kk * 2 + 1];
                     for (int r = 0; r < r_lim; r++) {
                         yk[r] += t_hi[r] + t_lo[r];
                     }
@@ -3593,7 +3605,7 @@ static int gemm_ternary5_tile16_batch(
                 for (int kk = 0; kk < kc; kk++) {
                     float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)t * 16u;
                     for (int r = 0; r < r_lim; r++) {
-                        yk[r] += tmp[kk][r];
+                        yk[r] += tile_acc[kk][r];
                     }
                 }
             }
@@ -3612,10 +3624,11 @@ static int gemm_ternary5_tile16_batch(
     neon_free(tile_skips);
     return 0;
 #else
-    /* Keep L2 LUT budget <= 8 * 52 * 256 * 4 B = 426 KB across kc <= 4 tokens. */
-    const size_t max_lut_elems = (size_t)8 * (size_t)quintets * (size_t)256;
+    /* Support kc <= 24 in scalar/x86 fallback while keeping LUT buffer <= 640 KB. */
+    const int kc_step = 8;
+    const size_t max_lut_elems = (size_t)16 * (size_t)quintets * (size_t)256;
     float* luts = (float*)neon_alloc(max_lut_elems * sizeof(float));
-    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)4 * (size_t)n_blks * sizeof(float)) : NULL;
+    float* blk_xnorm = use_cs ? (float*)neon_alloc((size_t)kc_step * (size_t)n_blks * sizeof(float)) : NULL;
     int32_t* tile_skips = (out_skipped != NULL) ? (int32_t*)neon_alloc((size_t)n_tiles * sizeof(int32_t)) : NULL;
 
     if (!luts || (use_cs && !blk_xnorm) || (out_skipped != NULL && !tile_skips)) {
@@ -3635,14 +3648,15 @@ static int gemm_ternary5_tile16_batch(
 
     int64_t total_skipped = 0;
 
-    for (int k0 = 0; k0 < k_tokens; k0 += 4) {
-        const int kc = (k_tokens - k0 >= 4) ? 4 : (k_tokens - k0);
+    for (int k0 = 0; k0 < k_tokens; k0 += kc_step) {
+        const int kc = (k_tokens - k0 >= kc_step) ? kc_step : (k_tokens - k0);
         const int b_chunk = (kc <= 2) ? 4 : 2;
 
         if (use_cs) {
             for (int kk = 0; kk < kc; kk++) {
                 const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
                 for (int blk = 0; blk < n_blks; blk++) {
+                    if (col_blk_mask != NULL && col_blk_mask[blk] == 0) continue;
                     const float* xb = xk + (size_t)blk * (size_t)block_size;
                     float n2 = 0.0f;
                     for (int i = 0; i < block_size; i++) {
@@ -3659,6 +3673,7 @@ static int gemm_ternary5_tile16_batch(
             for (int kk = 0; kk < kc; kk++) {
                 const float* xk = x + (size_t)(k0 + kk) * (size_t)d_in;
                 for (int bi = 0; bi < b_cnt; bi++) {
+                    if (col_blk_mask != NULL && col_blk_mask[blk0 + bi] == 0) continue;
                     const float* xblk = xk + (size_t)(blk0 + bi) * (size_t)block_size;
                     float* dst_b = luts + ((size_t)kk * (size_t)b_cnt + (size_t)bi) * (size_t)quintets * (size_t)256;
                     for (int g = 0; g < quintets; g++) {
@@ -3682,16 +3697,23 @@ static int gemm_ternary5_tile16_batch(
             #pragma omp parallel for schedule(static)
 #endif
             for (t = 0; t < n_tiles; t++) {
-                const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tblk_bytes;
+                if (row_tile_mask != NULL && row_tile_mask[t] == 0) {
+                    if (tile_skips) tile_skips[t] = b_cnt;
+                    continue;
+                }
                 const int r_lim = ((d_out - t * 16) < 16) ? (d_out - t * 16) : 16;
                 int32_t t_skip = 0;
-                float acc[4][16];
+                float acc[8][16];
                 for (int kk = 0; kk < kc; kk++) {
                     for (int r = 0; r < 16; r++) acc[kk][r] = 0.0f;
                 }
 
                 for (int bi = 0; bi < b_cnt; bi++) {
                     const int blk = blk0 + bi;
+                    if (col_blk_mask != NULL && col_blk_mask[blk] == 0) {
+                        t_skip++;
+                        continue;
+                    }
                     if (use_cs) {
                         float max_xnorm = 0.0f;
                         for (int kk = 0; kk < kc; kk++) {
@@ -3705,7 +3727,10 @@ static int gemm_ternary5_tile16_batch(
                         }
                     }
 
-                    const uint8_t* bptr = tptr + (size_t)blk * tblk_bytes;
+                    const size_t blk_idx = is_colblock
+                        ? ((size_t)blk * (size_t)n_tiles + (size_t)t)
+                        : ((size_t)t * (size_t)n_blks + (size_t)blk);
+                    const uint8_t* bptr = packed + blk_idx * tblk_bytes;
                     float sc[16];
                     for (int r = 0; r < r_lim; r++) {
                         sc[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
@@ -3736,7 +3761,7 @@ static int gemm_ternary5_tile16_batch(
                         acc[0][12] += sc[12] * s12; acc[0][13] += sc[13] * s13;
                         acc[0][14] += sc[14] * s14; acc[0][15] += sc[15] * s15;
                     } else {
-                        float bs[4][16];
+                        float bs[8][16];
                         for (int kk = 0; kk < kc; kk++) {
                             for (int r = 0; r < 16; r++) bs[kk][r] = 0.0f;
                         }
@@ -3783,6 +3808,37 @@ static int gemm_ternary5_tile16_batch(
     neon_free(tile_skips);
     return 0;
 #endif
+}
+
+static int gemm_ternary5_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int k_tokens,
+    float cs_skip_thresh,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped
+) {
+    return gemm_ternary5_tile16_sparse_batch(
+        packed,
+        tile_norm_fp16,
+        x,
+        y,
+        d_out,
+        d_in,
+        block_size,
+        0,
+        k_tokens,
+        cs_skip_thresh,
+        NULL,
+        NULL,
+        num_threads,
+        out_skipped
+    );
 }
 
 /* ============================================================================
@@ -4135,7 +4191,8 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
     int64_t* NEON_RESTRICT out_skipped
 ) {
     const int gauss_lut = (n_bits & T16C_GAUSS_BIT) != 0;
-    const int eff_bits = n_bits & 0x3F;
+    const int is_colblock = (n_bits & T16C_COLBLOCK_BIT) != 0;
+    const int eff_bits = n_bits & 0x1F;
     if (eff_bits < 1 || eff_bits > 4) return -1;
     if (gauss_lut && eff_bits != 2 && eff_bits != 3) return -1;
 
@@ -4150,7 +4207,7 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
     const int bytes_per_row = block_size / 8;
     const int bytes_per_plane_blk = bytes_per_row * 16;
     const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)eff_bits * (size_t)bytes_per_plane_blk;
-    const int kc_step = 8;
+    const int kc_step = 24;
     const int kc_max = (k_tokens < kc_step) ? k_tokens : kc_step;
     const int need_norm = (cs_skip_thresh > 0.0f && tile_norm_fp16 != NULL) ? 1 : 0;
     const int need_sum = (is_asym != 0) ? 1 : 0;
@@ -4259,12 +4316,9 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
             int32_t t_skip = col_skipped_per_tile;
 
 #if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
-            float32x4_t acc[8][4];
+            NEON_ALIGN64 float acc_f[24][16];
             for (int kk = 0; kk < kc; kk++) {
-                acc[kk][0] = vdupq_n_f32(0.0f);
-                acc[kk][1] = vdupq_n_f32(0.0f);
-                acc[kk][2] = vdupq_n_f32(0.0f);
-                acc[kk][3] = vdupq_n_f32(0.0f);
+                memset(acc_f[kk], 0, 16u * sizeof(float));
             }
             const float32x4_t v_bsize = vdupq_n_f32((float)block_size);
 
@@ -4282,9 +4336,14 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                         continue;
                     }
                 }
-                const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                const uint8_t* bptr = is_colblock
+                    ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                    : (tptr + (size_t)blk * tile_blk_bytes);
                 if (ai + 1 < n_active_blks) {
-                    const uint8_t* nptr = tptr + (size_t)active_blks[ai + 1] * tile_blk_bytes;
+                    const int nblk = active_blks[ai + 1];
+                    const uint8_t* nptr = is_colblock
+                        ? (packed + ((size_t)nblk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                        : (tptr + (size_t)nblk * tile_blk_bytes);
                     neon_prefetch(nptr);
                     neon_prefetch(nptr + 256);
                 }
@@ -4311,10 +4370,10 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                     float32x4_t bi3 = vcvt_f32_f16(vget_high_f16(hbi1));
                     for (int kk = 0; kk < kc; kk++) {
                         float sx = blk_xsum[(size_t)kk * (size_t)n_blks + (size_t)blk];
-                        acc[kk][0] = vfmaq_n_f32(acc[kk][0], bi0, sx);
-                        acc[kk][1] = vfmaq_n_f32(acc[kk][1], bi1, sx);
-                        acc[kk][2] = vfmaq_n_f32(acc[kk][2], bi2, sx);
-                        acc[kk][3] = vfmaq_n_f32(acc[kk][3], bi3, sx);
+                        vst1q_f32(&acc_f[kk][0],  vfmaq_n_f32(vld1q_f32(&acc_f[kk][0]),  bi0, sx));
+                        vst1q_f32(&acc_f[kk][4],  vfmaq_n_f32(vld1q_f32(&acc_f[kk][4]),  bi1, sx));
+                        vst1q_f32(&acc_f[kk][8],  vfmaq_n_f32(vld1q_f32(&acc_f[kk][8]),  bi2, sx));
+                        vst1q_f32(&acc_f[kk][12], vfmaq_n_f32(vld1q_f32(&acc_f[kk][12]), bi3, sx));
                     }
                 }
 
@@ -4408,7 +4467,7 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                                     dwu = vfmaq_n_f32(sum4_u8x16_exact_neon(c0, c1, c2, c3), hi4, 4.0f);
                                 }
                                 float32x4_t bdot = vsubq_f32(vsubq_f32(vaddq_f32(dwu, dwu), vdupq_n_f32(asum_buf[kidx])), h_wsum);
-                                acc[kk][q4] = vfmaq_f32(acc[kk][q4], vmulq_n_f32(sc_p, asc_buf[kidx]), bdot);
+                                vst1q_f32(&acc_f[kk][q4 * 4], vfmaq_f32(vld1q_f32(&acc_f[kk][q4 * 4]), vmulq_n_f32(sc_p, asc_buf[kidx]), bdot));
                             }
                         }
                     } else if (bytes_per_row == 16) {
@@ -4458,7 +4517,7 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                                     ));
                                 }
                                 float32x4_t bdot = vsubq_f32(vsubq_f32(vaddq_f32(dwu, dwu), vdupq_n_f32(asum_buf[kidx])), h_wsum);
-                                acc[kk][q4] = vfmaq_f32(acc[kk][q4], vmulq_n_f32(sc_p, asc_buf[kidx]), bdot);
+                                vst1q_f32(&acc_f[kk][q4 * 4], vfmaq_f32(vld1q_f32(&acc_f[kk][q4 * 4]), vmulq_n_f32(sc_p, asc_buf[kidx]), bdot));
                             }
                         }
                     } else {
@@ -4519,7 +4578,7 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                                     ));
                                 }
                                 float32x4_t bdot = vsubq_f32(vsubq_f32(vaddq_f32(dwu, dwu), vdupq_n_f32(asum_buf[kidx])), h_wsum);
-                                acc[kk][q4] = vfmaq_f32(acc[kk][q4], vmulq_n_f32(sc_p, asc_buf[kidx]), bdot);
+                                vst1q_f32(&acc_f[kk][q4 * 4], vfmaq_f32(vld1q_f32(&acc_f[kk][q4 * 4]), vmulq_n_f32(sc_p, asc_buf[kidx]), bdot));
                             }
                         }
                     }
@@ -4527,28 +4586,13 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
             }
 
             const int base_r = t * 16;
-            if (base_r + 16 <= d_out) {
-                for (int kk = 0; kk < kc; kk++) {
-                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
-                    vst1q_f32(yk + 0,  acc[kk][0]);
-                    vst1q_f32(yk + 4,  acc[kk][1]);
-                    vst1q_f32(yk + 8,  acc[kk][2]);
-                    vst1q_f32(yk + 12, acc[kk][3]);
-                }
-            } else {
-                const int valid = d_out - base_r;
-                for (int kk = 0; kk < kc; kk++) {
-                    float tmp[16];
-                    vst1q_f32(tmp + 0,  acc[kk][0]);
-                    vst1q_f32(tmp + 4,  acc[kk][1]);
-                    vst1q_f32(tmp + 8,  acc[kk][2]);
-                    vst1q_f32(tmp + 12, acc[kk][3]);
-                    float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
-                    for (int r = 0; r < valid; r++) yk[r] = tmp[r];
-                }
+            const int valid = (base_r + 16 <= d_out) ? 16 : (d_out - base_r);
+            for (int kk = 0; kk < kc; kk++) {
+                float* yk = y + (size_t)(k0 + kk) * (size_t)d_out + (size_t)base_r;
+                memcpy(yk, acc_f[kk], (size_t)valid * sizeof(float));
             }
 #else
-            float acc[8][16];
+            float acc[24][16];
             for (int kk = 0; kk < kc; kk++) {
                 for (int r = 0; r < 16; r++) acc[kk][r] = 0.0f;
             }
@@ -4566,7 +4610,9 @@ static int gemm_bitserial_rowmajor_andvcnt_sparse_batch(
                         continue;
                     }
                 }
-                const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                const uint8_t* bptr = is_colblock
+                    ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                    : (tptr + (size_t)blk * tile_blk_bytes);
                 float sc_arr[16], bi_arr[16];
                 for (int r = 0; r < 16; r++) {
                     sc_arr[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2u));
@@ -4653,7 +4699,8 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
     if ((d_in % block_size) != 0) return -1;
     const int gauss_lut = (n_bits & T16C_GAUSS_BIT) != 0;
     const int rowmajor = (n_bits & T16C_ROWMAJOR_BIT) != 0;
-    const int eff_bits = n_bits & 0x3F;
+    const int is_colblock = (n_bits & T16C_COLBLOCK_BIT) != 0;
+    const int eff_bits = n_bits & 0x1F;
     if (eff_bits < 1 || (eff_bits > 5 && eff_bits != 8)) return -1;
     if ((is_asym != 0 && is_asym != 1) || k_tokens <= 0) return -1;
     if (gauss_lut && eff_bits != 2 && eff_bits != 3) return -1;
@@ -4665,15 +4712,15 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
         );
     }
     if (eff_bits == 5) {
-        if (is_asym != 0 || row_tile_mask != NULL || col_blk_mask != NULL) return -1;
-        return gemm_ternary5_tile16_batch(
+        if (is_asym != 0) return -1;
+        return gemm_ternary5_tile16_sparse_batch(
             packed, tile_norm_fp16, x, y,
-            d_out, d_in, block_size, k_tokens,
-            cs_skip_thresh, num_threads, out_skipped
+            d_out, d_in, block_size, is_colblock, k_tokens,
+            cs_skip_thresh, row_tile_mask, col_blk_mask, num_threads, out_skipped
         );
     }
     if (eff_bits == 8) {
-        if (is_asym != 0 || row_tile_mask != NULL || col_blk_mask != NULL) return -1;
+        if (is_asym != 0 || is_colblock != 0 || row_tile_mask != NULL || col_blk_mask != NULL) return -1;
         return gemm_int8_tile16_batch(
             packed, tile_norm_fp16, x, y,
             d_out, d_in, block_size, k_tokens,
@@ -4692,7 +4739,7 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
     const int dual = x_needs_dual_plane_masked(x, d_in, block_size, k_tokens, col_blk_mask);
     const int kc_inner = dual ? 2 : 4;
 #if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
-    const int kc_step = dual ? 8 : 16; /* L1-cached tile-outer batch: 1 DRAM stream serves up to 8 (dual) or 16 (single) tokens */
+    const int kc_step = dual ? 12 : 24; /* L1-cached tile-outer batch: 1 DRAM stream serves up to 12 (dual) or 24 (single) tokens */
 #else
     const int kc_step = kc_inner;
 #endif
@@ -4866,9 +4913,14 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                             continue;
                         }
                     }
-                    const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                    const uint8_t* bptr = is_colblock
+                        ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                        : (tptr + (size_t)blk * tile_blk_bytes);
                     if (ai + 1 < n_active_blks) {
-                        const uint8_t* nptr = tptr + (size_t)active_blks[ai + 1] * tile_blk_bytes;
+                        const int nblk = active_blks[ai + 1];
+                        const uint8_t* nptr = is_colblock
+                            ? (packed + ((size_t)nblk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                            : (tptr + (size_t)nblk * tile_blk_bytes);
                         neon_prefetch(nptr);
                         neon_prefetch(nptr + 256);
                         neon_prefetch(nptr + 512);
@@ -5003,7 +5055,7 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                 const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tile_blk_bytes;
                 const uint8x16_t mask0f = vdupq_n_u8(0x0F);
                 int32_t t_skip = col_skipped_per_tile;
-                NEON_ALIGN64 float tile_acc[16][16];
+                NEON_ALIGN64 float tile_acc[24][16];
                 memset(tile_acc, 0, (size_t)slots * 16u * sizeof(float));
 
                 for (int ai = 0; ai < n_active_blks; ai++) {
@@ -5020,9 +5072,14 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                             continue;
                         }
                     }
-                    const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                    const uint8_t* bptr = is_colblock
+                        ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                        : (tptr + (size_t)blk * tile_blk_bytes);
                     if (ai + 1 < n_active_blks) {
-                        const uint8_t* nptr = tptr + (size_t)active_blks[ai + 1] * tile_blk_bytes;
+                        const int nblk = active_blks[ai + 1];
+                        const uint8_t* nptr = is_colblock
+                            ? (packed + ((size_t)nblk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                            : (tptr + (size_t)nblk * tile_blk_bytes);
                         neon_prefetch(nptr);
                         neon_prefetch(nptr + 256);
                         neon_prefetch(nptr + 512);
@@ -5277,9 +5334,14 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                         continue;
                     }
                 }
-                const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                const uint8_t* bptr = is_colblock
+                    ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                    : (tptr + (size_t)blk * tile_blk_bytes);
                 if (ai + 1 < n_active_blks) {
-                    const uint8_t* nptr = tptr + (size_t)active_blks[ai + 1] * tile_blk_bytes;
+                    const int nblk = active_blks[ai + 1];
+                    const uint8_t* nptr = is_colblock
+                        ? (packed + ((size_t)nblk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                        : (tptr + (size_t)nblk * tile_blk_bytes);
                     neon_prefetch(nptr);
                     neon_prefetch(nptr + 256);
                     neon_prefetch(nptr + 512);
@@ -5665,7 +5727,9 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                         continue;
                     }
                 }
-                const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                const uint8_t* bptr = is_colblock
+                    ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                    : (tptr + (size_t)blk * tile_blk_bytes);
                 float sc_arr[16], bi_arr[16];
                 for (int r = 0; r < 16; r++) {
                     sc_arr[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2));
@@ -5910,7 +5974,7 @@ static inline void t16c_accum_blk_slots(
 #endif
 }
 
-NEON_API int lmhead_cs_top1_tile16_batch(
+NEON_API int lmhead_cs_seeded_tile16_batch(
     const uint8_t* NEON_RESTRICT packed,
     const uint16_t* NEON_RESTRICT tile_norm_fp16,
     const float* NEON_RESTRICT x,
@@ -5923,6 +5987,7 @@ NEON_API int lmhead_cs_top1_tile16_batch(
     int k_tokens,
     int top_k_keep,
     float sieve_frac,
+    const int32_t* NEON_RESTRICT seed_row_ids,
     int num_threads,
     int64_t* NEON_RESTRICT out_skipped_blks
 ) {
@@ -5932,9 +5997,11 @@ NEON_API int lmhead_cs_top1_tile16_batch(
         return 0;
     }
     if ((block_size != 64 && block_size != 128 && block_size != 256) || (d_in % block_size) != 0) return -1;
-    const int eff_bits = n_bits & 0x7F;
+    const int eff_bits = n_bits & 0x1F;
+    const int rowmajor = (n_bits & T16C_ROWMAJOR_BIT) != 0;
+    const int is_colblock = (n_bits & T16C_COLBLOCK_BIT) != 0;
     const int n_blks = d_in / block_size;
-    if (!tile_norm_fp16 || eff_bits == 5 || eff_bits == 8 || n_blks > 256 || n_blks < 2) {
+    if (!tile_norm_fp16 || rowmajor || is_colblock || eff_bits == 5 || eff_bits == 8 || n_blks > 256 || n_blks < 2) {
         return gemm_bitserial_tile16_batch(
             packed, tile_norm_fp16, x, y,
             d_out, d_in, block_size, n_bits, is_asym,
@@ -5953,7 +6020,11 @@ NEON_API int lmhead_cs_top1_tile16_batch(
     const size_t tile_blk_bytes = (size_t)hdr_bytes + (size_t)eff_bits * (size_t)bytes_per_plane_blk;
     const size_t luts_stride = (size_t)(d_in / 4) * 16;
     const int dual = x_needs_dual_plane(x, d_in, k_tokens);
+#if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
+    const int kc_step = dual ? 12 : 24;
+#else
     const int kc_step = dual ? 2 : 4;
+#endif
     const int kc_max = (k_tokens < kc_step) ? k_tokens : kc_step;
     const int slot_cap = dual ? (kc_max * 2) : kc_max;
 
@@ -6051,27 +6122,36 @@ NEON_API int lmhead_cs_top1_tile16_batch(
 
         int p1_blks = (sieve_frac > 0.0f)
             ? (int)(sieve_frac * (float)n_blks + 0.999f)
-            : ((n_blks >= 8) ? (n_blks / 4) : 1);
+            : ((seed_row_ids != NULL && n_blks >= 8) ? 3 : ((n_blks >= 8) ? (n_blks / 4) : 1));
         if (p1_blks < 1) p1_blks = 1;
         if (p1_blks > n_blks) p1_blks = n_blks;
 
-        /* Stage 1: Evaluate top p1_blks across all tiles in parallel. */
+        /* Stage 1: Evaluate top p1_blks across all tiles in parallel (single-pass up to 24 slots). */
         int t;
 #if HAS_OMP
         #pragma omp parallel for schedule(static)
 #endif
         for (t = 0; t < n_tiles; t++) {
             const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tile_blk_bytes;
-            float acc[4][16];
-            for (int s = 0; s < 4; s++) for (int r = 0; r < 16; r++) acc[s][r] = 0.0f;
+            float acc[24][16];
+            for (int s = 0; s < slots; s++) for (int r = 0; r < 16; r++) acc[s][r] = 0.0f;
             for (int step = 0; step < p1_blks; step++) {
                 int blk = b_ord[step];
-                t16c_accum_blk_slots(
-                    tptr + (size_t)blk * tile_blk_bytes, blk, subs_per_blk, n_subs, n_blks,
-                    eff_bits, gauss_lut, is_asym, dual, kc, slots,
-                    tile_blk_bytes, bytes_per_plane_blk, luts_stride,
-                    luts, sub_scales, blk_xsum, acc
-                );
+                const uint8_t* bp = tptr + (size_t)blk * tile_blk_bytes;
+                for (int sl0 = 0; sl0 < slots; sl0 += 4) {
+                    int sl_cnt = (slots - sl0 >= 4) ? 4 : (slots - sl0);
+                    int kc_sub = dual ? ((sl_cnt + 1) / 2) : sl_cnt;
+                    int kk0 = dual ? (sl0 / 2) : sl0;
+                    t16c_accum_blk_slots(
+                        bp, blk, subs_per_blk, n_subs, n_blks,
+                        eff_bits, gauss_lut, is_asym, dual, kc_sub, sl_cnt,
+                        tile_blk_bytes, bytes_per_plane_blk, luts_stride,
+                        luts + (size_t)sl0 * luts_stride,
+                        sub_scales + (size_t)sl0 * (size_t)n_subs,
+                        blk_xsum ? (blk_xsum + (size_t)kk0 * (size_t)n_blks) : NULL,
+                        &acc[sl0]
+                    );
+                }
             }
             float* dst = p1_acc + (size_t)t * (size_t)slots * 16u;
             for (int s = 0; s < slots; s++) {
@@ -6088,11 +6168,17 @@ NEON_API int lmhead_cs_top1_tile16_batch(
             }
         }
 
-        /* Select seed + highest Stage-1 tiles (`<= 512` tiles total) to lock tight tau[kk]. */
+        /* Select seed + highest Stage-1 tiles (+ drafted tree child tiles) to lock tight tau[kk]. */
         memset(is_done, 0, (size_t)n_tiles);
         int seed_prefix = (n_tiles >= 64) ? 32 : ((n_tiles >= 8) ? 2 : 0);
         for (int t0 = 0; t0 < seed_prefix; t0++) is_done[t0] = 1;
-        int top_c = (sieve_frac > 0.0f) ? 512 : 256;
+        if (seed_row_ids != NULL) {
+            for (int kk = 0; kk < kc; kk++) {
+                int32_t sr = seed_row_ids[k0 + kk];
+                if (sr >= 0 && sr < d_out) is_done[sr / 16] = 1;
+            }
+        }
+        int top_c = (sieve_frac > 0.0f) ? 512 : ((seed_row_ids != NULL) ? 64 : 256);
         if (top_c > n_tiles / 2) top_c = (n_tiles >= 4) ? 1 : n_tiles;
         for (int kk = 0; kk < kc; kk++) {
             float nth = -1e30f;
@@ -6134,17 +6220,26 @@ NEON_API int lmhead_cs_top1_tile16_batch(
             for (t = 0; t < n_tiles; t++) {
                 if (!is_done[t]) continue;
                 const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tile_blk_bytes;
-                float acc[4][16];
+                float acc[24][16];
                 const float* src = p1_acc + (size_t)t * (size_t)slots * 16u;
                 for (int s = 0; s < slots; s++) memcpy(acc[s], src + (size_t)s * 16u, 16u * sizeof(float));
                 for (int step = p1_blks; step < n_blks; step++) {
                     int blk = b_ord[step];
-                    t16c_accum_blk_slots(
-                        tptr + (size_t)blk * tile_blk_bytes, blk, subs_per_blk, n_subs, n_blks,
-                        eff_bits, gauss_lut, is_asym, dual, kc, slots,
-                        tile_blk_bytes, bytes_per_plane_blk, luts_stride,
-                        luts, sub_scales, blk_xsum, acc
-                    );
+                    const uint8_t* bp = tptr + (size_t)blk * tile_blk_bytes;
+                    for (int sl0 = 0; sl0 < slots; sl0 += 4) {
+                        int sl_cnt = (slots - sl0 >= 4) ? 4 : (slots - sl0);
+                        int kc_sub = dual ? ((sl_cnt + 1) / 2) : sl_cnt;
+                        int kk0 = dual ? (sl0 / 2) : sl0;
+                        t16c_accum_blk_slots(
+                            bp, blk, subs_per_blk, n_subs, n_blks,
+                            eff_bits, gauss_lut, is_asym, dual, kc_sub, sl_cnt,
+                            tile_blk_bytes, bytes_per_plane_blk, luts_stride,
+                            luts + (size_t)sl0 * luts_stride,
+                            sub_scales + (size_t)sl0 * (size_t)n_subs,
+                            blk_xsum ? (blk_xsum + (size_t)kk0 * (size_t)n_blks) : NULL,
+                            &acc[sl0]
+                        );
+                    }
                 }
                 int base_r = t * 16;
                 int valid = (base_r + 16 <= d_out) ? 16 : (d_out - base_r);
@@ -6169,7 +6264,7 @@ NEON_API int lmhead_cs_top1_tile16_batch(
             }
         }
 
-        float tau[4];
+        float tau[24];
         for (int kk = 0; kk < kc; kk++) {
             float top_vals[32];
             int top_cnt = 0;
@@ -6214,11 +6309,12 @@ NEON_API int lmhead_cs_top1_tile16_batch(
                 }
                 const uint8_t* tptr = packed + (size_t)t * (size_t)n_blks * tile_blk_bytes;
                 const uint16_t* tnorm = tile_norm_fp16 + (size_t)t * (size_t)n_blks;
-                float acc[4][16];
+                float acc[24][16];
                 const float* src = p1_acc + (size_t)t * (size_t)slots * 16u;
                 for (int s = 0; s < slots; s++) memcpy(acc[s], src + (size_t)s * 16u, 16u * sizeof(float));
 
-                float rem_ub[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                float rem_ub[24];
+                for (int kk = 0; kk < kc; kk++) rem_ub[kk] = 0.0f;
                 for (int step = p1_blks; step < n_blks; step++) {
                     int blk = b_ord[step];
                     float wn = fp16_to_fp32(tnorm[blk]);
@@ -6251,12 +6347,21 @@ NEON_API int lmhead_cs_top1_tile16_batch(
                         break;
                     }
                     int blk = b_ord[step];
-                    t16c_accum_blk_slots(
-                        tptr + (size_t)blk * tile_blk_bytes, blk, subs_per_blk, n_subs, n_blks,
-                        eff_bits, gauss_lut, is_asym, dual, kc, slots,
-                        tile_blk_bytes, bytes_per_plane_blk, luts_stride,
-                        luts, sub_scales, blk_xsum, acc
-                    );
+                    const uint8_t* bp = tptr + (size_t)blk * tile_blk_bytes;
+                    for (int sl0 = 0; sl0 < slots; sl0 += 4) {
+                        int sl_cnt = (slots - sl0 >= 4) ? 4 : (slots - sl0);
+                        int kc_sub = dual ? ((sl_cnt + 1) / 2) : sl_cnt;
+                        int kk0 = dual ? (sl0 / 2) : sl0;
+                        t16c_accum_blk_slots(
+                            bp, blk, subs_per_blk, n_subs, n_blks,
+                            eff_bits, gauss_lut, is_asym, dual, kc_sub, sl_cnt,
+                            tile_blk_bytes, bytes_per_plane_blk, luts_stride,
+                            luts + (size_t)sl0 * luts_stride,
+                            sub_scales + (size_t)sl0 * (size_t)n_subs,
+                            blk_xsum ? (blk_xsum + (size_t)kk0 * (size_t)n_blks) : NULL,
+                            &acc[sl0]
+                        );
+                    }
                     float wn = fp16_to_fp32(tnorm[blk]);
                     for (int kk = 0; kk < kc; kk++) {
                         rem_ub[kk] -= wn * blk_xnorm[(size_t)kk * (size_t)n_blks + (size_t)blk];
@@ -6280,6 +6385,30 @@ NEON_API int lmhead_cs_top1_tile16_batch(
     neon_free(luts); neon_free(sub_scales); neon_free(blk_xnorm); neon_free(blk_xsum);
     neon_free(max_tnorm); neon_free(p1_acc); neon_free(p1_tmax); neon_free(is_done); neon_free(tile_skips);
     return 0;
+}
+
+NEON_API int lmhead_cs_top1_tile16_batch(
+    const uint8_t* NEON_RESTRICT packed,
+    const uint16_t* NEON_RESTRICT tile_norm_fp16,
+    const float* NEON_RESTRICT x,
+    float* NEON_RESTRICT y,
+    int d_out,
+    int d_in,
+    int block_size,
+    int n_bits,
+    int is_asym,
+    int k_tokens,
+    int top_k_keep,
+    float sieve_frac,
+    int num_threads,
+    int64_t* NEON_RESTRICT out_skipped_blks
+) {
+    return lmhead_cs_seeded_tile16_batch(
+        packed, tile_norm_fp16, x, y,
+        d_out, d_in, block_size, n_bits, is_asym,
+        k_tokens, top_k_keep, sieve_frac, NULL,
+        num_threads, out_skipped_blks
+    );
 }
 
 NEON_API int inv_s_and_fwht_f32_c(
@@ -6670,15 +6799,15 @@ static int gate_e_test_config(
             packed, norms, x, y_got, d_out, d_in, bsize, n_bits, is_asym, k_tokens, 1e9f, 2, &skipped
         );
 #if HAS_NEON && (defined(__aarch64__) || defined(_M_ARM64))
-        const int eff_b = n_bits & 0x3F;
+        const int eff_b = n_bits & 0x1F;
         const int kc_exp = ((n_bits & T16C_ROWMAJOR_BIT) != 0)
-            ? 8
-            : ((eff_b != 5 && eff_b != 8)
-                ? (x_needs_dual_plane(x, d_in, k_tokens) ? 8 : 16)
+            ? 24
+            : ((eff_b != 8)
+                ? (x_needs_dual_plane(x, d_in, k_tokens) ? 12 : 24)
                 : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4));
 #else
         const int kc_exp = ((n_bits & T16C_ROWMAJOR_BIT) != 0)
-            ? 8
+            ? 24
             : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4);
 #endif
         int64_t exp_skips = (int64_t)((k_tokens + kc_exp - 1) / kc_exp) * (int64_t)n_tiles * (int64_t)n_blks;
@@ -7882,6 +8011,150 @@ NEON_API int neon_accelerator_self_test(void) {
         }
         neon_set_andvcnt_abits(prev_abits);
         if (!ok_n) return 0;
+    }
+
+    /* Self-test Gate: COLBLOCK (0x20) + Ternary-5 sparse batch + kc=20 single-pass tree parity */
+    {
+        const int d_o = 64;
+        const int d_i = 256;
+        const int bsz = 128;
+        const int n_tiles = d_o / 16;
+        const int n_blks = d_i / bsz;
+        const int quintets = (bsz + 4) / 5;
+        const size_t tblk_bytes = (size_t)32 + (size_t)quintets * 16u;
+        const int kt = 20;
+        const size_t pk_bytes = (size_t)n_tiles * (size_t)n_blks * tblk_bytes;
+        uint8_t* pk_tm = (uint8_t*)neon_alloc(pk_bytes);
+        uint8_t* pk_cb = (uint8_t*)neon_alloc(pk_bytes);
+        float* nx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+        float* y_tm = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* y_cb = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* y_sp = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* y_k1 = (float*)neon_alloc((size_t)d_o * sizeof(float));
+        if (!pk_tm || !pk_cb || !nx || !y_tm || !y_cb || !y_sp || !y_k1) {
+            neon_free(pk_tm); neon_free(pk_cb); neon_free(nx);
+            neon_free(y_tm); neon_free(y_cb); neon_free(y_sp); neon_free(y_k1);
+            return 0;
+        }
+        for (int t = 0; t < n_tiles; t++) {
+            for (int blk = 0; blk < n_blks; blk++) {
+                uint8_t* b_tm = pk_tm + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk_bytes;
+                for (int r = 0; r < 16; r++) {
+                    uint16_t sc_h = fp32_to_fp16(0.05f * (float)(1 + ((t * 16 + r + blk * 3) % 7)));
+                    memcpy(b_tm + (size_t)r * 2u, &sc_h, 2);
+                }
+                for (int g = 0; g < quintets * 16; g++) {
+                    b_tm[32 + g] = (uint8_t)((t * 37 + blk * 53 + g * 19) % 243);
+                }
+                uint8_t* b_cb = pk_cb + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tblk_bytes;
+                memcpy(b_cb, b_tm, tblk_bytes);
+            }
+        }
+        for (int i = 0; i < kt * d_i; i++) {
+            nx[i] = ((float)((i * 29 + 11) % 101) - 50.0f) * 0.04f;
+        }
+        int ok_t5 = 1;
+        if (gemm_bitserial_tile16_sparse_batch(pk_tm, NULL, nx, y_tm, d_o, d_i, bsz, 5, 0, kt, 0.0f, NULL, NULL, 2, NULL) != 0) ok_t5 = 0;
+        if (gemm_bitserial_tile16_sparse_batch(pk_cb, NULL, nx, y_cb, d_o, d_i, bsz, 5 | T16C_COLBLOCK_BIT, 0, kt, 0.0f, NULL, NULL, 2, NULL) != 0) ok_t5 = 0;
+        for (int tok = 0; tok < kt && ok_t5; tok++) {
+            if (gemm_bitserial_tile16_sparse_batch(pk_tm, NULL, nx + (size_t)tok * (size_t)d_i, y_k1, d_o, d_i, bsz, 5, 0, 1, 0.0f, NULL, NULL, 1, NULL) != 0) ok_t5 = 0;
+            for (int r = 0; r < d_o; r++) {
+                size_t idx = (size_t)tok * (size_t)d_o + (size_t)r;
+                if (neon_fabsf(y_tm[idx] - y_cb[idx]) > 1e-5f) ok_t5 = 0;
+                if (neon_fabsf(y_tm[idx] - y_k1[r]) > 1e-4f) ok_t5 = 0;
+            }
+        }
+        const uint8_t rmask[4] = { 1, 0, 1, 0 };
+        const uint8_t cmask[2] = { 0, 1 };
+        int64_t sk = 0;
+        if (gemm_bitserial_tile16_sparse_batch(pk_cb, NULL, nx, y_sp, d_o, d_i, bsz, 5 | T16C_COLBLOCK_BIT, 0, kt, 0.0f, rmask, cmask, 2, &sk) != 0) ok_t5 = 0;
+        if (sk <= 0) ok_t5 = 0;
+        for (int r = 0; r < d_o && ok_t5; r++) {
+            if (rmask[r / 16] == 0 && neon_fabsf(y_sp[r]) > 1e-7f) ok_t5 = 0;
+        }
+        neon_free(pk_tm); neon_free(pk_cb); neon_free(nx);
+        neon_free(y_tm); neon_free(y_cb); neon_free(y_sp); neon_free(y_k1);
+        if (!ok_t5) return 0;
+    }
+
+    /* Self-test Gate O: k=16 single-pass Draft-Seeded Exact CS LM-head pruning parity */
+    {
+        const int d_o = 256, d_i = 512, bsz = 64, kt = 16, nb = 3;
+        const int n_tiles = d_o / 16, n_blks = d_i / bsz;
+        const size_t plane_b = (size_t)(bsz / 8) * 16u;
+        const size_t tblk = 32u + (size_t)nb * plane_b;
+        uint8_t* pk = (uint8_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * tblk);
+        uint16_t* tn = (uint16_t*)neon_alloc((size_t)n_tiles * (size_t)n_blks * sizeof(uint16_t));
+        float* lx = (float*)neon_alloc((size_t)kt * (size_t)d_i * sizeof(float));
+        float* y_full = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        float* y_seed = (float*)neon_alloc((size_t)kt * (size_t)d_o * sizeof(float));
+        int32_t seed_rows[16];
+        if (!pk || !tn || !lx || !y_full || !y_seed) {
+            neon_free(pk); neon_free(tn); neon_free(lx); neon_free(y_full); neon_free(y_seed);
+            return 0;
+        }
+        uint64_t rng = 0x517cc1b727220a95ULL;
+        for (int t = 0; t < n_tiles; t++) {
+            for (int blk = 0; blk < n_blks; blk++) {
+                uint8_t* bp = pk + ((size_t)t * (size_t)n_blks + (size_t)blk) * tblk;
+                float mx_wn = 0.0f;
+                for (int r = 0; r < 16; r++) {
+                    int gr = t * 16 + r;
+                    float sc_f = (gr == 195 || gr == 241) ? 0.55f : ((gr < 64) ? 0.07f : 0.01f);
+                    uint16_t sc_h = fp32_to_fp16(sc_f);
+                    sc_f = fp16_to_fp32(sc_h);
+                    write_u16_le(bp + (size_t)r * 2u, sc_h);
+                    double row_ss = 0.0;
+                    for (int bo = 0; bo < bsz / 8; bo++) {
+                        uint8_t bv[3];
+                        for (int p = 0; p < nb; p++) {
+                            rng = rng * 6364136223846793005ULL + 1ULL;
+                            bv[p] = ((gr == 195 && blk < 2) || (gr == 241 && blk >= 2 && blk < 4))
+                                ? 0xFFu
+                                : (uint8_t)(rng >> 24);
+                            bp[32u + (size_t)p * plane_b + (size_t)bo * 16u + (size_t)r] = bv[p];
+                        }
+                        for (int bit = 0; bit < 8; bit++) {
+                            int code = 0;
+                            for (int p = 0; p < nb; p++) {
+                                if ((bv[p] >> (7 - bit)) & 1) code |= (1 << p);
+                            }
+                            double wv = (double)sc_f * ((double)code - 3.5);
+                            row_ss += wv * wv;
+                        }
+                    }
+                    float rn = neon_sqrtf((float)row_ss);
+                    if (rn > mx_wn) mx_wn = rn;
+                }
+                tn[(size_t)t * (size_t)n_blks + (size_t)blk] = fp32_to_fp16(mx_wn * 1.001f + 1e-4f);
+            }
+        }
+        for (int tok = 0; tok < kt; tok++) {
+            seed_rows[tok] = (tok % 2 == 0) ? 195 : 241;
+            for (int j = 0; j < d_i; j++) {
+                float base = ((tok % 2 == 0 && j < 2 * bsz) || (tok % 2 == 1 && j >= 2 * bsz && j < 4 * bsz))
+                    ? 1.4f
+                    : ((((j + tok) % 9) - 4) * 0.02f);
+                lx[(size_t)tok * (size_t)d_i + (size_t)j] = base;
+            }
+        }
+        seed_rows[kt - 1] = -1;
+        int ok_s = (gemm_bitserial_tile16_batch(pk, NULL, lx, y_full, d_o, d_i, bsz, nb, 0, kt, 0.0f, 2, NULL) == 0);
+        int64_t sk_seed = 0;
+        if (lmhead_cs_seeded_tile16_batch(pk, tn, lx, y_seed, d_o, d_i, bsz, nb, 0, kt, 1, 0.0f, seed_rows, 2, &sk_seed) != 0) ok_s = 0;
+        if (sk_seed <= 0) ok_s = 0;
+        for (int tok = 0; tok < kt && ok_s; tok++) {
+            const float* rf = y_full + (size_t)tok * (size_t)d_o;
+            const float* sd = y_seed + (size_t)tok * (size_t)d_o;
+            int id_f = 0, id_s = 0;
+            for (int r = 1; r < d_o; r++) {
+                if (rf[r] > rf[id_f]) id_f = r;
+                if (sd[r] > sd[id_s]) id_s = r;
+            }
+            if (id_f != id_s) ok_s = 0;
+        }
+        neon_free(pk); neon_free(tn); neon_free(lx); neon_free(y_full); neon_free(y_seed);
+        if (!ok_s) return 0;
     }
 
     return 1;

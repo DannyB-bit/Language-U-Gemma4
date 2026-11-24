@@ -1,0 +1,405 @@
+{
+  "version": "V8.0-6SENSE-PLAYER-POV-CUNEIFORM-SPATIAL-DISTRICTS-GTA-LOD-60L",
+  "senses": [
+    "SEE",
+    "HEAR",
+    "FEEL",
+    "SMELL",
+    "TASTE",
+    "CUNEIFORM_S7"
+  ],
+  "sense_dim": 32,
+  "gpu": "NVIDIA L4",
+  "hw_profile": {
+    "profile": "L4-22GB-MAX",
+    "gpu_vram_gb": 22.03,
+    "resident_gpu": false,
+    "resident_stud_gpu": true,
+    "batch_seq": 96,
+    "als_ev_toks": 4096,
+    "distill_bs": 32,
+    "ast_bs": 12,
+    "bh_bs": 512,
+    "tf32": true,
+    "distill_enabled": true,
+    "distill_thresh": 0.72,
+    "distill_steps": 40
+  },
+  "elapsed_s": 14083.82,
+  "base_t16c_bytes": 5879227392,
+  "base_t16c_gib": 5.4755,
+  "lod_shared_bytes": 718427136,
+  "lod_district_bytes": {
+    "gemma4_31b_v8_0_lod_d0.t16c": 820712448,
+    "gemma4_31b_v8_0_lod_d1.t16c": 235768320,
+    "gemma4_31b_v8_0_lod_d2.t16c": 325267968,
+    "gemma4_31b_v8_0_lod_d3.t16c": 278387200,
+    "gemma4_31b_v8_0_lod_d4.t16c": 309285888,
+    "gemma4_31b_v8_0_lod_d5.t16c": 321006080,
+    "gemma4_31b_v8_0_lod_d6.t16c": 325267968,
+    "gemma4_31b_v8_0_lod_d7.t16c": 373214208,
+    "gemma4_31b_v8_0_lod_d8.t16c": 297565696,
+    "gemma4_31b_v8_0_lod_d9.t16c": 333791744,
+    "gemma4_31b_v8_0_lod_d10.t16c": 351904768,
+    "gemma4_31b_v8_0_lod_d11.t16c": 352970240
+  },
+  "mean_native_capture": 0.9161,
+  "mean_district_router_top2_recall": 0.9881,
+  "mean_crtr_val_recall": 0.87947,
+  "mean_mod_val_acc": 0.9641,
+  "vision_val_cos": [
+    0.90928,
+    0.91111
+  ],
+  "l59_vlm_state_cos": 0.88712,
+  "post_cell60_val_kl": [
+    1.9978,
+    1.8267
+  ],
+  "post_cell60_val_top1": [
+    0.6146,
+    0.6364
+  ],
+  "post_cell60_val_agree": [
+    0.7061,
+    0.7147
+  ],
+  "assistant_v8_align_kl": [
+    8.3457,
+    1.608
+  ],
+  "assistant_v8_align_top1_agree": [
+    0.3488,
+    0.6868
+  ],
+  "assistant_v8_bhdr": {
+    "val_kl_before": 2.83264,
+    "val_kl_after": 0.63406,
+    "val_tok_acc_before": 0.0,
+    "val_tok_acc_after": 0.5172,
+    "heldout_beam_top1_acc_vs_v80_argmax": 0.7031,
+    "heldout_beam_samples": 256
+  },
+  "heldout_coco_val0_3": [
+    {
+      "val_idx": 0,
+      "gt_caption": "A black Honda motorcycle parked in front of a garage.",
+      "ans_cos": 0.87681,
+      "ans_top1_agree": 0.6923,
+      "ans_top5_agree": 0.9231,
+      "student_forced_pred": "A black motorcycle motorcycle is on a of a building.\n"
+    },
+    {
+      "val_idx": 1,
+      "gt_caption": "An office cubicle with four different types of computers.",
+      "ans_cos": 0.85268,
+      "ans_top1_agree": 0.4615,
+      "ans_top5_agree": 0.8462,
+      "student_forced_pred": "A office deskicle with a monitors monitors of computers and\n"
+    },
+    {
+      "val_idx": 2,
+      "gt_caption": "A small closed toilet in a cramped space.",
+      "ans_cos": 0.88055,
+      "ans_top1_agree": 0.5455,
+      "ans_top5_agree": 0.9091,
+      "student_forced_pred": "A toilet bathroom bathroom with a bathroom bathroom with\n"
+    },
+    {
+      "val_idx": 3,
+      "gt_caption": "Two women waiting at a bench next to a street.",
+      "ans_cos": 0.88387,
+      "ans_top1_agree": 0.7692,
+      "ans_top5_agree": 0.8462,
+      "student_forced_pred": "A people are at a bus next to a bus with\n"
+    }
+  ],
+  "layer_cos_summary": [
+    {
+      "l": 0,
+      "txt_cos": 0.99456,
+      "vlm_cos": 0.98654,
+      "cap_native": 0.9343,
+      "router_rec": 0.9875,
+      "crtr": {
+        "val_recall_before": 0.6078,
+        "val_recall_after": 0.90719,
+        "mod_val_acc": 0.98608,
+        "mod_thresh_q": 1.03758,
+        "mod_pos_frac_va": 0.9321,
+        "adaptive_top_p": 0.6,
+        "adaptive_mod_q": 0.05
+      }
+    },
+    {
+      "l": 2,
+      "txt_cos": 0.99166,
+      "vlm_cos": 0.92914,
+      "cap_native": 0.9571,
+      "router_rec": 0.9937,
+      "crtr": {
+        "val_recall_before": 0.58847,
+        "val_recall_after": 0.85293,
+        "mod_val_acc": 0.95801,
+        "mod_thresh_q": 0.07243,
+        "mod_pos_frac_va": 0.9492,
+        "adaptive_top_p": 0.5752,
+        "adaptive_mod_q": 0.0616
+      }
+    },
+    {
+      "l": 5,
+      "txt_cos": 0.99623,
+      "vlm_cos": 0.97208,
+      "cap_native": 0.945,
+      "router_rec": 0.9758,
+      "crtr": {
+        "val_recall_before": 0.59756,
+        "val_recall_after": 0.92609,
+        "mod_val_acc": 0.96582,
+        "mod_thresh_q": 0.3919,
+        "mod_pos_frac_va": 0.9419,
+        "adaptive_top_p": 0.5732,
+        "adaptive_mod_q": 0.0625
+      }
+    },
+    {
+      "l": 10,
+      "txt_cos": 0.99742,
+      "vlm_cos": 0.99282,
+      "cap_native": 0.9508,
+      "router_rec": 0.9587,
+      "crtr": {
+        "val_recall_before": 0.58246,
+        "val_recall_after": 0.76787,
+        "mod_val_acc": 0.95166,
+        "mod_thresh_q": 0.07413,
+        "mod_pos_frac_va": 0.9451,
+        "adaptive_top_p": 0.5766,
+        "adaptive_mod_q": 0.0609
+      }
+    },
+    {
+      "l": 20,
+      "txt_cos": 0.9967,
+      "vlm_cos": 0.99567,
+      "cap_native": 0.9061,
+      "router_rec": 0.9917,
+      "crtr": {
+        "val_recall_before": 0.60146,
+        "val_recall_after": 0.90943,
+        "mod_val_acc": 0.96973,
+        "mod_thresh_q": 0.069,
+        "mod_pos_frac_va": 0.9609,
+        "adaptive_top_p": 0.6,
+        "adaptive_mod_q": 0.05
+      }
+    },
+    {
+      "l": 30,
+      "txt_cos": 0.97471,
+      "vlm_cos": 0.98219,
+      "cap_native": 0.9407,
+      "router_rec": 0.9905,
+      "crtr": {
+        "val_recall_before": 0.55986,
+        "val_recall_after": 0.87675,
+        "mod_val_acc": 0.95898,
+        "mod_thresh_q": 0.15623,
+        "mod_pos_frac_va": 0.947,
+        "adaptive_top_p": 0.5742,
+        "adaptive_mod_q": 0.062
+      }
+    },
+    {
+      "l": 40,
+      "txt_cos": 0.87967,
+      "vlm_cos": 0.89293,
+      "cap_native": 0.854,
+      "router_rec": 0.9986,
+      "crtr": {
+        "val_recall_before": 0.48995,
+        "val_recall_after": 0.87318,
+        "mod_val_acc": 0.96216,
+        "mod_thresh_q": 0.31596,
+        "mod_pos_frac_va": 0.9026,
+        "adaptive_top_p": 0.4541,
+        "adaptive_mod_q": 0.1181
+      }
+    },
+    {
+      "l": 50,
+      "txt_cos": 0.87019,
+      "vlm_cos": 0.85455,
+      "cap_native": 0.8563,
+      "router_rec": 0.9853,
+      "crtr": {
+        "val_recall_before": 0.49219,
+        "val_recall_after": 0.8521,
+        "mod_val_acc": 0.96484,
+        "mod_thresh_q": 0.21437,
+        "mod_pos_frac_va": 0.8931,
+        "adaptive_top_p": 0.45,
+        "adaptive_mod_q": 0.12
+      }
+    },
+    {
+      "l": 55,
+      "txt_cos": 0.77028,
+      "vlm_cos": 0.68523,
+      "cap_native": 0.9451,
+      "router_rec": 1.0,
+      "crtr": {
+        "val_recall_before": 0.47512,
+        "val_recall_after": 0.90905,
+        "mod_val_acc": 0.97729,
+        "mod_thresh_q": 0.3472,
+        "mod_pos_frac_va": 0.896,
+        "adaptive_top_p": 0.4561,
+        "adaptive_mod_q": 0.1172
+      }
+    },
+    {
+      "l": 57,
+      "txt_cos": 0.71112,
+      "vlm_cos": 0.70832,
+      "cap_native": 0.9458,
+      "router_rec": 0.9972,
+      "crtr": {
+        "val_recall_before": 0.43877,
+        "val_recall_after": 0.93305,
+        "mod_val_acc": 0.96045,
+        "mod_thresh_q": 0.73164,
+        "mod_pos_frac_va": 0.8535,
+        "adaptive_top_p": 0.45,
+        "adaptive_mod_q": 0.12
+      }
+    },
+    {
+      "l": 58,
+      "txt_cos": 0.78997,
+      "vlm_cos": 0.79116,
+      "cap_native": 0.9455,
+      "router_rec": 0.9957,
+      "crtr": {
+        "val_recall_before": 0.497,
+        "val_recall_after": 0.91619,
+        "mod_val_acc": 0.97217,
+        "mod_thresh_q": 0.92852,
+        "mod_pos_frac_va": 0.8586,
+        "adaptive_top_p": 0.4529,
+        "adaptive_mod_q": 0.1186
+      }
+    },
+    {
+      "l": 59,
+      "txt_cos": 0.83452,
+      "vlm_cos": 0.88391,
+      "cap_native": 0.9426,
+      "router_rec": 0.997,
+      "crtr": {
+        "val_recall_before": 0.44242,
+        "val_recall_after": 0.91548,
+        "mod_val_acc": 0.97217,
+        "mod_thresh_q": 0.97729,
+        "mod_pos_frac_va": 0.8882,
+        "adaptive_top_p": 0.45,
+        "adaptive_mod_q": 0.12
+      }
+    }
+  ],
+  "artifacts": {
+    "gemma4_31b_v8_0_base.t16c": {
+      "bytes": 5879227392,
+      "sha256": "9faa3404902e185dfd54aacac495133eb576edfc97b360462652fa1c871110af"
+    },
+    "gemma4_31b_v8_0_lod_shared.t16c": {
+      "bytes": 718427136,
+      "sha256": "739d2c023e5b3010bf5fe84820a44308c764135523af81368fbb1b5d1a935b20"
+    },
+    "gemma4_31b_v8_0_lod_d0.t16c": {
+      "bytes": 820712448,
+      "sha256": "85101fa7fa5199a7ea9864e6220552c876a9b2bbbfd1e2b0666745f7bacfb0f2"
+    },
+    "gemma4_31b_v8_0_lod_d1.t16c": {
+      "bytes": 235768320,
+      "sha256": "ab1dd838d2fd57c85270d11e48357ed9c9d910eb62c7a0c9551bbd1bb6e2ef68"
+    },
+    "gemma4_31b_v8_0_lod_d2.t16c": {
+      "bytes": 325267968,
+      "sha256": "29bf623f392b9ca46a4ea0b11c41abfebf84f0d4bb6753ebec71eac72eb2f9a5"
+    },
+    "gemma4_31b_v8_0_lod_d3.t16c": {
+      "bytes": 278387200,
+      "sha256": "87dc598acaa384584345a09546ca327439550cfebc473a70acab20b093c5dcd3"
+    },
+    "gemma4_31b_v8_0_lod_d4.t16c": {
+      "bytes": 309285888,
+      "sha256": "e8267d95c1a6712c94388060a965d9738d0675b0954eff1d436e3b7c4ad57831"
+    },
+    "gemma4_31b_v8_0_lod_d5.t16c": {
+      "bytes": 321006080,
+      "sha256": "5aea2032183801c36f651fc1530014ed16d92cdbb38f4e7952f4b4cd43810e00"
+    },
+    "gemma4_31b_v8_0_lod_d6.t16c": {
+      "bytes": 325267968,
+      "sha256": "dd8fec3482faec61b9a5b10f6633044e172f1a8b7e602232c5b109bfb424b5c2"
+    },
+    "gemma4_31b_v8_0_lod_d7.t16c": {
+      "bytes": 373214208,
+      "sha256": "598aff44a91213e5017b7ddde0556bba4210973d1a5856de3a156ec457b55113"
+    },
+    "gemma4_31b_v8_0_lod_d8.t16c": {
+      "bytes": 297565696,
+      "sha256": "2380e46ebb24cbf58b974c1c54e5325435537d3b28454f58c8bff2d7a1da720c"
+    },
+    "gemma4_31b_v8_0_lod_d9.t16c": {
+      "bytes": 333791744,
+      "sha256": "86700bb2456cee4d8e54bcc2744bd91c2c308bbf61e2a7ee626218e4173e5593"
+    },
+    "gemma4_31b_v8_0_lod_d10.t16c": {
+      "bytes": 351904768,
+      "sha256": "c074d18d7850c623c4722f641908339a059d8779948b92b718307cfc9f7ad236"
+    },
+    "gemma4_31b_v8_0_lod_d11.t16c": {
+      "bytes": 352970240,
+      "sha256": "016cddebad6989d3d3de533fd1ecb1bb6c11b91cf9d38cc4be977e25fd099bed"
+    },
+    "gemma4_31b_v8_0_router.crtr": {
+      "bytes": 10861956,
+      "sha256": "be4a1ab07bcacc8cd2305d9eceffcbd33196295531cc82ed296cb103eeb7f818"
+    },
+    "gemma4_31b_v8_0_c8d.c8d": {
+      "bytes": 11874560,
+      "sha256": "dd083658448a64d5b5a8c644020bbc9ae84bbd652cca726d0c11694fd61a759c"
+    },
+    "gemma4_31b_v8_0_pov_6sense_router.pt": {
+      "bytes": 47867961,
+      "sha256": "583998a94f0ed5d8be0f5385654b8c9d577dbbccc4f8b2bd9ac833cd672f9ecb"
+    },
+    "gemma4_31b_v8_0_pov_6sense_router.drtr": {
+      "bytes": 83782596,
+      "sha256": "b81a60c19fb4599bd360c200b4d8ffc635a2141c3da0fa33a6f817566f9dad0e"
+    },
+    "gemma4_31b_v8_0_pov_6sense_manifest.json": {
+      "bytes": 133421,
+      "sha256": "d4b9d01d857dabf0dab4697ddd88d1b33644becec0d3f9878df60498f301a85d"
+    },
+    "gemma4_31b_v8_0_assistant.bhdr": {
+      "bytes": 2687324,
+      "sha256": "f8ea8618727098444c2befd8999258439dc5b799155f2d46c3b92ecba172e55a"
+    },
+    "gemma4_31b_v8_0_assistant_body_q2.t16c": {
+      "bytes": 56628032,
+      "sha256": "2f9f733b95452735a7fbabc5b84e1c4aef5817dd378ae985e2b4ceb09bcb37fb"
+    },
+    "gemma4_31b_v8_0_assistant_body_q4.t16c": {
+      "bytes": 106894144,
+      "sha256": "98565f69517f66b8f67cfd7b44c86da2399547e99814522bb03d959bb42e75f6"
+    },
+    "gemma4_31b_v8_0_assistant_body_q8.t16c": {
+      "bytes": 207426368,
+      "sha256": "7e0a19fe949c718a8f469edd12d727f71a18cb1e532a250044ee70699e6177c5"
+    }
+  }
+}

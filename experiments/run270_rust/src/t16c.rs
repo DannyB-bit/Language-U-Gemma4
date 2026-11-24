@@ -943,7 +943,11 @@ impl T16CMat {
         if k_tokens == 0 {
             return Ok((Vec::new(), 0));
         }
-        if self.is_streamed() || self.is_colblock() {
+        let can_native_colblock = !self.is_streamed()
+            && self.is_colblock()
+            && native.and_then(|k| k.gemm_sparse_fn).is_some()
+            && (self.n_bits & 0x1F) != 8;
+        if self.is_streamed() || (self.is_colblock() && !can_native_colblock) {
             let slab = self.read_sparse_slab(None, None)?;
             if tile_norms_fp16.is_some() && cs_skip_thresh > 0.0 {
                 let expected_norms = d_out.div_ceil(16) * (d_in / self.block_size);
@@ -1045,7 +1049,11 @@ impl T16CMat {
         if row_tile_mask.is_none() && col_blk_mask.is_none() && include_low_rank {
             return self.project_batch_cs(x_raw, k_tokens, native, threads, None, 0.0);
         }
-        if self.is_streamed() || self.is_colblock() {
+        let can_native_colblock = !self.is_streamed()
+            && self.is_colblock()
+            && native.and_then(|k| k.gemm_sparse_fn).is_some()
+            && (self.n_bits & 0x1F) != 8;
+        if self.is_streamed() || (self.is_colblock() && !can_native_colblock) {
             let slab = self.read_sparse_slab(row_tile_mask, col_blk_mask)?;
             return self.eval_sparse_slab(
                 &slab,
@@ -1115,7 +1123,7 @@ impl T16CMat {
         let mut y = vec![0f32; k_tokens * d_out];
         let mut skipped: i64 = 0;
         if let Some(sp_fn) = native.and_then(|k| k.gemm_sparse_fn) {
-            if eff_bits != 5 && eff_bits != 8 {
+            if eff_bits != 8 {
                 let rptr = row_tile_mask.map_or(ptr::null(), |m| m.as_ptr());
                 let cptr = col_blk_mask.map_or(ptr::null(), |m| m.as_ptr());
                 let rc = unsafe {
@@ -1563,7 +1571,7 @@ impl T16CMat {
         let mut y = vec![0.0f32; k_tokens * d_out];
         let mut skipped: i64 = 0;
         if let Some(sp_fn) = native.and_then(|k| k.gemm_sparse_fn) {
-            if eff_bits != 5 && eff_bits != 8 {
+            if eff_bits != 8 {
                 let rptr = row_tile_mask.map_or(ptr::null(), |m| m.as_ptr());
                 let cptr = col_blk_mask.map_or(ptr::null(), |m| m.as_ptr());
                 let rc = unsafe {
@@ -1653,6 +1661,31 @@ impl T16CMat {
         top_k_keep: usize,
         sieve_frac: f32,
     ) -> Result<(Vec<f32>, i64), String> {
+        self.project_lmhead_cs_seeded(
+            x_raw,
+            k_tokens,
+            native,
+            threads,
+            tile_norms_fp16,
+            top_k_keep,
+            sieve_frac,
+            None,
+        )
+    }
+
+    /// Execute Draft-Seeded two-stage block-ordered Cauchy-Schwarz LM-head projection (`seed_row_ids` locks exact draft threshold).
+    #[allow(clippy::too_many_arguments)]
+    pub fn project_lmhead_cs_seeded(
+        &self,
+        x_raw: &[f32],
+        k_tokens: usize,
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+        tile_norms_fp16: Option<&[u16]>,
+        top_k_keep: usize,
+        sieve_frac: f32,
+        seed_row_ids: Option<&[i32]>,
+    ) -> Result<(Vec<f32>, i64), String> {
         let d_out = self.d_out;
         let d_in = self.d_in;
         if x_raw.len() != k_tokens * d_in {
@@ -1664,11 +1697,18 @@ impl T16CMat {
                 d_in
             ));
         }
+        if let Some(sr) = seed_row_ids {
+            if sr.len() != k_tokens {
+                return Err(format!("{}: seed_row_ids len {} != k_tokens({k_tokens})", self.name, sr.len()));
+            }
+        }
         if k_tokens == 0 {
             return Ok((Vec::new(), 0));
         }
         let expected_norms = d_out.div_ceil(16) * (d_in / self.block_size);
-        if let (Some(cs_fn), Some(norms)) = (native.and_then(|k| k.lmhead_cs_fn), tile_norms_fp16) {
+        let seeded_fn = native.and_then(|k| k.lmhead_cs_seeded_fn);
+        let fallback_fn = native.and_then(|k| k.lmhead_cs_fn);
+        if let (Some(norms), true) = (tile_norms_fp16, seeded_fn.is_some() || fallback_fn.is_some()) {
             if norms.len() != expected_norms {
                 return Err(format!(
                     "{}: tile_norms_fp16 len {} != expected {expected_norms}",
@@ -1683,26 +1723,50 @@ impl T16CMat {
             };
             let mut y = vec![0f32; k_tokens * d_out];
             let mut skipped: i64 = 0;
-            let rc = unsafe {
-                cs_fn(
-                    self.packed_slice().as_ptr(),
-                    norms.as_ptr(),
-                    x_mat.as_ptr(),
-                    y.as_mut_ptr(),
-                    d_out as i32,
-                    d_in as i32,
-                    self.block_size as i32,
-                    self.n_bits as i32,
-                    if self.is_asym { 1 } else { 0 },
-                    k_tokens as i32,
-                    top_k_keep.clamp(1, 32) as i32,
-                    sieve_frac.max(0.0),
-                    threads.max(1) as i32,
-                    &mut skipped as *mut i64,
-                )
+            let rc = if let Some(s_fn) = seeded_fn {
+                let s_ptr = seed_row_ids.map_or(ptr::null(), |s| s.as_ptr());
+                unsafe {
+                    s_fn(
+                        self.packed_slice().as_ptr(),
+                        norms.as_ptr(),
+                        x_mat.as_ptr(),
+                        y.as_mut_ptr(),
+                        d_out as i32,
+                        d_in as i32,
+                        self.block_size as i32,
+                        self.n_bits as i32,
+                        if self.is_asym { 1 } else { 0 },
+                        k_tokens as i32,
+                        top_k_keep.clamp(1, 32) as i32,
+                        sieve_frac.max(0.0),
+                        s_ptr,
+                        threads.max(1) as i32,
+                        &mut skipped as *mut i64,
+                    )
+                }
+            } else {
+                let cs_fn = fallback_fn.unwrap();
+                unsafe {
+                    cs_fn(
+                        self.packed_slice().as_ptr(),
+                        norms.as_ptr(),
+                        x_mat.as_ptr(),
+                        y.as_mut_ptr(),
+                        d_out as i32,
+                        d_in as i32,
+                        self.block_size as i32,
+                        self.n_bits as i32,
+                        if self.is_asym { 1 } else { 0 },
+                        k_tokens as i32,
+                        top_k_keep.clamp(1, 32) as i32,
+                        sieve_frac.max(0.0),
+                        threads.max(1) as i32,
+                        &mut skipped as *mut i64,
+                    )
+                }
             };
             if rc != 0 {
-                return Err(format!("native lmhead_cs_top1_tile16_batch failed rc={rc} on {}", self.name));
+                return Err(format!("native lmhead_cs_seeded_tile16_batch failed rc={rc} on {}", self.name));
             }
             self.apply_low_rank(x_raw, k_tokens, &mut y, native, threads)?;
             Ok((y, skipped))
@@ -2144,6 +2208,24 @@ pub type LmHeadCsTile16BatchFn = unsafe extern "C" fn(
     out_skipped_blks: *mut i64,
 ) -> i32;
 
+pub type LmHeadCsSeededTile16BatchFn = unsafe extern "C" fn(
+    packed: *const u8,
+    tile_norm_fp16: *const u16,
+    x: *const f32,
+    y: *mut f32,
+    d_out: i32,
+    d_in: i32,
+    block_size: i32,
+    n_bits: i32,
+    is_asym: i32,
+    k_tokens: i32,
+    top_k_keep: i32,
+    sieve_frac: f32,
+    seed_row_ids: *const i32,
+    num_threads: i32,
+    out_skipped_blks: *mut i64,
+) -> i32;
+
 pub type EncodeKvGlyphFastFn = unsafe extern "C" fn(
     kv_in: *const f32,
     cb: *const f32,
@@ -2188,6 +2270,7 @@ pub struct NativeTile16Kernel {
     pub inv_s_fwht_fn: Option<InvSFwhtF32Fn>,
     pub lowrank_add_fn: Option<Int8LowRankAddBatchFn>,
     pub lmhead_cs_fn: Option<LmHeadCsTile16BatchFn>,
+    pub lmhead_cs_seeded_fn: Option<LmHeadCsSeededTile16BatchFn>,
     pub encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn>,
     pub flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn>,
     pub set_andvcnt_abits_fn: Option<SetAndVcntAbitsFn>,
@@ -2280,6 +2363,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
             };
+            let lms_sym = sys::dlsym(h, b"lmhead_cs_seeded_tile16_batch\0".as_ptr() as *const std::ffi::c_char);
+            let lmhead_cs_seeded_fn: Option<LmHeadCsSeededTile16BatchFn> = if lms_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsSeededTile16BatchFn>(lms_sym))
+            };
             let ekv_sym = sys::dlsym(h, b"encode_kv_glyph_fast_c\0".as_ptr() as *const std::ffi::c_char);
             let encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn> = if ekv_sym.is_null() {
                 None
@@ -2306,6 +2395,7 @@ impl NativeTile16Kernel {
                 inv_s_fwht_fn,
                 lowrank_add_fn,
                 lmhead_cs_fn,
+                lmhead_cs_seeded_fn,
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
                 set_andvcnt_abits_fn,
@@ -2350,6 +2440,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsTile16BatchFn>(lm_sym))
             };
+            let lms_sym = sys::GetProcAddress(h, b"lmhead_cs_seeded_tile16_batch\0".as_ptr() as *const i8);
+            let lmhead_cs_seeded_fn: Option<LmHeadCsSeededTile16BatchFn> = if lms_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, LmHeadCsSeededTile16BatchFn>(lms_sym))
+            };
             let ekv_sym = sys::GetProcAddress(h, b"encode_kv_glyph_fast_c\0".as_ptr() as *const i8);
             let encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn> = if ekv_sym.is_null() {
                 None
@@ -2376,6 +2472,7 @@ impl NativeTile16Kernel {
                 inv_s_fwht_fn,
                 lowrank_add_fn,
                 lmhead_cs_fn,
+                lmhead_cs_seeded_fn,
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
                 set_andvcnt_abits_fn,
@@ -3546,6 +3643,7 @@ mod tests {
 
         if let Some(nk) = NativeTile16Kernel::discover(None) {
             assert!(nk.lmhead_cs_fn.is_some(), "expected lmhead_cs_top1_tile16_batch in {}", nk.path);
+            assert!(nk.lmhead_cs_seeded_fn.is_some(), "expected lmhead_cs_seeded_tile16_batch in {}", nk.path);
             let y_full = mat.project_batch(&x, 2, Some(&nk), 2).unwrap();
             let (y_cs, sk_cs) = mat.project_lmhead_cs(&x, 2, Some(&nk), 2, Some(&norms), 8, 0.0).unwrap();
             let (y_sv, sk_sv) = mat.project_lmhead_cs(&x, 2, Some(&nk), 2, Some(&norms), 8, 0.25).unwrap();
@@ -3571,6 +3669,36 @@ mod tests {
                 assert_eq!(top_f.0, top_c.0, "tok {tok}: exact CS top1 mismatch");
                 assert_eq!(top_f.0, top_s.0, "tok {tok}: sieve CS top1 mismatch");
                 assert!((top_f.1 - top_c.1).abs() < 1e-3);
+            }
+
+            // 16-slot speculative tree seeded exact CS parity
+            let mut x16 = Vec::with_capacity(16 * d_in);
+            let mut seed16 = vec![-1i32; 16];
+            for k in 0..16usize {
+                x16.extend_from_slice(&x[(k % 2) * d_in..((k % 2) + 1) * d_in]);
+                seed16[k] = if k % 2 == 0 { 35 } else { 19 };
+            }
+            seed16[15] = -1;
+            let y16_full = mat.project_batch(&x16, 16, Some(&nk), 2).unwrap();
+            let (y16_seed, sk16) = mat
+                .project_lmhead_cs_seeded(&x16, 16, Some(&nk), 2, Some(&norms), 1, 0.0, Some(&seed16))
+                .unwrap();
+            assert!(sk16 > 0, "expected k=16 seeded CS to prune blocks, got sk16={sk16}");
+            for tok in 0..16usize {
+                let s0 = tok * d_out;
+                let top_f = y16_full[s0..s0 + d_out]
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap()
+                    .0;
+                let top_s = y16_seed[s0..s0 + d_out]
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .unwrap()
+                    .0;
+                assert_eq!(top_f, top_s, "tok {tok}: k=16 seeded exact CS argmax mismatch");
             }
         }
     }

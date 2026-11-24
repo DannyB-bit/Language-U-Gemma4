@@ -269,6 +269,162 @@ impl CorticalRouterLayer {
         Ok((row_mask, col_mask, self.block_size))
     }
 
+    /// Predict depth-discounted speculative-tree-budgeted `(row_tile_mask, col_block_mask, block_size)`
+    /// preserving `shared_blocks` (`0..shared_blocks`), protecting root token `depth == 0`,
+    /// and strictly capping total active blocks to `ceil(n_blocks * top_p)`.
+    pub fn predict_tree_masks(
+        &self,
+        x_batch: &[f32],
+        tree_depths: &[usize],
+        shared_blocks: usize,
+        top_p: f32,
+    ) -> Result<(Vec<u8>, Vec<u8>, usize), String> {
+        let seq_len = tree_depths.len();
+        if seq_len == 0 {
+            return Err("predict_tree_masks: empty tree_depths".into());
+        }
+        let expected = seq_len * self.d_model;
+        if x_batch.len() != expected {
+            return Err(format!(
+                "predict_tree_masks: x_batch len {} != expected {expected}",
+                x_batch.len()
+            ));
+        }
+        if !top_p.is_finite() || top_p <= 0.0 || top_p > 1.0 {
+            return Err(format!(
+                "predict_tree_masks: top_p must be finite in (0, 1], got {top_p}"
+            ));
+        }
+
+        let mut probs = vec![0.0f32; seq_len * self.n_blocks];
+        let mut h = vec![0.0f32; self.rank];
+        for t in 0..seq_len {
+            let xt = &x_batch[t * self.d_model..(t + 1) * self.d_model];
+            for k in 0..self.rank {
+                let vrow = &self.v_i8[k * self.d_model..(k + 1) * self.d_model];
+                let pre = self.sv[k] * dot_i8_f32_4way(vrow, xt) + self.b1[k];
+                h[k] = gelu_tanh_fast_f32(pre);
+            }
+            let p_row = &mut probs[t * self.n_blocks..(t + 1) * self.n_blocks];
+            for b in 0..self.n_blocks {
+                let urow = &self.u_i8[b * self.rank..(b + 1) * self.rank];
+                let logit = self.su[b] * dot_i8_f32_4way(urow, &h) + self.b2[b];
+                p_row[b] = sigmoid_f32(logit);
+            }
+        }
+
+        let shared = shared_blocks.min(self.n_blocks);
+        let total_keep = ((self.n_blocks as f32 * top_p).ceil() as usize)
+            .clamp(shared.max(1), self.n_blocks);
+        let routed_budget = total_keep.saturating_sub(shared);
+
+        let mut col_mask = vec![0u8; self.n_blocks];
+        for b in 0..shared {
+            col_mask[b] = 1;
+        }
+
+        if routed_budget > 0 && shared < self.n_blocks {
+            let root_idx = tree_depths.iter().position(|&d| d == 0).unwrap_or(0);
+            let root_keep = if seq_len == 1 {
+                routed_budget
+            } else {
+                (routed_budget * 3 / 4).max(1).min(routed_budget)
+            };
+
+            let mut root_ranked: Vec<(usize, f32)> = (shared..self.n_blocks)
+                .map(|b| (b, probs[root_idx * self.n_blocks + b]))
+                .collect();
+            root_ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            for &(b, _) in root_ranked.iter().take(root_keep) {
+                col_mask[b] = 1;
+            }
+
+            let rem_keep = routed_budget.saturating_sub(root_keep);
+            if rem_keep > 0 {
+                let mut tree_ranked: Vec<(usize, f32)> = (shared..self.n_blocks)
+                    .filter(|&b| col_mask[b] == 0)
+                    .map(|b| {
+                        let mut mx = 0.0f32;
+                        for (t, &depth) in tree_depths.iter().enumerate() {
+                            let w = 0.7f32.powi((depth as i32).min(16));
+                            let sc = w * probs[t * self.n_blocks + b];
+                            if sc > mx {
+                                mx = sc;
+                            }
+                        }
+                        (b, mx)
+                    })
+                    .collect();
+                tree_ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                for &(b, _) in tree_ranked.iter().take(rem_keep) {
+                    col_mask[b] = 1;
+                }
+            }
+        }
+
+        let tiles_per_blk = self.block_size / 16;
+        let mut row_mask = vec![0u8; self.ff.div_ceil(16)];
+        for (b, &active) in col_mask.iter().enumerate() {
+            if active != 0 {
+                let t0 = b * tiles_per_blk;
+                for dt in 0..tiles_per_blk {
+                    if t0 + dt < row_mask.len() {
+                        row_mask[t0 + dt] = 1;
+                    }
+                }
+            }
+        }
+        Ok((row_mask, col_mask, self.block_size))
+    }
+
+    /// Compute exact per-token `k=1`-equivalent active column masks `(seq_len, n_blocks)`.
+    /// Calling this on a batched speculative tree guarantees every token in the batch
+    /// activates the exact same blocks as sequential single-token execution.
+    pub fn predict_per_token_col_masks(
+        &self,
+        x_batch: &[f32],
+        seq_len: usize,
+        shared_blocks: usize,
+        top_p: f32,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        if seq_len == 0 {
+            return Err("predict_per_token_col_masks: seq_len == 0".into());
+        }
+        let expected = seq_len * self.d_model;
+        if x_batch.len() != expected {
+            return Err(format!(
+                "predict_per_token_col_masks: x_batch len {} != expected {expected}",
+                x_batch.len()
+            ));
+        }
+        if !top_p.is_finite() || top_p <= 0.0 || top_p > 1.0 {
+            return Err(format!(
+                "predict_per_token_col_masks: top_p must be finite in (0, 1], got {top_p}"
+            ));
+        }
+        let total_keep = ((self.n_blocks as f32 * top_p).ceil() as usize).clamp(1, self.n_blocks);
+        let shared = shared_blocks.min(total_keep).min(self.n_blocks);
+        let routed_keep = total_keep.saturating_sub(shared);
+        let mut out = Vec::with_capacity(seq_len);
+        for t in 0..seq_len {
+            let xt = &x_batch[t * self.d_model..(t + 1) * self.d_model];
+            let scores = self.predict_block_scores(xt, 1)?;
+            let mut cm = vec![0u8; self.n_blocks];
+            for item in cm.iter_mut().take(shared) {
+                *item = 1;
+            }
+            if routed_keep > 0 {
+                let mut ranked: Vec<(usize, f32)> = (shared..self.n_blocks).map(|b| (b, scores[b])).collect();
+                ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+                for &(b, _) in ranked.iter().take(routed_keep) {
+                    cm[b] = 1;
+                }
+            }
+            out.push(cm);
+        }
+        Ok(out)
+    }
+
     /// Predict Mixture-of-Depths layer execution probability, max-aggregated across `0..seq_len`.
     pub fn predict_mod_exec_prob(&self, x_batch: &[f32], seq_len: usize) -> Result<Option<f32>, String> {
         if seq_len == 0 {
@@ -1148,5 +1304,56 @@ mod tests {
         }
         let (top2, logits) = loaded.layers[0].predict_active_districts(&x, 2, None, 2).unwrap();
         assert_eq!(top2, vec![1, 3], "expected top2=[1, 3], got {top2:?} (logits={logits:?})");
+    }
+
+    #[test]
+    fn gate8_tree_budgeted_masks_protect_root_and_cap_total_blocks() {
+        let bank = build_planted_bank(false);
+        let layer = &bank.layers[0]; // n_blocks=8 (ff=256, bsize=32), d_model=64
+        let mut x = vec![0.0f32; 16 * 64];
+        let mut depths = Vec::with_capacity(16);
+        for t in 0..16usize {
+            depths.push(if t == 0 { 0 } else { (t - 1) / 3 + 1 });
+            if t == 0 {
+                // Root strongly activates block 5 (feature slice 0..16 -> blocks 4..8; make block 5 win via sign/pos)
+                x[0..16].fill(1.0);
+            } else {
+                // Alternate deep nodes excite block 6 / 7 differently
+                let off = if t % 2 == 0 { 16 } else { 32 };
+                x[t * 64 + off..t * 64 + off + 16].fill(1.0);
+            }
+        }
+        let shared = 2usize;
+        let top_p = 0.50f32; // total_keep = 4 of 8 blocks
+        let (rm, cm, bsz) = layer.predict_tree_masks(&x, &depths, shared, top_p).unwrap();
+        assert_eq!(bsz, layer.block_size);
+        assert_eq!(cm[0], 1, "shared block 0 must be pinned active");
+        assert_eq!(cm[1], 1, "shared block 1 must be pinned active");
+        let active_blks: usize = cm.iter().filter(|&&v| v != 0).count();
+        assert_eq!(active_blks, 4, "tree budget must strictly cap active blocks to ceil(8*0.50)=4");
+        let tiles_per_blk = bsz / 16;
+        for (b, &act) in cm.iter().enumerate() {
+            for dt in 0..tiles_per_blk {
+                assert_eq!(rm[b * tiles_per_blk + dt], act);
+            }
+        }
+    }
+
+    #[test]
+    fn gate9_per_token_col_masks_match_k1_exact() {
+        let bank = build_planted_bank(false);
+        let layer = &bank.layers[0];
+        let mut x = vec![0.0f32; 3 * layer.d_model];
+        x[0..16].fill(1.0);
+        x[layer.d_model + 16..layer.d_model + 32].fill(1.0);
+        x[2 * layer.d_model + 32..2 * layer.d_model + 48].fill(1.0);
+        let batch_masks = layer.predict_per_token_col_masks(&x, 3, 2, 0.50).unwrap();
+        assert_eq!(batch_masks.len(), 3);
+        let zero_d = [0usize; 1];
+        for t in 0..3 {
+            let xt = &x[t * layer.d_model..(t + 1) * layer.d_model];
+            let (_, k1_cm, _) = layer.predict_tree_masks(xt, &zero_d, 2, 0.50).unwrap();
+            assert_eq!(batch_masks[t], k1_cm, "token {t} batch mask diverged from k=1 mask");
+        }
     }
 }

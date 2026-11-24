@@ -1326,6 +1326,390 @@ impl GlyphKvLayer {
         Ok(merged)
     }
 
+    /// Execute Single-Pass Flash-Glyph GQA over the committed prefix `[0..total_seen)` merged
+    /// losslessly (exact 3-tier LSE) with ephemeral speculative tree ancestor slots `(tree_k, tree_v)`
+    /// WITHOUT mutating or evicting `GlyphKvLayer` state on rejected speculative branches.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attend_tree_ephemeral(
+        &self,
+        q: &[f32],
+        base_t: usize,
+        tree_k: &[f32],
+        tree_v: &[f32],
+        tree_len: usize,
+        ancestor_mask: u32,
+        tree_depths: &[usize],
+        pos: usize,
+        attn_scale: f32,
+        native: Option<&NativeTile16Kernel>,
+        threads: usize,
+    ) -> Result<Vec<f32>, String> {
+        if q.len() != self.n_heads * self.hd {
+            return Err(format!(
+                "GlyphKvLayer::attend_tree_ephemeral q len {} != {}*{}",
+                q.len(),
+                self.n_heads,
+                self.hd
+            ));
+        }
+        let max_tt = base_t.saturating_sub(1);
+        let gqa = self.n_heads / self.n_kv;
+        let stride = self.n_kv * self.hd;
+
+        let all_glyphs_valid = if self.glyph_len == 0 {
+            false
+        } else {
+            (0..self.glyph_len).all(|s| {
+                let p = self.glyph_pos[s];
+                p < base_t && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w)
+            })
+        };
+
+        let mut out_g = vec![0.0f32; self.n_heads * self.hd];
+        let mut m_g = vec![f32::NEG_INFINITY; self.n_heads];
+        let mut l_g = vec![0.0f32; self.n_heads];
+        let mut has_glyph_contrib = false;
+
+        if self.glyph_len > 0 {
+            if all_glyphs_valid {
+                if let Some(fg_fn) = native.and_then(|n| n.flash_glyph_attn_fn) {
+                    let head_stride = self.glyph_cap * self.head_glyph_bytes;
+                    let v_ptr = if self.k_eq_v { std::ptr::null() } else { self.v_arena.as_ptr() };
+                    let rc = unsafe {
+                        fg_fn(
+                            q.as_ptr(),
+                            self.k_arena.as_ptr(),
+                            v_ptr,
+                            std::ptr::null(),
+                            out_g.as_mut_ptr(),
+                            m_g.as_mut_ptr(),
+                            l_g.as_mut_ptr(),
+                            self.n_heads as i32,
+                            self.n_kv as i32,
+                            self.hd as i32,
+                            self.glyph_len as i32,
+                            self.head_glyph_bytes,
+                            head_stride,
+                            attn_scale,
+                            OPT5_CODEC_ID,
+                            OPT5_BPG_OUTLIER as i32,
+                            if self.apply_fwht8 { 1 } else { 0 },
+                            if self.k_eq_v { 1 } else { 0 },
+                            threads.max(1) as i32,
+                        )
+                    };
+                    if rc != 0 {
+                        return Err(format!("flash_glyph_attention_gqa_c returned error {rc}"));
+                    }
+                    has_glyph_contrib = true;
+                }
+            }
+            if !has_glyph_contrib {
+                let head_stride = self.glyph_cap * self.head_glyph_bytes;
+                let mut dec_k = vec![0.0f32; self.hd];
+                let mut dec_v = vec![0.0f32; self.hd];
+                let mut q_rot = vec![0.0f32; self.n_heads * self.hd];
+                if self.apply_fwht8 {
+                    for hq in 0..self.n_heads {
+                        for oct in 0..(self.hd / 8) {
+                            let off = hq * self.hd + oct * 8;
+                            let v = [
+                                q[off], q[off + 1], q[off + 2], q[off + 3],
+                                q[off + 4], q[off + 5], q[off + 6], q[off + 7],
+                            ];
+                            let r = fwht8(&v);
+                            q_rot[off..off + 8].copy_from_slice(&r);
+                        }
+                    }
+                } else {
+                    q_rot.copy_from_slice(q);
+                }
+                for kvh in 0..self.n_kv {
+                    let h_off = kvh * head_stride;
+                    for slot in 0..self.glyph_len {
+                        let p = self.glyph_pos[slot];
+                        if p >= base_t || (base_t > 0 && p > max_tt) {
+                            continue;
+                        }
+                        if let Some(w) = self.sliding_window {
+                            if pos.abs_diff(p) >= w {
+                                continue;
+                            }
+                        }
+                        has_glyph_contrib = true;
+                        let s_off = h_off + slot * self.head_glyph_bytes;
+                        for g in 0..self.glyphs_per_head {
+                            decode_opt5_48b_glyph(
+                                &self.k_arena[s_off + g * OPT5_BPG_OUTLIER..s_off + (g + 1) * OPT5_BPG_OUTLIER],
+                                &mut dec_k[g * OPT5_GLYPH_DIM..(g + 1) * OPT5_GLYPH_DIM],
+                                false,
+                            );
+                        }
+                        let v_ref = if self.k_eq_v {
+                            &dec_k[..]
+                        } else {
+                            for g in 0..self.glyphs_per_head {
+                                decode_opt5_48b_glyph(
+                                    &self.v_arena[s_off + g * OPT5_BPG_OUTLIER..s_off + (g + 1) * OPT5_BPG_OUTLIER],
+                                    &mut dec_v[g * OPT5_GLYPH_DIM..(g + 1) * OPT5_GLYPH_DIM],
+                                    false,
+                                );
+                            }
+                            &dec_v[..]
+                        };
+                        for g_idx in 0..gqa {
+                            let hq = kvh * gqa + g_idx;
+                            let qh = &q_rot[hq * self.hd..(hq + 1) * self.hd];
+                            let mut dot = 0.0f64;
+                            for d in 0..self.hd {
+                                dot += qh[d] as f64 * dec_k[d] as f64;
+                            }
+                            let s = (dot as f32) * attn_scale;
+                            let acc = &mut out_g[hq * self.hd..(hq + 1) * self.hd];
+                            if s > m_g[hq] {
+                                let alpha = if m_g[hq].is_finite() { (m_g[hq] - s).exp() } else { 0.0f32 };
+                                l_g[hq] = l_g[hq] * alpha + 1.0;
+                                m_g[hq] = s;
+                                for d in 0..self.hd {
+                                    acc[d] = acc[d] * alpha + v_ref[d];
+                                }
+                            } else {
+                                let beta = (s - m_g[hq]).exp();
+                                l_g[hq] += beta;
+                                for d in 0..self.hd {
+                                    acc[d] += beta * v_ref[d];
+                                }
+                            }
+                        }
+                    }
+                }
+                if has_glyph_contrib {
+                    for hq in 0..self.n_heads {
+                        let inv_l = if l_g[hq] > 1e-30 { 1.0 / l_g[hq] } else { 0.0 };
+                        let acc = &mut out_g[hq * self.hd..(hq + 1) * self.hd];
+                        for v in acc.iter_mut() {
+                            *v *= inv_l;
+                        }
+                        if self.apply_fwht8 {
+                            for oct in 0..(self.hd / 8) {
+                                let off = oct * 8;
+                                let v = [
+                                    acc[off], acc[off + 1], acc[off + 2], acc[off + 3],
+                                    acc[off + 4], acc[off + 5], acc[off + 6], acc[off + 7],
+                                ];
+                                let inv = fwht8(&v);
+                                acc[off..off + 8].copy_from_slice(&inv);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out_m = vec![0.0f32; self.n_heads * self.hd];
+        let mut m_m = vec![f32::NEG_INFINITY; self.n_heads];
+        let mut l_m = vec![0.0f32; self.n_heads];
+        let mut has_mid_contrib = false;
+        if !self.mid_pos.is_empty() {
+            let mut valid_mid: Vec<usize> = Vec::with_capacity(self.mid_pos.len());
+            for (idx, &p) in self.mid_pos.iter().enumerate() {
+                if p < base_t && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                    valid_mid.push(idx);
+                }
+            }
+            if !valid_mid.is_empty() {
+                has_mid_contrib = true;
+                let hd = self.hd;
+                let sc_head = hd / MID_SUBBLOCK_DIM;
+                let sc_stride = self.n_kv * sc_head;
+                let mut scores = vec![0.0f32; valid_mid.len()];
+                let (v_q8_buf, v_sc_buf) = if self.k_eq_v {
+                    (&self.k_mid_q8, &self.k_mid_sc)
+                } else {
+                    (&self.v_mid_q8, &self.v_mid_sc)
+                };
+                for kvh in 0..self.n_kv {
+                    let kvh_off = kvh * hd;
+                    let kvh_sc_off = kvh * sc_head;
+                    for g_idx in 0..gqa {
+                        let hq = kvh * gqa + g_idx;
+                        let qh = &q[hq * hd..(hq + 1) * hd];
+                        let mut m_max = f32::NEG_INFINITY;
+                        for (vi, &idx) in valid_mid.iter().enumerate() {
+                            let base = idx * stride + kvh_off;
+                            let sc_base = idx * sc_stride + kvh_sc_off;
+                            let s = dot_f32_mid_int8(
+                                qh,
+                                &self.k_mid_q8[base..base + hd],
+                                &self.k_mid_sc[sc_base..sc_base + sc_head],
+                            ) * attn_scale;
+                            scores[vi] = s;
+                            if s > m_max {
+                                m_max = s;
+                            }
+                        }
+                        m_m[hq] = m_max;
+                        let mut l_sum = 0.0f32;
+                        let acc = &mut out_m[hq * hd..(hq + 1) * hd];
+                        for (vi, &idx) in valid_mid.iter().enumerate() {
+                            let w = (scores[vi] - m_max).exp();
+                            l_sum += w;
+                            let base = idx * stride + kvh_off;
+                            let sc_base = idx * sc_stride + kvh_sc_off;
+                            let vq = &v_q8_buf[base..base + hd];
+                            let vsc = &v_sc_buf[sc_base..sc_base + sc_head];
+                            for ((dst_blk, vq_blk), &sc) in acc
+                                .chunks_exact_mut(MID_SUBBLOCK_DIM)
+                                .zip(vq.chunks_exact(MID_SUBBLOCK_DIM))
+                                .zip(vsc.iter())
+                            {
+                                let w_sc = w * sc;
+                                for (dst, &qv) in dst_blk.iter_mut().zip(vq_blk.iter()) {
+                                    *dst += w_sc * (qv as f32);
+                                }
+                            }
+                        }
+                        l_m[hq] = l_sum;
+                        let inv_l = if l_sum > 1e-30 { 1.0f32 / l_sum } else { 0.0f32 };
+                        for v in acc.iter_mut() {
+                            *v *= inv_l;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exact FP32 sink + tail + ephemeral speculative tree ancestor slots (`0=sink, 1=tail, 2=tree`).
+        let mut out_e = vec![0.0f32; self.n_heads * self.hd];
+        let mut m_e = vec![f32::NEG_INFINITY; self.n_heads];
+        let mut l_e = vec![0.0f32; self.n_heads];
+        let mut has_exact_contrib = false;
+        let mut valid_exact: Vec<(u8, usize)> =
+            Vec::with_capacity(self.sink_pos.len() + self.tail_pos.len() + tree_len);
+        for (idx, &p) in self.sink_pos.iter().enumerate() {
+            if p < base_t && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                valid_exact.push((0, idx));
+            }
+        }
+        for (idx, &p) in self.tail_pos.iter().enumerate() {
+            if p < base_t && self.sliding_window.map_or(true, |w| pos.abs_diff(p) < w) {
+                valid_exact.push((1, idx));
+            }
+        }
+        for j in 0..tree_len.min(32) {
+            if ((ancestor_mask >> j) & 1) == 0 {
+                continue;
+            }
+            let logical_p = base_t + tree_depths[j];
+            if self.sliding_window.map_or(true, |w| pos.abs_diff(logical_p) < w) {
+                valid_exact.push((2, j));
+            }
+        }
+
+        if !valid_exact.is_empty() {
+            has_exact_contrib = true;
+            let hd = self.hd;
+            let mut scores = vec![0.0f32; valid_exact.len()];
+            for kvh in 0..self.n_kv {
+                let kvh_off = kvh * hd;
+                for g_idx in 0..gqa {
+                    let hq = kvh * gqa + g_idx;
+                    let qh = &q[hq * hd..(hq + 1) * hd];
+                    let mut m_max = f32::NEG_INFINITY;
+                    for (vi, &(src_kind, idx)) in valid_exact.iter().enumerate() {
+                        let k_buf = match src_kind {
+                            0 => &self.k_sink,
+                            1 => &self.k_tail,
+                            _ => tree_k,
+                        };
+                        let base = idx * stride + kvh_off;
+                        let s = crate::math::dot_f32_4way(qh, &k_buf[base..base + hd]) * attn_scale;
+                        scores[vi] = s;
+                        if s > m_max {
+                            m_max = s;
+                        }
+                    }
+                    m_e[hq] = m_max;
+                    let mut l_sum = 0.0f32;
+                    let acc = &mut out_e[hq * hd..(hq + 1) * hd];
+                    for (vi, &(src_kind, idx)) in valid_exact.iter().enumerate() {
+                        let w = (scores[vi] - m_max).exp();
+                        l_sum += w;
+                        let v_buf = if self.k_eq_v {
+                            match src_kind {
+                                0 => &self.k_sink,
+                                1 => &self.k_tail,
+                                _ => tree_k,
+                            }
+                        } else {
+                            match src_kind {
+                                0 => &self.v_sink,
+                                1 => &self.v_tail,
+                                _ => tree_v,
+                            }
+                        };
+                        let base = idx * stride + kvh_off;
+                        for (dst, &v_val) in acc.iter_mut().zip(v_buf[base..base + hd].iter()) {
+                            *dst += w * v_val;
+                        }
+                    }
+                    l_e[hq] = l_sum;
+                    let inv_l = if l_sum > 1e-30 { 1.0f32 / l_sum } else { 0.0f32 };
+                    for v in acc.iter_mut() {
+                        *v *= inv_l;
+                    }
+                }
+            }
+        }
+
+        if !has_glyph_contrib && !has_mid_contrib {
+            return Ok(out_e);
+        }
+        if !has_mid_contrib && !has_exact_contrib {
+            return Ok(out_g);
+        }
+        if !has_glyph_contrib && !has_exact_contrib {
+            return Ok(out_m);
+        }
+        let mut merged = vec![0.0f32; self.n_heads * self.hd];
+        for hq in 0..self.n_heads {
+            let mut mj = f32::NEG_INFINITY;
+            if has_glyph_contrib && m_g[hq] > mj {
+                mj = m_g[hq];
+            }
+            if has_mid_contrib && m_m[hq] > mj {
+                mj = m_m[hq];
+            }
+            if has_exact_contrib && m_e[hq] > mj {
+                mj = m_e[hq];
+            }
+            let wg = if has_glyph_contrib && m_g[hq].is_finite() {
+                l_g[hq] * (m_g[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let wm = if has_mid_contrib && m_m[hq].is_finite() {
+                l_m[hq] * (m_m[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let we = if has_exact_contrib && m_e[hq].is_finite() {
+                l_e[hq] * (m_e[hq] - mj).exp()
+            } else {
+                0.0
+            };
+            let denom = (wg + wm + we).max(1e-30);
+            let ag = wg / denom;
+            let am = wm / denom;
+            let ae = we / denom;
+            let base = hq * self.hd;
+            for d in 0..self.hd {
+                merged[base + d] = ag * out_g[base + d] + am * out_m[base + d] + ae * out_e[base + d];
+            }
+        }
+        Ok(merged)
+    }
+
     /// Expose raw exact FP32 KV slices (if all tokens reside in exact buffers, e.g. for assistant sharing)
     /// or reconstruct decoded FP32 KV sequence in chronological order `[0..total_seen]` when needed.
     pub fn materialize_chronological_kv(&self) -> (Vec<f32>, Vec<f32>) {
@@ -1643,5 +2027,67 @@ mod tests {
         let naive_bf16 = 131_072usize * 4 * 512 * 2 * 2;
         let ratio = naive_bf16 as f64 / resident as f64;
         assert!(ratio > 19.5 && ratio < 21.3, "expected >19.5x shrink at 128K with LOD mid tier, got {ratio:.3}x");
+    }
+
+    #[test]
+    fn attend_tree_ephemeral_matches_sequential_attend_range_across_tiers() {
+        let n_heads = 8usize;
+        let n_kv = 2usize;
+        let hd = 256usize;
+        let stride = n_kv * hd;
+        let base_t = 48usize; // spans sink(4) + glyphs + mid(16) + tail(8)
+        let mut g_tree = GlyphKvLayer::new_with_lod(n_heads, n_kv, hd, false, None, 4, 8, 16, 64).unwrap();
+        let mut g_seq = GlyphKvLayer::new_with_lod(n_heads, n_kv, hd, false, None, 4, 8, 16, 64).unwrap();
+        for t in 0..base_t {
+            let k = det_vec(stride, 9000 + t as u64);
+            let v = det_vec(stride, 9500 + t as u64);
+            g_tree.append_token(&k, &v, None).unwrap();
+            g_seq.append_token(&k, &v, None).unwrap();
+        }
+        // Build a 4-node tree: 0 (root, d=0), 1 (rejected child, d=1), 2 (accepted sibling, d=1), 3 (child of 2, d=2)
+        let tree_depths = [0usize, 1, 1, 2];
+        let masks: [u32; 4] = [0b0001, 0b0011, 0b0101, 0b1101];
+        let mut tree_k = Vec::with_capacity(4 * stride);
+        let mut tree_v = Vec::with_capacity(4 * stride);
+        for slot in 0..4 {
+            tree_k.extend_from_slice(&det_vec(stride, 12000 + slot as u64));
+            tree_v.extend_from_slice(&det_vec(stride, 13000 + slot as u64));
+        }
+        let q = det_vec(n_heads * hd, 77777);
+        let out_tree = g_tree
+            .attend_tree_ephemeral(&q, base_t, &tree_k, &tree_v, 4, masks[3], &tree_depths, base_t + 2, 1.0, None, 1)
+            .unwrap();
+        assert_eq!(g_tree.total_seen(), base_t, "ephemeral tree attend must not mutate GlyphKvLayer");
+
+        // 1. Exact mathematical equivalence (`< 1e-6` rel L2) against materialized 3-tier state + `attn_decode_tree`!
+        let (mut k_mat, mut v_mat) = g_tree.materialize_chronological_kv();
+        k_mat.extend_from_slice(&tree_k);
+        v_mat.extend_from_slice(&tree_v);
+        let out_exact_ref = crate::math::attn_decode_tree(
+            &q, &k_mat, &v_mat, base_t, 4, masks[3], &tree_depths, base_t + 2, n_heads, n_kv, hd, None,
+        );
+        let (cos_ref, rel_ref, _) = cosine_and_rel_l2(&out_tree, &out_exact_ref);
+        assert!(
+            cos_ref > 0.999999 && rel_ref < 1e-6,
+            "attend_tree_ephemeral diverged from exact materialized tree GQA: cos={cos_ref} rel={rel_ref}"
+        );
+
+        // 2. Append ONLY the winning path `[0, 2, 3]` to `g_seq` (rolling 3 tokens across tail->mid->glyph) and verify >0.999 cosine!
+        for &slot in &[0usize, 2, 3] {
+            g_seq
+                .append_token(
+                    &tree_k[slot * stride..(slot + 1) * stride],
+                    &tree_v[slot * stride..(slot + 1) * stride],
+                    None,
+                )
+                .unwrap();
+        }
+        let end_idx = base_t + 2;
+        let out_seq = g_seq.attend_range(&q, end_idx, end_idx, end_idx, 1.0, None, 1).unwrap();
+        let (cos, rel, _) = cosine_and_rel_l2(&out_tree, &out_seq);
+        assert!(
+            cos > 0.999 && rel < 0.05,
+            "attend_tree_ephemeral diverged across tier eviction from sequential attend_range: cos={cos} rel={rel}"
+        );
     }
 }
