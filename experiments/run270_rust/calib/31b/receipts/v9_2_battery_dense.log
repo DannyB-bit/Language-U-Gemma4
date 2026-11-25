@@ -1,0 +1,1224 @@
+
+=== [dense] P1_arith: What is 2 + 2? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text What is 2 + 2? --max-tokens 32
+PREFILL_TOP5 [818:"The"(23.890), 1018:"**"(19.909), 1509:"It"(17.312), 3810:"There"(15.479), 79629:"Depending"(15.194)]
+[STEP 0] id=818 text="The"
+[STEP 1] id=3890 text=" answer"
+[STEP 2] id=563 text=" is"
+[STEP 3] id=236743 text=" "
+[STEP 4] id=236812 text="4"
+[STEP 5] id=236761 text="."
+[STEP 6] id=106 text="<turn|>"
+GEN31B ids=[818, 3890, 563, 236743, 236812, 236761, 106]
+GEN31B text="The answer is 4.<turn|>"
+KV31B mode=GlyphLod raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 mid_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+PROFILE31B steps=7 attn_s=16.051 gate_s=8.999 up_s=9.107 down_s=11.990 norm_kv_s=1.315 lmhead_s=1.262 avg_step_s=6.961 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=3326 prefill_s=32.08 decode_s=16.81 vm_hwm_kb=Some(6801732) vm_rss_kb=Some(6801732)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 35.42s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6677904), Some(6616400))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6677904), Some(6616432)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.63s (pinned=true)
+[run31b] layer 05/60 done in 0.64s (pinned=true)
+[run31b] layer 14/60 done in 0.56s (pinned=true)
+[run31b] layer 29/60 done in 0.75s (pinned=true)
+[run31b] layer 44/60 done in 0.54s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[run31b] prefill done in 32.08s ssd_read_mb=0.0 vm=(Some(6796908), Some(6796908))
+[run31b] decode step 0 in 2.84s vm=(Some(6801728), Some(6801728))
+[run31b] decode step 1 in 2.74s vm=(Some(6801728), Some(6801728))
+[run31b] decode step 2 in 2.95s vm=(Some(6801728), Some(6801728))
+[run31b] decode step 3 in 2.85s vm=(Some(6801728), Some(6801728))
+[run31b] decode step 4 in 2.72s vm=(Some(6801728), Some(6801728))
+[run31b] decode step 5 in 2.70s vm=(Some(6801728), Some(6801728))
+
+
+=== [dense] P2_france: The capital of France is ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text The capital of France is --max-tokens 32
+PREFILL_TOP5 [1509:"It"(27.836), 22515:"Based"(24.336), 83033:"Assuming"(23.350), 818:"The"(23.040), 79629:"Depending"(22.860)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=611 text=" you"
+[STEP 3] id=659 text=" are"
+[STEP 4] id=26242 text=" referring"
+[STEP 5] id=531 text=" to"
+[STEP 6] id=506 text=" the"
+[STEP 7] id=5213 text=" **"
+[STEP 8] id=41626 text="capital"
+[STEP 9] id=529 text=" of"
+[STEP 10] id=7001 text=" France"
+[STEP 11] id=84750 text="**."
+[STEP 12] id=108 text="\n\n"
+[STEP 13] id=818 text="The"
+[STEP 14] id=5279 text=" capital"
+[STEP 15] id=529 text=" of"
+[STEP 16] id=506 text=" the"
+[STEP 17] id=3207 text=" city"
+[STEP 18] id=563 text=" is"
+[STEP 19] id=9079 text=" Paris"
+[STEP 20] id=236761 text="."
+[STEP 21] id=106 text="<turn|>"
+GEN31B ids=[1509, 5072, 611, 659, 26242, 531, 506, 5213, 41626, 529, 7001, 84750, 108, 818, 5279, 529, 506, 3207, 563, 9079, 236761, 106]
+GEN31B text="It seems you are referring to the **capital of France**.\n\nThe capital of the city is Paris.<turn|>"
+KV31B mode=GlyphLod raw_bytes=70287360 naive_bf16_bytes=35143680 compressed_bytes=61504000 glyph_tokens=0 mid_tokens=380 exact_tokens=1960 shrink=1.14x shrink_vs_bf16=0.57x
+PROFILE31B steps=22 attn_s=27.492 gate_s=15.214 up_s=15.312 down_s=18.330 norm_kv_s=2.755 lmhead_s=3.821 avg_step_s=3.769 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=28644 prefill_s=25.96 decode_s=57.27 vm_hwm_kb=Some(6866964) vm_rss_kb=Some(6805528)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.07s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866964), Some(6805176))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866964), Some(6805004)))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.54s (pinned=true)
+[run31b] layer 05/60 done in 0.56s (pinned=true)
+[run31b] layer 14/60 done in 0.48s (pinned=true)
+[run31b] layer 29/60 done in 0.54s (pinned=true)
+[run31b] layer 44/60 done in 0.45s (pinned=true)
+[run31b] layer 59/60 done in 0.52s (pinned=true)
+[run31b] prefill done in 25.96s ssd_read_mb=0.0 vm=(Some(6866964), Some(6805528))
+[run31b] decode step 0 in 2.67s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 1 in 2.66s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 2 in 2.76s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 3 in 2.73s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 4 in 2.77s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 5 in 2.82s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 6 in 2.70s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 7 in 2.69s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 8 in 2.68s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 9 in 2.76s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 10 in 2.73s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 11 in 2.68s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 12 in 2.68s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 13 in 2.68s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 14 in 2.75s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 15 in 2.75s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 16 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 17 in 2.75s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 18 in 2.77s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 19 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 20 in 2.73s vm=(Some(6866964), Some(6805528))
+
+
+=== [dense] P3_hamlet_quote: To be or not to be, that is the ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text To be or not to be, that is the --max-tokens 32
+PREFILL_TOP5 [1509:"It"(27.419), 22515:"Based"(25.331), 818:"The"(23.642), 79629:"Depending"(22.497), 10081:"Since"(21.068)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=600 text=" that"
+[STEP 3] id=506 text=" the"
+[STEP 4] id=13315 text=" sentence"
+[STEP 5] id=563 text=" is"
+[STEP 6] id=496 text=" a"
+[STEP 7] id=3103 text=" bit"
+[STEP 8] id=529 text=" of"
+[STEP 9] id=614 text=" an"
+[STEP 10] id=11049 text=" odd"
+[STEP 11] id=236764 text=","
+[STEP 12] id=532 text=" and"
+[STEP 13] id=625 text=" it"
+[STEP 14] id=236789 text="'"
+[STEP 15] id=236751 text="s"
+[STEP 16] id=711 text=" not"
+[STEP 17] id=531 text=" to"
+[STEP 18] id=577 text=" be"
+[STEP 19] id=236761 text="."
+[STEP 20] id=106 text="<turn|>"
+GEN31B ids=[1509, 5072, 600, 506, 13315, 563, 496, 3103, 529, 614, 11049, 236764, 532, 625, 236789, 236751, 711, 531, 577, 236761, 106]
+GEN31B text="It seems that the sentence is a bit of an odd, and it's not to be.<turn|>"
+KV31B mode=GlyphLod raw_bytes=77496320 naive_bf16_bytes=38748160 compressed_bytes=63418880 glyph_tokens=0 mid_tokens=620 exact_tokens=1960 shrink=1.22x shrink_vs_bf16=0.61x
+PROFILE31B steps=21 attn_s=28.979 gate_s=16.045 up_s=16.229 down_s=19.882 norm_kv_s=3.184 lmhead_s=3.634 avg_step_s=4.188 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=74335 prefill_s=33.13 decode_s=55.13 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6805544)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.03s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 23 tokens ids=[2, 105, 2364, 107, 2021, 577, 653, 711, 531, 577, 236764, 600, 563, 506, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.62s (pinned=true)
+[run31b] layer 05/60 done in 0.68s (pinned=true)
+[run31b] layer 14/60 done in 0.62s (pinned=true)
+[run31b] layer 29/60 done in 0.72s (pinned=true)
+[run31b] layer 44/60 done in 0.58s (pinned=true)
+[run31b] layer 59/60 done in 0.68s (pinned=true)
+[run31b] prefill done in 33.13s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.71s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.70s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.70s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.67s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 9 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 10 in 2.97s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 11 in 2.89s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 12 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 13 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 14 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 15 in 2.80s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 16 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 17 in 2.83s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 18 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 19 in 2.75s vm=(Some(6866980), Some(6805544))
+
+
+=== [dense] P4_prime_py: Write a Python function to check if a number is prime. ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Write a Python function to check if a number is prime. --max-tokens 48
+PREFILL_TOP5 [1509:"It"(26.721), 2021:"To"(24.340), 10081:"Since"(23.309), 236777:"I"(22.773), 79629:"Depending"(22.742)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=611 text=" you"
+[STEP 3] id=659 text=" are"
+[STEP 4] id=3182 text=" looking"
+[STEP 5] id=573 text=" for"
+[STEP 6] id=496 text=" a"
+[STEP 7] id=623 text=" \""
+[STEP 8] id=2497 text="prime"
+[STEP 9] id=236775 text="\""
+[STEP 10] id=568 text=" ("
+[STEP 11] id=7650 text="which"
+[STEP 12] id=563 text=" is"
+[STEP 13] id=4547 text=" likely"
+[STEP 14] id=5213 text=" **"
+[STEP 15] id=40090 text="Prime"
+[STEP 16] id=1018 text="**"
+[STEP 17] id=769 text=")."
+[STEP 18] id=3153 text=" However"
+[STEP 19] id=236764 text=","
+[STEP 20] id=625 text=" it"
+[STEP 21] id=236789 text="'"
+[STEP 22] id=236751 text="s"
+[STEP 23] id=711 text=" not"
+[STEP 24] id=2653 text=" possible"
+[STEP 25] id=531 text=" to"
+[STEP 26] id=2426 text=" check"
+[STEP 27] id=768 text=" if"
+[STEP 28] id=506 text=" the"
+[STEP 29] id=1548 text=" number"
+[STEP 30] id=563 text=" is"
+[STEP 31] id=8355 text=" prime"
+[STEP 32] id=236761 text="."
+[STEP 33] id=108 text="\n\n"
+[STEP 34] id=818 text="The"
+[STEP 35] id=1292 text=" function"
+[STEP 36] id=740 text=" can"
+[STEP 37] id=577 text=" be"
+[STEP 38] id=1456 text=" used"
+[STEP 39] id=618 text=" as"
+[STEP 40] id=5238 text=" follows"
+[STEP 41] id=236787 text=":"
+[STEP 42] id=107 text="\n"
+[STEP 43] id=2717 text="```"
+[STEP 44] id=6719 text="python"
+[STEP 45] id=107 text="\n"
+[STEP 46] id=2063 text="def"
+[STEP 47] id=2426 text=" check"
+GEN31B ids=[1509, 5072, 611, 659, 3182, 573, 496, 623, 2497, 236775, 568, 7650, 563, 4547, 5213, 40090, 1018, 769, 3153, 236764, 625, 236789, 236751, 711, 2653, 531, 2426, 768, 506, 1548, 563, 8355, 236761, 108, 818, 1292, 740, 577, 1456, 618, 5238, 236787, 107, 2717, 6719, 107, 2063, 2426]
+GEN31B text="It seems you are looking for a \"prime\" (which is likely **Prime**). However, it's not possible to check if the number is prime.\n\nThe function can be used as follows:\n```python\ndef check"
+KV31B mode=GlyphLod raw_bytes=129761280 naive_bf16_bytes=64880640 compressed_bytes=77301760 glyph_tokens=0 mid_tokens=2360 exact_tokens=1960 shrink=1.68x shrink_vs_bf16=0.84x
+PROFILE31B steps=48 attn_s=54.414 gate_s=29.918 up_s=30.112 down_s=35.573 norm_kv_s=8.328 lmhead_s=8.320 avg_step_s=3.472 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=129648 prefill_s=36.43 decode_s=130.83 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6845244)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805196))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805024)))
+[run31b] prompt 25 tokens ids=[2, 105, 2364, 107, 6974, 496, 17856, 1292, 531, 2426, 768, 496, 1548, 563, 8355, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.68s (pinned=true)
+[run31b] layer 05/60 done in 0.76s (pinned=true)
+[run31b] layer 14/60 done in 0.66s (pinned=true)
+[run31b] layer 29/60 done in 0.74s (pinned=true)
+[run31b] layer 44/60 done in 0.64s (pinned=true)
+[run31b] layer 59/60 done in 0.80s (pinned=true)
+[run31b] prefill done in 36.43s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805548))
+[run31b] decode step 0 in 2.69s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 1 in 2.78s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 2 in 2.70s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 3 in 2.68s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 4 in 2.68s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 5 in 2.69s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 6 in 2.74s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 7 in 2.74s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 8 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 9 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 10 in 2.77s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 11 in 2.73s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 12 in 2.79s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 13 in 2.75s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 14 in 2.88s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 15 in 2.76s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 16 in 2.83s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 17 in 2.92s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 18 in 2.74s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 19 in 2.75s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 20 in 2.74s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 21 in 2.85s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 22 in 2.77s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 23 in 2.84s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 24 in 2.77s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 25 in 2.75s vm=(Some(6866980), Some(6807596))
+[run31b] decode step 26 in 2.78s vm=(Some(6866980), Some(6808812))
+[run31b] decode step 27 in 2.78s vm=(Some(6866980), Some(6811516))
+[run31b] decode step 28 in 2.77s vm=(Some(6866980), Some(6813212))
+[run31b] decode step 29 in 2.77s vm=(Some(6866980), Some(6815068))
+[run31b] decode step 30 in 2.77s vm=(Some(6866980), Some(6816912))
+[run31b] decode step 31 in 2.78s vm=(Some(6866980), Some(6818752))
+[run31b] decode step 32 in 2.78s vm=(Some(6866980), Some(6820592))
+[run31b] decode step 33 in 2.81s vm=(Some(6866980), Some(6822432))
+[run31b] decode step 34 in 2.79s vm=(Some(6866980), Some(6824272))
+[run31b] decode step 35 in 2.81s vm=(Some(6866980), Some(6826116))
+[run31b] decode step 36 in 2.79s vm=(Some(6866980), Some(6827956))
+[run31b] decode step 37 in 2.79s vm=(Some(6866980), Some(6829796))
+[run31b] decode step 38 in 3.01s vm=(Some(6866980), Some(6831636))
+[run31b] decode step 39 in 2.84s vm=(Some(6866980), Some(6843728))
+[run31b] decode step 40 in 2.78s vm=(Some(6866980), Some(6843868))
+[run31b] decode step 41 in 2.79s vm=(Some(6866980), Some(6844012))
+[run31b] decode step 42 in 2.78s vm=(Some(6866980), Some(6844156))
+[run31b] decode step 43 in 2.89s vm=(Some(6866980), Some(6844812))
+[run31b] decode step 44 in 2.86s vm=(Some(6866980), Some(6844956))
+[run31b] decode step 45 in 2.82s vm=(Some(6866980), Some(6845100))
+[run31b] decode step 46 in 2.82s vm=(Some(6866980), Some(6845244))
+
+
+=== [dense] P5_speed: A train travels 120 km in 2 hours. What is its average speed? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text A train travels 120 km in 2 hours. What is its average speed? --max-tokens 32
+PREFILL_TOP5 [2021:"To"(28.674), 818:"The"(23.891), 2282:" To"(19.300), 22515:"Based"(19.224), 83033:"Assuming"(19.070)]
+[STEP 0] id=2021 text="To"
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[STEP 3] id=4398 text=" average"
+[STEP 4] id=4249 text=" speed"
+[STEP 5] id=236764 text=","
+[STEP 6] id=611 text=" you"
+[STEP 7] id=19226 text=" divide"
+[STEP 8] id=506 text=" the"
+[STEP 9] id=2558 text=" total"
+[STEP 10] id=5149 text=" distance"
+[STEP 11] id=684 text=" by"
+[STEP 12] id=506 text=" the"
+[STEP 13] id=990 text=" time"
+[STEP 14] id=236761 text="."
+[STEP 15] id=108 text="\n\n"
+[STEP 16] id=1018 text="**"
+[STEP 17] id=236770 text="1"
+[STEP 18] id=236778 text="2"
+[STEP 19] id=236771 text="0"
+[STEP 20] id=7251 text=" km"
+[STEP 21] id=965 text=" /"
+[STEP 22] id=236743 text=" "
+[STEP 23] id=236778 text="2"
+[STEP 24] id=3885 text=" hours"
+[STEP 25] id=578 text=" ="
+[STEP 26] id=236743 text=" "
+[STEP 27] id=236825 text="6"
+[STEP 28] id=236771 text="0"
+[STEP 29] id=7251 text=" km"
+[STEP 30] id=236786 text="/"
+[STEP 31] id=236754 text="h"
+GEN31B ids=[2021, 1586, 506, 4398, 4249, 236764, 611, 19226, 506, 2558, 5149, 684, 506, 990, 236761, 108, 1018, 236770, 236778, 236771, 7251, 965, 236743, 236778, 3885, 578, 236743, 236825, 236771, 7251, 236786, 236754]
+GEN31B text="To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 km/h"
+KV31B mode=GlyphLod raw_bytes=113541120 naive_bf16_bytes=56770560 compressed_bytes=72993280 glyph_tokens=0 mid_tokens=1820 exact_tokens=1960 shrink=1.56x shrink_vs_bf16=0.78x
+PROFILE31B steps=32 attn_s=42.673 gate_s=23.626 up_s=23.753 down_s=29.077 norm_kv_s=6.287 lmhead_s=5.553 avg_step_s=4.093 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=12892 prefill_s=45.44 decode_s=86.00 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6830128)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.92s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 32 tokens ids=[2, 105, 2364, 107, 236776, 2519, 33036, 236743, 236770, 236778, 236771, 7251, 528, 236743, 236778, 3885, 236761, 2900, 563, 1061, 4398, 4249, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.84s (pinned=true)
+[run31b] layer 05/60 done in 0.94s (pinned=true)
+[run31b] layer 14/60 done in 0.83s (pinned=true)
+[run31b] layer 29/60 done in 0.93s (pinned=true)
+[run31b] layer 44/60 done in 0.80s (pinned=true)
+[run31b] layer 59/60 done in 0.92s (pinned=true)
+[run31b] prefill done in 45.44s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.71s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 9 in 2.80s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 10 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 11 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 12 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 13 in 2.84s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 14 in 2.87s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 15 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 16 in 2.80s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 17 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 18 in 2.80s vm=(Some(6866980), Some(6807592))
+[run31b] decode step 19 in 2.79s vm=(Some(6866980), Some(6808840))
+[run31b] decode step 20 in 2.79s vm=(Some(6866980), Some(6811560))
+[run31b] decode step 21 in 2.77s vm=(Some(6866980), Some(6813256))
+[run31b] decode step 22 in 2.75s vm=(Some(6866980), Some(6815144))
+[run31b] decode step 23 in 2.77s vm=(Some(6866980), Some(6817020))
+[run31b] decode step 24 in 2.86s vm=(Some(6866980), Some(6818892))
+[run31b] decode step 25 in 2.77s vm=(Some(6866980), Some(6820764))
+[run31b] decode step 26 in 2.78s vm=(Some(6866980), Some(6822636))
+[run31b] decode step 27 in 2.80s vm=(Some(6866980), Some(6824508))
+[run31b] decode step 28 in 2.78s vm=(Some(6866980), Some(6826384))
+[run31b] decode step 29 in 2.77s vm=(Some(6866980), Some(6828256))
+[run31b] decode step 30 in 2.80s vm=(Some(6866980), Some(6830128))
+
+
+=== [dense] P6_photo: Explain how photosynthesis works in one short sentence. ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Explain how photosynthesis works in one short sentence. --max-tokens 40
+PREFILL_TOP5 [49660:"Photos"(27.905), 37256:" Photos"(21.987), 818:"The"(20.869), 1018:"**"(20.222), 137556:"Chlor"(20.178)]
+[STEP 0] id=49660 text="Photos"
+[STEP 1] id=30445 text="ynthesis"
+[STEP 2] id=563 text=" is"
+[STEP 3] id=506 text=" the"
+[STEP 4] id=1657 text=" process"
+[STEP 5] id=529 text=" of"
+[STEP 6] id=1699 text=" using"
+[STEP 7] id=2214 text=" light"
+[STEP 8] id=531 text=" to"
+[STEP 9] id=2619 text=" create"
+[STEP 10] id=496 text=" a"
+[STEP 11] id=7395 text=" chemical"
+[STEP 12] id=6608 text=" reaction"
+[STEP 13] id=236761 text="."
+[STEP 14] id=106 text="<turn|>"
+GEN31B ids=[49660, 30445, 563, 506, 1657, 529, 1699, 2214, 531, 2619, 496, 7395, 6608, 236761, 106]
+GEN31B text="Photosynthesis is the process of using light to create a chemical reaction.<turn|>"
+KV31B mode=GlyphLod raw_bytes=64880640 naive_bf16_bytes=32440320 compressed_bytes=60067840 glyph_tokens=0 mid_tokens=200 exact_tokens=1960 shrink=1.08x shrink_vs_bf16=0.54x
+PROFILE31B steps=15 attn_s=23.027 gate_s=12.868 up_s=13.085 down_s=16.035 norm_kv_s=2.223 lmhead_s=2.654 avg_step_s=4.659 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=40899 prefill_s=31.88 decode_s=38.25 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6805548)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.95s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805196))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805024)))
+[run31b] prompt 22 tokens ids=[2, 105, 2364, 107, 155122, 1217, 93036, 4146, 528, 886, 2822, 13315, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.74s (pinned=true)
+[run31b] layer 05/60 done in 0.66s (pinned=true)
+[run31b] layer 14/60 done in 0.59s (pinned=true)
+[run31b] layer 29/60 done in 0.65s (pinned=true)
+[run31b] layer 44/60 done in 0.55s (pinned=true)
+[run31b] layer 59/60 done in 0.62s (pinned=true)
+[run31b] prefill done in 31.88s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805548))
+[run31b] decode step 0 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 1 in 2.66s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 2 in 2.70s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 3 in 2.68s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 4 in 2.67s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 5 in 2.70s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 6 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 7 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 8 in 2.68s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 9 in 2.68s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 10 in 3.00s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 11 in 2.71s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 12 in 2.79s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 13 in 2.82s vm=(Some(6866980), Some(6805548))
+
+
+=== [dense] P7_bsearch: What is the time complexity of binary search on a sorted array? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text What is the time complexity of binary search on a sorted array? --max-tokens 32
+PREFILL_TOP5 [1509:"It"(27.073), 2021:"To"(24.654), 22515:"Based"(23.006), 79629:"Depending"(22.757), 83033:"Assuming"(22.498)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=611 text=" you"
+[STEP 3] id=659 text=" are"
+[STEP 4] id=26242 text=" referring"
+[STEP 5] id=531 text=" to"
+[STEP 6] id=5213 text=" **"
+[STEP 7] id=33940 text="Binary"
+[STEP 8] id=12808 text=" Search"
+[STEP 9] id=1018 text="**"
+[STEP 10] id=568 text=" ("
+[STEP 11] id=7650 text="which"
+[STEP 12] id=563 text=" is"
+[STEP 13] id=496 text=" a"
+[STEP 14] id=3927 text=" search"
+[STEP 15] id=8417 text=" algorithm"
+[STEP 16] id=573 text=" for"
+[STEP 17] id=8159 text=" finding"
+[STEP 18] id=506 text=" the"
+[STEP 19] id=4820 text=" elements"
+[STEP 20] id=529 text=" of"
+[STEP 21] id=614 text=" an"
+[STEP 22] id=3499 text=" array"
+[STEP 23] id=236761 text="."
+[STEP 24] id=108 text="\n\n"
+[STEP 25] id=818 text="The"
+[STEP 26] id=990 text=" time"
+[STEP 27] id=16783 text=" complexity"
+[STEP 28] id=529 text=" of"
+[STEP 29] id=14820 text=" binary"
+[STEP 30] id=3927 text=" search"
+[STEP 31] id=580 text=" on"
+GEN31B ids=[1509, 5072, 611, 659, 26242, 531, 5213, 33940, 12808, 1018, 568, 7650, 563, 496, 3927, 8417, 573, 8159, 506, 4820, 529, 614, 3499, 236761, 108, 818, 990, 16783, 529, 14820, 3927, 580]
+GEN31B text="It seems you are referring to **Binary Search** (which is a search algorithm for finding the elements of an array.\n\nThe time complexity of binary search on"
+KV31B mode=GlyphLod raw_bytes=102727680 naive_bf16_bytes=51363840 compressed_bytes=70120960 glyph_tokens=0 mid_tokens=1460 exact_tokens=1960 shrink=1.47x shrink_vs_bf16=0.73x
+PROFILE31B steps=32 attn_s=43.914 gate_s=22.250 up_s=22.527 down_s=26.923 norm_kv_s=5.376 lmhead_s=5.673 avg_step_s=3.958 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=54113 prefill_s=41.33 decode_s=85.77 vm_hwm_kb=Some(6866972) vm_rss_kb=Some(6818760)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.95s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866972), Some(6805188))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866972), Some(6805016)))
+[run31b] prompt 26 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 990, 16783, 529, 14820, 3927, 580, 496, 19372, 3499, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 4.38s (pinned=true)
+[run31b] layer 05/60 done in 0.79s (pinned=true)
+[run31b] layer 14/60 done in 0.71s (pinned=true)
+[run31b] layer 29/60 done in 0.76s (pinned=true)
+[run31b] layer 44/60 done in 0.66s (pinned=true)
+[run31b] layer 59/60 done in 0.76s (pinned=true)
+[run31b] prefill done in 41.33s ssd_read_mb=0.0 vm=(Some(6866972), Some(6805540))
+[run31b] decode step 0 in 2.73s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 1 in 2.70s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 2 in 2.72s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 3 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 4 in 2.73s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 5 in 2.68s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 6 in 2.76s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 7 in 2.72s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 8 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 9 in 2.76s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 10 in 2.81s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 11 in 2.76s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 12 in 2.76s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 13 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 14 in 2.76s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 15 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 16 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 17 in 2.81s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 18 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 19 in 2.80s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 20 in 2.93s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 21 in 2.79s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 22 in 2.80s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 23 in 2.75s vm=(Some(6866972), Some(6805540))
+[run31b] decode step 24 in 2.75s vm=(Some(6866972), Some(6807588))
+[run31b] decode step 25 in 2.86s vm=(Some(6866972), Some(6808804))
+[run31b] decode step 26 in 2.77s vm=(Some(6866972), Some(6811524))
+[run31b] decode step 27 in 2.79s vm=(Some(6866972), Some(6813220))
+[run31b] decode step 28 in 2.77s vm=(Some(6866972), Some(6815076))
+[run31b] decode step 29 in 2.78s vm=(Some(6866972), Some(6816920))
+[run31b] decode step 30 in 2.76s vm=(Some(6866972), Some(6818760))
+
+
+=== [dense] P8_romeo: Who wrote the play Romeo and Juliet? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Who wrote the play Romeo and Juliet? --max-tokens 32
+PREFILL_TOP5 [1509:"It"(28.169), 22515:"Based"(24.405), 83033:"Assuming"(22.224), 236777:"I"(21.695), 79629:"Depending"(21.501)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=611 text=" you"
+[STEP 3] id=659 text=" are"
+[STEP 4] id=26242 text=" referring"
+[STEP 5] id=531 text=" to"
+[STEP 6] id=506 text=" the"
+[STEP 7] id=1441 text=" play"
+[STEP 8] id=5213 text=" **"
+[STEP 9] id=231194 text="Romeo"
+[STEP 10] id=532 text=" and"
+[STEP 11] id=93560 text=" Juliet"
+[STEP 12] id=84750 text="**."
+[STEP 13] id=108 text="\n\n"
+[STEP 14] id=818 text="The"
+[STEP 15] id=1441 text=" play"
+[STEP 16] id=563 text=" is"
+[STEP 17] id=496 text=" a"
+[STEP 18] id=3925 text=" story"
+[STEP 19] id=529 text=" of"
+[STEP 20] id=75699 text=" Romeo"
+[STEP 21] id=532 text=" and"
+[STEP 22] id=45634 text=" Julie"
+[STEP 23] id=236761 text="."
+[STEP 24] id=669 text=" The"
+[STEP 25] id=8541 text=" plot"
+[STEP 26] id=10594 text=" consists"
+[STEP 27] id=529 text=" of"
+[STEP 28] id=1156 text=" two"
+[STEP 29] id=1331 text=" people"
+[STEP 30] id=236764 text=","
+[STEP 31] id=1015 text=" who"
+GEN31B ids=[1509, 5072, 611, 659, 26242, 531, 506, 1441, 5213, 231194, 532, 93560, 84750, 108, 818, 1441, 563, 496, 3925, 529, 75699, 532, 45634, 236761, 669, 8541, 10594, 529, 1156, 1331, 236764, 1015]
+GEN31B text="It seems you are referring to the play **Romeo and Juliet**.\n\nThe play is a story of Romeo and Julie. The plot consists of two people, who"
+KV31B mode=GlyphLod raw_bytes=93716480 naive_bf16_bytes=46858240 compressed_bytes=67727360 glyph_tokens=0 mid_tokens=1160 exact_tokens=1960 shrink=1.38x shrink_vs_bf16=0.69x
+PROFILE31B steps=32 attn_s=38.031 gate_s=20.861 up_s=21.156 down_s=25.062 norm_kv_s=4.663 lmhead_s=5.536 avg_step_s=3.603 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=37863 prefill_s=30.44 decode_s=85.29 vm_hwm_kb=Some(6866964) vm_rss_kb=Some(6808808)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866964), Some(6805180))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866964), Some(6805008)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 15938, 7971, 506, 1441, 75699, 532, 93560, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.60s (pinned=true)
+[run31b] layer 05/60 done in 0.64s (pinned=true)
+[run31b] layer 14/60 done in 0.57s (pinned=true)
+[run31b] layer 29/60 done in 0.62s (pinned=true)
+[run31b] layer 44/60 done in 0.54s (pinned=true)
+[run31b] layer 59/60 done in 0.65s (pinned=true)
+[run31b] prefill done in 30.44s ssd_read_mb=0.0 vm=(Some(6866964), Some(6805528))
+[run31b] decode step 0 in 2.67s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 1 in 2.77s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 2 in 2.71s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 3 in 2.72s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 4 in 2.69s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 5 in 2.70s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 6 in 2.66s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 7 in 2.73s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 8 in 2.70s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 9 in 2.68s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 10 in 2.67s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 11 in 2.72s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 12 in 2.78s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 13 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 14 in 2.77s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 15 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 16 in 2.77s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 17 in 2.94s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 18 in 2.78s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 19 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 20 in 2.87s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 21 in 2.75s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 22 in 2.76s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 23 in 2.81s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 24 in 2.76s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 25 in 2.76s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 26 in 2.74s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 27 in 2.79s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 28 in 2.79s vm=(Some(6866964), Some(6805528))
+[run31b] decode step 29 in 2.76s vm=(Some(6866964), Some(6807576))
+[run31b] decode step 30 in 2.76s vm=(Some(6866964), Some(6808808))
+
+
+=== [dense] B5_hamlet: Who wrote the play Hamlet? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Who wrote the play Hamlet? --max-tokens 32
+PREFILL_TOP5 [1509:"It"(28.145), 22515:"Based"(24.373), 83033:"Assuming"(22.621), 79629:"Depending"(22.178), 236777:"I"(21.805)]
+[STEP 0] id=1509 text="It"
+[STEP 1] id=5072 text=" seems"
+[STEP 2] id=611 text=" you"
+[STEP 3] id=659 text=" are"
+[STEP 4] id=26242 text=" referring"
+[STEP 5] id=531 text=" to"
+[STEP 6] id=506 text=" the"
+[STEP 7] id=1441 text=" play"
+[STEP 8] id=5213 text=" **"
+[STEP 9] id=201313 text="Hamlet"
+[STEP 10] id=84750 text="**."
+[STEP 11] id=108 text="\n\n"
+[STEP 12] id=818 text="The"
+[STEP 13] id=102794 text=" playwright"
+[STEP 14] id=529 text=" of"
+[STEP 15] id=124600 text=" Hamlet"
+[STEP 16] id=563 text=" is"
+[STEP 17] id=496 text=" a"
+[STEP 18] id=11456 text=" writer"
+[STEP 19] id=1015 text=" who"
+[STEP 20] id=7971 text=" wrote"
+[STEP 21] id=506 text=" the"
+[STEP 22] id=10772 text=" plays"
+[STEP 23] id=236761 text="."
+[STEP 24] id=669 text=" The"
+[STEP 25] id=4155 text=" player"
+[STEP 26] id=236789 text="'"
+[STEP 27] id=236751 text="s"
+[STEP 28] id=1463 text=" name"
+[STEP 29] id=691 text=" was"
+[STEP 30] id=623 text=" \""
+[STEP 31] id=49044 text="Ham"
+GEN31B ids=[1509, 5072, 611, 659, 26242, 531, 506, 1441, 5213, 201313, 84750, 108, 818, 102794, 529, 124600, 563, 496, 11456, 1015, 7971, 506, 10772, 236761, 669, 4155, 236789, 236751, 1463, 691, 623, 49044]
+GEN31B text="It seems you are referring to the play **Hamlet**.\n\nThe playwright of Hamlet is a writer who wrote the plays. The player's name was \"Ham"
+KV31B mode=GlyphLod raw_bytes=90112000 naive_bf16_bytes=45056000 compressed_bytes=66769920 glyph_tokens=0 mid_tokens=1040 exact_tokens=1960 shrink=1.35x shrink_vs_bf16=0.67x
+PROFILE31B steps=32 attn_s=36.760 gate_s=20.244 up_s=20.526 down_s=24.262 norm_kv_s=4.373 lmhead_s=5.524 avg_step_s=3.490 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=60664 prefill_s=27.30 decode_s=84.80 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6805544)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.97s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 19 tokens ids=[2, 105, 2364, 107, 15938, 7971, 506, 1441, 124600, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.53s (pinned=true)
+[run31b] layer 05/60 done in 0.59s (pinned=true)
+[run31b] layer 14/60 done in 0.49s (pinned=true)
+[run31b] layer 29/60 done in 0.55s (pinned=true)
+[run31b] layer 44/60 done in 0.48s (pinned=true)
+[run31b] layer 59/60 done in 0.55s (pinned=true)
+[run31b] prefill done in 27.30s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.69s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.67s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.71s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.67s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.70s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 9 in 2.67s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 10 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 11 in 2.67s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 12 in 2.70s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 13 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 14 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 15 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 16 in 2.96s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 17 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 18 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 19 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 20 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 21 in 2.79s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 22 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 23 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 24 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 25 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 26 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 27 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 28 in 2.80s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 29 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 30 in 2.78s vm=(Some(6866980), Some(6805544))
+
+
+=== [dense] B5_multistep: Compute 12 * 8 - 27. ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Compute 12 * 8 - 27. --max-tokens 40
+PREFILL_TOP5 [2021:"To"(26.668), 818:"The"(25.608), 1018:"**"(21.713), 8291:"Here"(21.440), 120609:"Calculation"(20.732)]
+[STEP 0] id=2021 text="To"
+[STEP 1] id=16333 text=" compute"
+[STEP 2] id=506 text=" the"
+[STEP 3] id=1354 text=" result"
+[STEP 4] id=236787 text=":"
+[STEP 5] id=108 text="\n\n"
+[STEP 6] id=236770 text="1"
+[STEP 7] id=236778 text="2"
+[STEP 8] id=808 text=" *"
+[STEP 9] id=236743 text=" "
+[STEP 10] id=236828 text="8"
+[STEP 11] id=578 text=" ="
+[STEP 12] id=236743 text=" "
+[STEP 13] id=236819 text="9"
+[STEP 14] id=236825 text="6"
+[STEP 15] id=107 text="\n"
+[STEP 16] id=236819 text="9"
+[STEP 17] id=236825 text="6"
+[STEP 18] id=753 text=" -"
+[STEP 19] id=236743 text=" "
+[STEP 20] id=236778 text="2"
+[STEP 21] id=236832 text="7"
+[STEP 22] id=578 text=" ="
+[STEP 23] id=5213 text=" **"
+[STEP 24] id=236810 text="5"
+[STEP 25] id=236800 text="3"
+[STEP 26] id=1018 text="**"
+[STEP 27] id=106 text="<turn|>"
+GEN31B ids=[2021, 16333, 506, 1354, 236787, 108, 236770, 236778, 808, 236743, 236828, 578, 236743, 236819, 236825, 107, 236819, 236825, 753, 236743, 236778, 236832, 578, 5213, 236810, 236800, 1018, 106]
+GEN31B text="To compute the result:\n\n12 * 8 = 96\n96 - 27 = **53**<turn|>"
+KV31B mode=GlyphLod raw_bytes=93716480 naive_bf16_bytes=46858240 compressed_bytes=67727360 glyph_tokens=0 mid_tokens=1160 exact_tokens=1960 shrink=1.38x shrink_vs_bf16=0.69x
+PROFILE31B steps=28 attn_s=36.211 gate_s=20.197 up_s=20.385 down_s=24.656 norm_kv_s=4.541 lmhead_s=4.832 avg_step_s=3.958 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=15387 prefill_s=36.79 decode_s=74.43 vm_hwm_kb=Some(6866972) vm_rss_kb=Some(6808768)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866972), Some(6805184))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866972), Some(6805012)))
+[run31b] prompt 25 tokens ids=[2, 105, 2364, 107, 55822, 236743, 236770, 236778, 808, 236743, 236828, 753, 236743, 236778, 236832, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.72s (pinned=true)
+[run31b] layer 05/60 done in 0.76s (pinned=true)
+[run31b] layer 14/60 done in 0.66s (pinned=true)
+[run31b] layer 29/60 done in 0.78s (pinned=true)
+[run31b] layer 44/60 done in 0.64s (pinned=true)
+[run31b] layer 59/60 done in 0.74s (pinned=true)
+[run31b] prefill done in 36.79s ssd_read_mb=0.0 vm=(Some(6866972), Some(6805536))
+[run31b] decode step 0 in 2.76s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 1 in 2.75s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 2 in 2.70s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 3 in 2.67s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 4 in 2.73s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 5 in 2.69s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 6 in 2.71s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 7 in 2.73s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 8 in 2.78s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 9 in 2.71s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 10 in 2.77s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 11 in 2.91s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 12 in 2.79s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 13 in 2.75s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 14 in 2.73s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 15 in 2.77s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 16 in 2.79s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 17 in 2.75s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 18 in 2.75s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 19 in 2.77s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 20 in 2.73s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 21 in 2.75s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 22 in 2.76s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 23 in 2.83s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 24 in 2.77s vm=(Some(6866972), Some(6805536))
+[run31b] decode step 25 in 2.75s vm=(Some(6866972), Some(6807584))
+[run31b] decode step 26 in 2.80s vm=(Some(6866972), Some(6808768))
+
+
+=== [dense] B5_min: Which number is smaller, 547 or 193? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text Which number is smaller, 547 or 193? --max-tokens 32
+PREFILL_TOP5 [818:"The"(28.688), 34531:"Between"(21.309), 79629:"Depending"(21.239), 1018:"**"(20.825), 22515:"Based"(20.591)]
+[STEP 0] id=818 text="The"
+[STEP 1] id=7100 text=" smaller"
+[STEP 2] id=1548 text=" number"
+[STEP 3] id=563 text=" is"
+[STEP 4] id=5213 text=" **"
+[STEP 5] id=236770 text="1"
+[STEP 6] id=236819 text="9"
+[STEP 7] id=236800 text="3"
+[STEP 8] id=84750 text="**."
+[STEP 9] id=106 text="<turn|>"
+GEN31B ids=[818, 7100, 1548, 563, 5213, 236770, 236819, 236800, 84750, 106]
+GEN31B text="The smaller number is **193**.<turn|>"
+KV31B mode=GlyphLod raw_bytes=66682880 naive_bf16_bytes=33341440 compressed_bytes=60546560 glyph_tokens=0 mid_tokens=260 exact_tokens=1960 shrink=1.10x shrink_vs_bf16=0.55x
+PROFILE31B steps=10 attn_s=21.255 gate_s=11.983 up_s=11.945 down_s=15.447 norm_kv_s=2.170 lmhead_s=1.728 avg_step_s=6.453 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4534 prefill_s=39.94 decode_s=24.81 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6805544)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.94s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 28 tokens ids=[2, 105, 2364, 107, 24249, 1548, 563, 7100, 236764, 236743, 236810, 236812, 236832, 653, 236743, 236770, 236819, 236800, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.73s (pinned=true)
+[run31b] layer 05/60 done in 0.90s (pinned=true)
+[run31b] layer 14/60 done in 0.72s (pinned=true)
+[run31b] layer 29/60 done in 0.87s (pinned=true)
+[run31b] layer 44/60 done in 0.72s (pinned=true)
+[run31b] layer 59/60 done in 0.80s (pinned=true)
+[run31b] prefill done in 39.94s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.68s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.69s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.98s vm=(Some(6866980), Some(6805544))
+
+
+=== [dense] U1_algebra: If 5x + 3 = 38, what is the value of 2x - 1? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text If 5x + 3 = 38, what is the value of 2x - 1? --max-tokens 48
+PREFILL_TOP5 [2021:"To"(28.751), 22515:"Based"(23.178), 7280:"First"(23.103), 8291:"Here"(22.239), 79629:"Depending"(20.304)]
+[STEP 0] id=2021 text="To"
+[STEP 1] id=1586 text=" find"
+[STEP 2] id=506 text=" the"
+[STEP 3] id=1550 text=" value"
+[STEP 4] id=529 text=" of"
+[STEP 5] id=236743 text=" "
+[STEP 6] id=236778 text="2"
+[STEP 7] id=236781 text="x"
+[STEP 8] id=753 text=" -"
+[STEP 9] id=236743 text=" "
+[STEP 10] id=236770 text="1"
+[STEP 11] id=236764 text=","
+[STEP 12] id=692 text=" we"
+[STEP 13] id=1171 text=" first"
+[STEP 14] id=9279 text=" calculate"
+[STEP 15] id=506 text=" the"
+[STEP 16] id=2558 text=" total"
+[STEP 17] id=1550 text=" value"
+[STEP 18] id=573 text=" for"
+[STEP 19] id=1123 text=" x"
+[STEP 20] id=236761 text="."
+[STEP 21] id=108 text="\n\n"
+[STEP 22] id=1018 text="**"
+[STEP 23] id=5471 text="Step"
+[STEP 24] id=236743 text=" "
+[STEP 25] id=236770 text="1"
+[STEP 26] id=236787 text=":"
+[STEP 27] id=9100 text=" Find"
+[STEP 28] id=1123 text=" x"
+[STEP 29] id=1018 text="**"
+[STEP 30] id=107 text="\n"
+[STEP 31] id=236810 text="5"
+[STEP 32] id=236781 text="x"
+[STEP 33] id=900 text=" +"
+[STEP 34] id=236743 text=" "
+[STEP 35] id=236800 text="3"
+[STEP 36] id=578 text=" ="
+[STEP 37] id=236743 text=" "
+[STEP 38] id=236800 text="3"
+[STEP 39] id=236828 text="8"
+[STEP 40] id=107 text="\n"
+[STEP 41] id=236769 text="("
+[STEP 42] id=236810 text="5"
+[STEP 43] id=808 text=" *"
+[STEP 44] id=1123 text=" x"
+[STEP 45] id=236768 text=")"
+[STEP 46] id=578 text=" ="
+[STEP 47] id=568 text=" ("
+GEN31B ids=[2021, 1586, 506, 1550, 529, 236743, 236778, 236781, 753, 236743, 236770, 236764, 692, 1171, 9279, 506, 2558, 1550, 573, 1123, 236761, 108, 1018, 5471, 236743, 236770, 236787, 9100, 1123, 1018, 107, 236810, 236781, 900, 236743, 236800, 578, 236743, 236800, 236828, 107, 236769, 236810, 808, 1123, 236768, 578, 568]
+GEN31B text="To find the value of 2x - 1, we first calculate the total value for x.\n\n**Step 1: Find x**\n5x + 3 = 38\n(5 * x) = ("
+KV31B mode=GlyphLod raw_bytes=151388160 naive_bf16_bytes=75694080 compressed_bytes=83046400 glyph_tokens=0 mid_tokens=3080 exact_tokens=1960 shrink=1.82x shrink_vs_bf16=0.91x
+PROFILE31B steps=48 attn_s=59.632 gate_s=33.027 up_s=33.187 down_s=39.781 norm_kv_s=10.610 lmhead_s=8.376 avg_step_s=3.846 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=42956 prefill_s=53.14 decode_s=132.13 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6847644)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.92s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805196))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805024)))
+[run31b] prompt 37 tokens ids=[2, 105, 2364, 107, 2859, 236743, 236810, 236781, 900, 236743, 236800, 578, 236743, 236800, 236828, 236764, 1144, 563, 506, 1550, 529, 236743, 236778, 236781, 753, 236743, 236770, 236881, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 0.99s (pinned=true)
+[run31b] layer 05/60 done in 1.11s (pinned=true)
+[run31b] layer 14/60 done in 0.99s (pinned=true)
+[run31b] layer 29/60 done in 1.10s (pinned=true)
+[run31b] layer 44/60 done in 0.95s (pinned=true)
+[run31b] layer 59/60 done in 1.05s (pinned=true)
+[run31b] prefill done in 53.14s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805548))
+[run31b] decode step 0 in 2.78s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 1 in 2.72s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 2 in 2.74s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 3 in 2.82s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 4 in 2.78s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 5 in 2.72s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 6 in 2.81s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 7 in 2.77s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 8 in 2.77s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 9 in 2.78s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 10 in 2.75s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 11 in 2.79s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 12 in 2.75s vm=(Some(6866980), Some(6805548))
+[run31b] decode step 13 in 2.77s vm=(Some(6866980), Some(6807596))
+[run31b] decode step 14 in 2.75s vm=(Some(6866980), Some(6809100))
+[run31b] decode step 15 in 2.79s vm=(Some(6866980), Some(6811852))
+[run31b] decode step 16 in 2.80s vm=(Some(6866980), Some(6813532))
+[run31b] decode step 17 in 2.76s vm=(Some(6866980), Some(6815392))
+[run31b] decode step 18 in 2.77s vm=(Some(6866980), Some(6817264))
+[run31b] decode step 19 in 3.07s vm=(Some(6866980), Some(6819136))
+[run31b] decode step 20 in 2.81s vm=(Some(6866980), Some(6821008))
+[run31b] decode step 21 in 2.77s vm=(Some(6866980), Some(6822880))
+[run31b] decode step 22 in 2.81s vm=(Some(6866980), Some(6824756))
+[run31b] decode step 23 in 2.77s vm=(Some(6866980), Some(6826628))
+[run31b] decode step 24 in 2.86s vm=(Some(6866980), Some(6828500))
+[run31b] decode step 25 in 2.79s vm=(Some(6866980), Some(6830372))
+[run31b] decode step 26 in 2.81s vm=(Some(6866980), Some(6832244))
+[run31b] decode step 27 in 2.82s vm=(Some(6866980), Some(6844540))
+[run31b] decode step 28 in 2.79s vm=(Some(6866980), Some(6844676))
+[run31b] decode step 29 in 2.84s vm=(Some(6866980), Some(6844812))
+[run31b] decode step 30 in 2.81s vm=(Some(6866980), Some(6844948))
+[run31b] decode step 31 in 2.89s vm=(Some(6866980), Some(6845596))
+[run31b] decode step 32 in 2.81s vm=(Some(6866980), Some(6845732))
+[run31b] decode step 33 in 2.80s vm=(Some(6866980), Some(6845868))
+[run31b] decode step 34 in 2.80s vm=(Some(6866980), Some(6846004))
+[run31b] decode step 35 in 2.79s vm=(Some(6866980), Some(6846140))
+[run31b] decode step 36 in 2.80s vm=(Some(6866980), Some(6846276))
+[run31b] decode step 37 in 2.84s vm=(Some(6866980), Some(6846412))
+[run31b] decode step 38 in 2.81s vm=(Some(6866980), Some(6846548))
+[run31b] decode step 39 in 2.81s vm=(Some(6866980), Some(6846684))
+[run31b] decode step 40 in 3.09s vm=(Some(6866980), Some(6846820))
+[run31b] decode step 41 in 2.85s vm=(Some(6866980), Some(6846956))
+[run31b] decode step 42 in 2.83s vm=(Some(6866980), Some(6847092))
+[run31b] decode step 43 in 2.85s vm=(Some(6866980), Some(6847200))
+[run31b] decode step 44 in 2.85s vm=(Some(6866980), Some(6847348))
+[run31b] decode step 45 in 2.84s vm=(Some(6866980), Some(6847496))
+[run31b] decode step 46 in 2.87s vm=(Some(6866980), Some(6847644))
+
+
+=== [dense] U2_units: A cyclist rides at 18 kilometers per hour for 40 minutes. How many meters did the cyclist travel? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text A cyclist rides at 18 kilometers per hour for 40 minutes. How many meters did the cyclist travel? --max-tokens 48
+PREFILL_TOP5 [2021:"To"(27.993), 22515:"Based"(26.501), 1509:"It"(25.690), 83033:"Assuming"(23.569), 818:"The"(22.041)]
+[STEP 0] id=2021 text="To"
+[STEP 1] id=9279 text=" calculate"
+[STEP 2] id=506 text=" the"
+[STEP 3] id=2558 text=" total"
+[STEP 4] id=5149 text=" distance"
+[STEP 5] id=236764 text=","
+[STEP 6] id=692 text=" we"
+[STEP 7] id=1171 text=" first"
+[STEP 8] id=1586 text=" find"
+[STEP 9] id=506 text=" the"
+[STEP 10] id=4249 text=" speed"
+[STEP 11] id=529 text=" of"
+[STEP 12] id=506 text=" the"
+[STEP 13] id=110745 text=" cyclist"
+[STEP 14] id=236761 text="."
+[STEP 15] id=108 text="\n\n"
+[STEP 16] id=236770 text="1"
+[STEP 17] id=236828 text="8"
+[STEP 18] id=35769 text=" kilometers"
+[STEP 19] id=810 text=" per"
+[STEP 20] id=6468 text=" hour"
+[STEP 21] id=578 text=" ="
+[STEP 22] id=236743 text=" "
+[STEP 23] id=236770 text="1"
+[STEP 24] id=236778 text="2"
+[STEP 25] id=7251 text=" km"
+[STEP 26] id=236786 text="/"
+[STEP 27] id=13807 text="hour"
+[STEP 28] id=568 text=" ("
+[STEP 29] id=20470 text="Wait"
+[STEP 30] id=236768 text=")"
+[STEP 31] id=107 text="\n"
+[STEP 32] id=236812 text="4"
+[STEP 33] id=236771 text="0"
+[STEP 34] id=4310 text=" minutes"
+[STEP 35] id=578 text=" ="
+[STEP 36] id=568 text=" ("
+[STEP 37] id=236812 text="4"
+[STEP 38] id=236771 text="0"
+[STEP 39] id=965 text=" /"
+[STEP 40] id=236743 text=" "
+[STEP 41] id=236825 text="6"
+[STEP 42] id=236771 text="0"
+[STEP 43] id=236768 text=")"
+[STEP 44] id=808 text=" *"
+[STEP 45] id=236743 text=" "
+[STEP 46] id=236800 text="3"
+[STEP 47] id=3885 text=" hours"
+GEN31B ids=[2021, 9279, 506, 2558, 5149, 236764, 692, 1171, 1586, 506, 4249, 529, 506, 110745, 236761, 108, 236770, 236828, 35769, 810, 6468, 578, 236743, 236770, 236778, 7251, 236786, 13807, 568, 20470, 236768, 107, 236812, 236771, 4310, 578, 568, 236812, 236771, 965, 236743, 236825, 236771, 236768, 808, 236743, 236800, 3885]
+GEN31B text="To calculate the total distance, we first find the speed of the cyclist.\n\n18 kilometers per hour = 12 km/hour (Wait)\n40 minutes = (40 / 60) * 3 hours"
+KV31B mode=GlyphLod raw_bytes=151388160 naive_bf16_bytes=75694080 compressed_bytes=83046400 glyph_tokens=0 mid_tokens=3080 exact_tokens=1960 shrink=1.82x shrink_vs_bf16=0.91x
+PROFILE31B steps=48 attn_s=59.631 gate_s=33.090 up_s=33.314 down_s=39.886 norm_kv_s=10.571 lmhead_s=8.318 avg_step_s=3.850 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=110767 prefill_s=53.39 decode_s=132.07 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6847516)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 37 tokens ids=[2, 105, 2364, 107, 236776, 110745, 33249, 657, 236743, 236770, 236828, 35769, 810, 6468, 573, 236743, 236812, 236771, 4310, 236761, 2088, 1551, 15930, 1602, 506, 110745, 4301, 236881, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 1.07s (pinned=true)
+[run31b] layer 05/60 done in 1.10s (pinned=true)
+[run31b] layer 14/60 done in 1.01s (pinned=true)
+[run31b] layer 29/60 done in 1.09s (pinned=true)
+[run31b] layer 44/60 done in 0.94s (pinned=true)
+[run31b] layer 59/60 done in 1.09s (pinned=true)
+[run31b] prefill done in 53.39s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 9 in 2.83s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 10 in 2.88s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 11 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 12 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 13 in 2.98s vm=(Some(6866980), Some(6807592))
+[run31b] decode step 14 in 2.85s vm=(Some(6866980), Some(6809016))
+[run31b] decode step 15 in 2.76s vm=(Some(6866980), Some(6811768))
+[run31b] decode step 16 in 2.76s vm=(Some(6866980), Some(6813448))
+[run31b] decode step 17 in 2.78s vm=(Some(6866980), Some(6815308))
+[run31b] decode step 18 in 2.86s vm=(Some(6866980), Some(6817180))
+[run31b] decode step 19 in 2.78s vm=(Some(6866980), Some(6819052))
+[run31b] decode step 20 in 2.77s vm=(Some(6866980), Some(6820924))
+[run31b] decode step 21 in 2.83s vm=(Some(6866980), Some(6822796))
+[run31b] decode step 22 in 2.78s vm=(Some(6866980), Some(6824668))
+[run31b] decode step 23 in 2.77s vm=(Some(6866980), Some(6826544))
+[run31b] decode step 24 in 2.79s vm=(Some(6866980), Some(6828416))
+[run31b] decode step 25 in 2.80s vm=(Some(6866980), Some(6830288))
+[run31b] decode step 26 in 2.79s vm=(Some(6866980), Some(6832160))
+[run31b] decode step 27 in 2.79s vm=(Some(6866980), Some(6844248))
+[run31b] decode step 28 in 2.83s vm=(Some(6866980), Some(6844392))
+[run31b] decode step 29 in 2.82s vm=(Some(6866980), Some(6844536))
+[run31b] decode step 30 in 2.82s vm=(Some(6866980), Some(6844680))
+[run31b] decode step 31 in 2.82s vm=(Some(6866980), Some(6845340))
+[run31b] decode step 32 in 2.87s vm=(Some(6866980), Some(6845484))
+[run31b] decode step 33 in 2.82s vm=(Some(6866980), Some(6845628))
+[run31b] decode step 34 in 3.02s vm=(Some(6866980), Some(6845772))
+[run31b] decode step 35 in 2.80s vm=(Some(6866980), Some(6845916))
+[run31b] decode step 36 in 2.81s vm=(Some(6866980), Some(6846060))
+[run31b] decode step 37 in 2.82s vm=(Some(6866980), Some(6846204))
+[run31b] decode step 38 in 2.79s vm=(Some(6866980), Some(6846348))
+[run31b] decode step 39 in 2.86s vm=(Some(6866980), Some(6846492))
+[run31b] decode step 40 in 2.86s vm=(Some(6866980), Some(6846636))
+[run31b] decode step 41 in 2.82s vm=(Some(6866980), Some(6846780))
+[run31b] decode step 42 in 2.82s vm=(Some(6866980), Some(6846924))
+[run31b] decode step 43 in 2.82s vm=(Some(6866980), Some(6847060))
+[run31b] decode step 44 in 2.86s vm=(Some(6866980), Some(6847212))
+[run31b] decode step 45 in 2.84s vm=(Some(6866980), Some(6847364))
+[run31b] decode step 46 in 2.86s vm=(Some(6866980), Some(6847516))
+
+
+=== [dense] U3_bugfix: What is the bug in `def avg(nums): return sum(nums) / len(nums)` when given an empty list? ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text What is the bug in `def avg(nums): return sum(nums) / len(nums)` when given an empty list? --max-tokens 48
+PREFILL_TOP5 [818:"The"(26.635), 2021:"To"(25.660), 3810:"There"(25.262), 22515:"Based"(24.929), 1509:"It"(24.432)]
+[STEP 0] id=818 text="The"
+[STEP 1] id=13582 text=" bug"
+[STEP 2] id=528 text=" in"
+[STEP 3] id=506 text=" the"
+[STEP 4] id=3393 text=" code"
+[STEP 5] id=563 text=" is"
+[STEP 6] id=600 text=" that"
+[STEP 7] id=625 text=" it"
+[STEP 8] id=3914 text=" cannot"
+[STEP 9] id=9279 text=" calculate"
+[STEP 10] id=506 text=" the"
+[STEP 11] id=4398 text=" average"
+[STEP 12] id=529 text=" of"
+[STEP 13] id=496 text=" a"
+[STEP 14] id=1694 text=" list"
+[STEP 15] id=236761 text="."
+[STEP 16] id=108 text="\n\n"
+[STEP 17] id=2859 text="If"
+[STEP 18] id=611 text=" you"
+[STEP 19] id=735 text=" have"
+[STEP 20] id=614 text=" an"
+[STEP 21] id=7738 text=" empty"
+[STEP 22] id=1694 text=" list"
+[STEP 23] id=236764 text=","
+[STEP 24] id=672 text=" this"
+[STEP 25] id=1292 text=" function"
+[STEP 26] id=795 text=" will"
+[STEP 27] id=994 text=" return"
+[STEP 28] id=236743 text=" "
+[STEP 29] id=236771 text="0"
+[STEP 30] id=236761 text="."
+[STEP 31] id=106 text="<turn|>"
+GEN31B ids=[818, 13582, 528, 506, 3393, 563, 600, 625, 3914, 9279, 506, 4398, 529, 496, 1694, 236761, 108, 2859, 611, 735, 614, 7738, 1694, 236764, 672, 1292, 795, 994, 236743, 236771, 236761, 106]
+GEN31B text="The bug in the code is that it cannot calculate the average of a list.\n\nIf you have an empty list, this function will return 0.<turn|>"
+KV31B mode=GlyphLod raw_bytes=127959040 naive_bf16_bytes=63979520 compressed_bytes=76823040 glyph_tokens=0 mid_tokens=2300 exact_tokens=1960 shrink=1.67x shrink_vs_bf16=0.83x
+PROFILE31B steps=32 attn_s=46.576 gate_s=25.815 up_s=26.089 down_s=31.903 norm_kv_s=7.691 lmhead_s=5.580 avg_step_s=4.489 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=66200 prefill_s=57.25 decode_s=86.89 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6845840)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.98s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 40 tokens ids=[2, 105, 2364, 107, 3689, 563, 506, 13582, 528, 2165, 2063, 34561, 236769, 30457, 1473, 994, 2324, 236769, 30457, 236768, 965, 5980, 236769, 30457, 54557, 1056, 2238, 614, 7738, 1694, 236881, 106]
+[run31b] layer 00/60 done in 1.28s (pinned=true)
+[run31b] layer 05/60 done in 1.19s (pinned=true)
+[run31b] layer 14/60 done in 1.05s (pinned=true)
+[run31b] layer 29/60 done in 1.15s (pinned=true)
+[run31b] layer 44/60 done in 1.01s (pinned=true)
+[run31b] layer 59/60 done in 1.14s (pinned=true)
+[run31b] prefill done in 57.25s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.75s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 3.00s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.81s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 9 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 10 in 2.78s vm=(Some(6866980), Some(6807592))
+[run31b] decode step 11 in 2.84s vm=(Some(6866980), Some(6809064))
+[run31b] decode step 12 in 2.78s vm=(Some(6866980), Some(6811832))
+[run31b] decode step 13 in 2.78s vm=(Some(6866980), Some(6813528))
+[run31b] decode step 14 in 2.76s vm=(Some(6866980), Some(6815420))
+[run31b] decode step 15 in 2.77s vm=(Some(6866980), Some(6817292))
+[run31b] decode step 16 in 2.82s vm=(Some(6866980), Some(6819164))
+[run31b] decode step 17 in 2.79s vm=(Some(6866980), Some(6821036))
+[run31b] decode step 18 in 2.75s vm=(Some(6866980), Some(6822908))
+[run31b] decode step 19 in 2.79s vm=(Some(6866980), Some(6824784))
+[run31b] decode step 20 in 2.80s vm=(Some(6866980), Some(6826656))
+[run31b] decode step 21 in 2.82s vm=(Some(6866980), Some(6828528))
+[run31b] decode step 22 in 2.79s vm=(Some(6866980), Some(6830400))
+[run31b] decode step 23 in 2.83s vm=(Some(6866980), Some(6832272))
+[run31b] decode step 24 in 2.82s vm=(Some(6866980), Some(6844104))
+[run31b] decode step 25 in 2.78s vm=(Some(6866980), Some(6844244))
+[run31b] decode step 26 in 2.94s vm=(Some(6866980), Some(6844384))
+[run31b] decode step 27 in 2.90s vm=(Some(6866980), Some(6844524))
+[run31b] decode step 28 in 2.82s vm=(Some(6866980), Some(6845560))
+[run31b] decode step 29 in 2.80s vm=(Some(6866980), Some(6845700))
+[run31b] decode step 30 in 2.78s vm=(Some(6866980), Some(6845840))
+
+
+=== [dense] U4_syllogism: All mammals are warm-blooded. Whales are mammals. Are whales cold-blooded? Answer Yes or No and explain briefly. ===
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --prompt-text All mammals are warm-blooded. Whales are mammals. Are whales cold-blooded? Answer Yes or No and explain briefly. --max-tokens 40
+PREFILL_TOP5 [22515:"Based"(27.761), 818:"The"(26.514), 1509:"It"(25.183), 1018:"**"(23.968), 83033:"Assuming"(22.524)]
+[STEP 0] id=22515 text="Based"
+[STEP 1] id=580 text=" on"
+[STEP 2] id=506 text=" the"
+[STEP 3] id=3847 text=" provided"
+[STEP 4] id=1816 text=" text"
+[STEP 5] id=236764 text=","
+[STEP 6] id=5213 text=" **"
+[STEP 7] id=3771 text="No"
+[STEP 8] id=84750 text="**."
+[STEP 9] id=106 text="<turn|>"
+GEN31B ids=[22515, 580, 506, 3847, 1816, 236764, 5213, 3771, 84750, 106]
+GEN31B text="Based on the provided text, **No**.<turn|>"
+KV31B mode=GlyphLod raw_bytes=86507520 naive_bf16_bytes=43253760 compressed_bytes=65812480 glyph_tokens=0 mid_tokens=920 exact_tokens=1960 shrink=1.31x shrink_vs_bf16=0.66x
+PROFILE31B steps=10 attn_s=26.191 gate_s=14.804 up_s=14.847 down_s=19.391 norm_kv_s=3.451 lmhead_s=1.771 avg_step_s=8.045 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4078 prefill_s=55.94 decode_s=24.78 vm_hwm_kb=Some(6866980) vm_rss_kb=Some(6805544)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.95s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 39 tokens ids=[2, 105, 2364, 107, 3243, 54515, 659, 6962, 236772, 175928, 236761, 2254, 3051, 659, 54515, 236761, 9354, 64527, 7445, 236772, 175928, 236881, 25685, 8438, 653, 2301, 532, 8082, 21485, 236761, 106, 107]
+[run31b] layer 00/60 done in 1.07s (pinned=true)
+[run31b] layer 05/60 done in 1.15s (pinned=true)
+[run31b] layer 14/60 done in 1.02s (pinned=true)
+[run31b] layer 29/60 done in 1.19s (pinned=true)
+[run31b] layer 44/60 done in 0.99s (pinned=true)
+[run31b] layer 59/60 done in 1.11s (pinned=true)
+[run31b] prefill done in 55.94s ssd_read_mb=0.0 vm=(Some(6866980), Some(6805544))
+[run31b] decode step 0 in 2.72s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 1 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 2 in 2.73s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 3 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 4 in 2.78s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 5 in 2.76s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 6 in 2.77s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 7 in 2.74s vm=(Some(6866980), Some(6805544))
+[run31b] decode step 8 in 2.76s vm=(Some(6866980), Some(6805544))
+

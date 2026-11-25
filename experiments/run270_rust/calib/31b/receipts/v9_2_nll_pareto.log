@@ -1,0 +1,540 @@
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.61650 ppl=2031.445 top1_acc=0.2540 mean_entropy=2.6106 eval_s=141.93
+EVAL_TEACHER_KL pos=63 kl_t_to_s=4.53224 kl_s_to_t=8.71504 top1_agree=0.3016 top5_agree=0.4444 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=GlyphLod raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=86876160 glyph_tokens=0 mid_tokens=3560 exact_tokens=1960 shrink=1.91x shrink_vs_bf16=0.95x
+PROFILE31B steps=1 attn_s=42.466 gate_s=24.413 up_s=24.045 down_s=34.073 norm_kv_s=10.559 lmhead_s=3.980 avg_step_s=139.536 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=141.93 decode_s=0.00 vm_hwm_kb=Some(6876548) vm_rss_kb=Some(6876548)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.92s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.59s (pinned=true)
+[run31b] layer 05/60 done in 2.87s (pinned=true)
+[run31b] layer 14/60 done in 2.49s (pinned=true)
+[run31b] layer 29/60 done in 2.87s (pinned=true)
+[run31b] layer 44/60 done in 2.40s (pinned=true)
+[run31b] layer 59/60 done in 2.83s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.23607 ppl=510.847 top1_acc=0.3889 mean_entropy=1.5485 eval_s=139.25
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.53286 kl_s_to_t=8.57083 top1_agree=0.4259 top5_agree=0.5926 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=GlyphLod raw_bytes=164003840 naive_bf16_bytes=82001920 compressed_bytes=86397440 glyph_tokens=0 mid_tokens=3500 exact_tokens=1960 shrink=1.90x shrink_vs_bf16=0.95x
+PROFILE31B steps=1 attn_s=41.937 gate_s=24.140 up_s=24.102 down_s=33.408 norm_kv_s=10.342 lmhead_s=3.251 avg_step_s=137.180 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=139.25 decode_s=0.00 vm_hwm_kb=Some(6876160) vm_rss_kb=Some(6876160)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.96s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805196))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805024)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.52s (pinned=true)
+[run31b] layer 05/60 done in 2.85s (pinned=true)
+[run31b] layer 14/60 done in 2.46s (pinned=true)
+[run31b] layer 29/60 done in 2.75s (pinned=true)
+[run31b] layer 44/60 done in 1.98s (pinned=true)
+[run31b] layer 59/60 done in 2.79s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.40771 ppl=12181.919 top1_acc=0.1224 mean_entropy=2.8814 eval_s=115.91
+EVAL_TEACHER_KL pos=49 kl_t_to_s=5.51688 kl_s_to_t=8.45393 top1_agree=0.2041 top5_agree=0.3673 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=GlyphLod raw_bytes=136970240 naive_bf16_bytes=68485120 compressed_bytes=79216640 glyph_tokens=0 mid_tokens=2600 exact_tokens=1960 shrink=1.73x shrink_vs_bf16=0.86x
+PROFILE31B steps=1 attn_s=35.130 gate_s=20.112 up_s=20.051 down_s=28.102 norm_kv_s=7.480 lmhead_s=3.038 avg_step_s=113.913 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=115.91 decode_s=0.00 vm_hwm_kb=Some(6870092) vm_rss_kb=Some(6870092)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.98s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6866980), Some(6805192))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6866980), Some(6805020)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.11s (pinned=true)
+[run31b] layer 05/60 done in 2.36s (pinned=true)
+[run31b] layer 14/60 done in 2.02s (pinned=true)
+[run31b] layer 29/60 done in 2.28s (pinned=true)
+[run31b] layer 44/60 done in 1.95s (pinned=true)
+[run31b] layer 59/60 done in 2.31s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.85105 ppl=2568.424 top1_acc=0.2540 mean_entropy=3.1364 eval_s=145.20
+EVAL_TEACHER_KL pos=63 kl_t_to_s=4.94881 kl_s_to_t=9.43911 top1_agree=0.3016 top5_agree=0.3651 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=GlyphLod raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=86876160 glyph_tokens=0 mid_tokens=3560 exact_tokens=1960 shrink=1.91x shrink_vs_bf16=0.95x
+MLP_SPARSE top_p=0.800 skipped_blks=4032 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=1 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=42.383 gate_s=27.169 up_s=24.258 down_s=33.735 norm_kv_s=11.330 lmhead_s=3.796 avg_step_s=145.338 router_s=2.666
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=145.20 decode_s=0.00 vm_hwm_kb=Some(6897592) vm_rss_kb=Some(6897592)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.08s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6888100), Some(6826316))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6888100), Some(6826144)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.58s (pinned=true)
+[run31b] layer 05/60 done in 2.91s (pinned=true)
+[run31b] layer 14/60 done in 2.58s (pinned=true)
+[run31b] layer 29/60 done in 2.94s (pinned=true)
+[run31b] layer 44/60 done in 2.46s (pinned=true)
+[run31b] layer 59/60 done in 2.85s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.29971 ppl=544.415 top1_acc=0.3889 mean_entropy=1.9898 eval_s=142.42
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.72130 kl_s_to_t=9.00160 top1_agree=0.4074 top5_agree=0.5185 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=GlyphLod raw_bytes=164003840 naive_bf16_bytes=82001920 compressed_bytes=86397440 glyph_tokens=0 mid_tokens=3500 exact_tokens=1960 shrink=1.90x shrink_vs_bf16=0.95x
+MLP_SPARSE top_p=0.800 skipped_blks=0 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=0 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=41.983 gate_s=26.639 up_s=24.058 down_s=33.157 norm_kv_s=11.046 lmhead_s=3.227 avg_step_s=142.739 router_s=2.629
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=142.42 decode_s=0.00 vm_hwm_kb=Some(6894608) vm_rss_kb=Some(6894608)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.09s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6888100), Some(6826316))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6888100), Some(6826144)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.59s (pinned=true)
+[run31b] layer 05/60 done in 2.95s (pinned=true)
+[run31b] layer 14/60 done in 2.51s (pinned=true)
+[run31b] layer 29/60 done in 2.83s (pinned=true)
+[run31b] layer 44/60 done in 2.39s (pinned=true)
+[run31b] layer 59/60 done in 2.85s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.21363 ppl=10032.982 top1_acc=0.1633 mean_entropy=3.2841 eval_s=118.88
+EVAL_TEACHER_KL pos=49 kl_t_to_s=5.83097 kl_s_to_t=9.33773 top1_agree=0.1837 top5_agree=0.3265 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=GlyphLod raw_bytes=136970240 naive_bf16_bytes=68485120 compressed_bytes=79216640 glyph_tokens=0 mid_tokens=2600 exact_tokens=1960 shrink=1.73x shrink_vs_bf16=0.86x
+MLP_SPARSE top_p=0.800 skipped_blks=4032 total_blks=96526080 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=1 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=35.194 gate_s=22.282 up_s=20.133 down_s=27.959 norm_kv_s=8.025 lmhead_s=3.210 avg_step_s=119.020 router_s=2.217
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=118.88 decode_s=0.00 vm_hwm_kb=Some(6891240) vm_rss_kb=Some(6891240)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.08s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6888100), Some(6826312))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6888100), Some(6826140)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.15s (pinned=true)
+[run31b] layer 05/60 done in 2.36s (pinned=true)
+[run31b] layer 14/60 done in 2.07s (pinned=true)
+[run31b] layer 29/60 done in 2.39s (pinned=true)
+[run31b] layer 44/60 done in 2.02s (pinned=true)
+[run31b] layer 59/60 done in 2.33s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=8.11383 ppl=3340.334 top1_acc=0.2381 mean_entropy=3.1312 eval_s=144.16
+EVAL_TEACHER_KL pos=63 kl_t_to_s=5.32090 kl_s_to_t=9.50494 top1_agree=0.3175 top5_agree=0.3651 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=GlyphLod raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=86876160 glyph_tokens=0 mid_tokens=3560 exact_tokens=1960 shrink=1.91x shrink_vs_bf16=0.95x
+MLP_SPARSE top_p=0.750 skipped_blks=24192 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=6 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=42.615 gate_s=26.710 up_s=24.100 down_s=33.294 norm_kv_s=11.190 lmhead_s=3.759 avg_step_s=144.338 router_s=2.671
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=144.16 decode_s=0.00 vm_hwm_kb=Some(6908284) vm_rss_kb=Some(6908284)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.12s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6898852), Some(6837056))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6898852), Some(6836884)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.64s (pinned=true)
+[run31b] layer 05/60 done in 2.99s (pinned=true)
+[run31b] layer 14/60 done in 2.62s (pinned=true)
+[run31b] layer 29/60 done in 2.85s (pinned=true)
+[run31b] layer 44/60 done in 2.44s (pinned=true)
+[run31b] layer 59/60 done in 2.91s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.46316 ppl=641.085 top1_acc=0.3889 mean_entropy=2.1012 eval_s=142.19
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.84138 kl_s_to_t=9.18018 top1_agree=0.4074 top5_agree=0.5185 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=GlyphLod raw_bytes=164003840 naive_bf16_bytes=82001920 compressed_bytes=86397440 glyph_tokens=0 mid_tokens=3500 exact_tokens=1960 shrink=1.90x shrink_vs_bf16=0.95x
+MLP_SPARSE top_p=0.750 skipped_blks=20160 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=5 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=42.240 gate_s=26.627 up_s=23.905 down_s=32.981 norm_kv_s=10.978 lmhead_s=3.247 avg_step_s=142.618 router_s=2.639
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=142.19 decode_s=0.00 vm_hwm_kb=Some(6905284) vm_rss_kb=Some(6905284)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.01s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6898844), Some(6837044))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6898844), Some(6836872)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.55s (pinned=true)
+[run31b] layer 05/60 done in 2.89s (pinned=true)
+[run31b] layer 14/60 done in 2.55s (pinned=true)
+[run31b] layer 29/60 done in 2.83s (pinned=true)
+[run31b] layer 44/60 done in 2.44s (pinned=true)
+[run31b] layer 59/60 done in 2.83s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant glyph-lod --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.47702 ppl=13056.244 top1_acc=0.1429 mean_entropy=3.3304 eval_s=117.80
+EVAL_TEACHER_KL pos=49 kl_t_to_s=6.11353 kl_s_to_t=9.75015 top1_agree=0.1837 top5_agree=0.3265 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=GlyphLod raw_bytes=136970240 naive_bf16_bytes=68485120 compressed_bytes=79216640 glyph_tokens=0 mid_tokens=2600 exact_tokens=1960 shrink=1.73x shrink_vs_bf16=0.86x
+MLP_SPARSE top_p=0.750 skipped_blks=28224 total_blks=96526080 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=7 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=34.902 gate_s=22.384 up_s=19.933 down_s=27.592 norm_kv_s=8.006 lmhead_s=2.983 avg_step_s=118.008 router_s=2.209
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=117.80 decode_s=0.00 vm_hwm_kb=Some(6901888) vm_rss_kb=Some(6901888)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.06s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6898852), Some(6837056))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6898852), Some(6836884)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.11s (pinned=true)
+[run31b] layer 05/60 done in 2.44s (pinned=true)
+[run31b] layer 14/60 done in 2.06s (pinned=true)
+[run31b] layer 29/60 done in 2.32s (pinned=true)
+[run31b] layer 44/60 done in 1.99s (pinned=true)
+[run31b] layer 59/60 done in 2.25s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.61760 ppl=2033.681 top1_acc=0.2540 mean_entropy=2.6135 eval_s=140.03
+EVAL_TEACHER_KL pos=63 kl_t_to_s=4.51694 kl_s_to_t=8.71486 top1_agree=0.3016 top5_agree=0.4286 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Fp8E4M3 raw_bytes=165806080 compressed_bytes=42069760 shrink=3.94x
+PROFILE31B steps=1 attn_s=42.789 gate_s=24.435 up_s=24.428 down_s=34.141 norm_kv_s=8.123 lmhead_s=3.781 avg_step_s=137.697 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=140.03 decode_s=0.00 vm_hwm_kb=Some(6900412) vm_rss_kb=Some(6885664)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.95s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6865188), Some(6803400))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6865188), Some(6803228)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.48s (pinned=true)
+[run31b] layer 05/60 done in 2.76s (pinned=true)
+[run31b] layer 14/60 done in 2.47s (pinned=true)
+[run31b] layer 29/60 done in 2.81s (pinned=true)
+[run31b] layer 44/60 done in 2.38s (pinned=true)
+[run31b] layer 59/60 done in 2.75s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.20672 ppl=496.071 top1_acc=0.3889 mean_entropy=1.5580 eval_s=136.99
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.50578 kl_s_to_t=8.57822 top1_agree=0.4074 top5_agree=0.5926 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=Fp8E4M3 raw_bytes=164003840 compressed_bytes=41612480 shrink=3.94x
+PROFILE31B steps=1 attn_s=42.236 gate_s=23.794 up_s=24.000 down_s=33.650 norm_kv_s=7.977 lmhead_s=3.288 avg_step_s=134.945 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=136.99 decode_s=0.00 vm_hwm_kb=Some(6892092) vm_rss_kb=Some(6870776)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.98s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6865188), Some(6803400))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6865188), Some(6803228)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.46s (pinned=true)
+[run31b] layer 05/60 done in 2.74s (pinned=true)
+[run31b] layer 14/60 done in 2.47s (pinned=true)
+[run31b] layer 29/60 done in 2.68s (pinned=true)
+[run31b] layer 44/60 done in 1.95s (pinned=true)
+[run31b] layer 59/60 done in 2.66s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.38555 ppl=11914.931 top1_acc=0.1224 mean_entropy=2.8879 eval_s=114.46
+EVAL_TEACHER_KL pos=49 kl_t_to_s=5.49181 kl_s_to_t=8.47142 top1_agree=0.2041 top5_agree=0.3878 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=Fp8E4M3 raw_bytes=136970240 compressed_bytes=34753280 shrink=3.94x
+PROFILE31B steps=1 attn_s=35.165 gate_s=20.190 up_s=20.141 down_s=28.265 norm_kv_s=5.825 lmhead_s=3.063 avg_step_s=112.649 router_s=0.000
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=114.46 decode_s=0.00 vm_hwm_kb=Some(6866988) vm_rss_kb=Some(6866988)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.84s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6865112), Some(6803324))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6865112), Some(6803152)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.13s (pinned=true)
+[run31b] layer 05/60 done in 2.26s (pinned=true)
+[run31b] layer 14/60 done in 2.02s (pinned=true)
+[run31b] layer 29/60 done in 2.27s (pinned=true)
+[run31b] layer 44/60 done in 1.97s (pinned=true)
+[run31b] layer 59/60 done in 2.24s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.84558 ppl=2554.413 top1_acc=0.2540 mean_entropy=3.1171 eval_s=142.57
+EVAL_TEACHER_KL pos=63 kl_t_to_s=4.98539 kl_s_to_t=9.46857 top1_agree=0.3016 top5_agree=0.3651 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Fp8E4M3 raw_bytes=165806080 compressed_bytes=42069760 shrink=3.94x
+MLP_SPARSE top_p=0.800 skipped_blks=4032 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=1 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=42.442 gate_s=26.976 up_s=24.285 down_s=33.817 norm_kv_s=8.792 lmhead_s=3.750 avg_step_s=142.730 router_s=2.668
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=142.57 decode_s=0.00 vm_hwm_kb=Some(6924940) vm_rss_kb=Some(6924940)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.99s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6886264), Some(6824472))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6886264), Some(6824300)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.62s (pinned=true)
+[run31b] layer 05/60 done in 2.81s (pinned=true)
+[run31b] layer 14/60 done in 2.51s (pinned=true)
+[run31b] layer 29/60 done in 2.78s (pinned=true)
+[run31b] layer 44/60 done in 2.40s (pinned=true)
+[run31b] layer 59/60 done in 2.82s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.31379 ppl=552.132 top1_acc=0.3889 mean_entropy=2.0028 eval_s=140.96
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.71131 kl_s_to_t=9.01979 top1_agree=0.4074 top5_agree=0.5185 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=Fp8E4M3 raw_bytes=164003840 compressed_bytes=41612480 shrink=3.94x
+MLP_SPARSE top_p=0.800 skipped_blks=0 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=0 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=42.451 gate_s=26.812 up_s=24.122 down_s=33.415 norm_kv_s=8.578 lmhead_s=3.351 avg_step_s=141.381 router_s=2.651
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=140.96 decode_s=0.00 vm_hwm_kb=Some(6923268) vm_rss_kb=Some(6901076)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.01s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6886252), Some(6824456))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6886252), Some(6824284)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.53s (pinned=true)
+[run31b] layer 05/60 done in 2.77s (pinned=true)
+[run31b] layer 14/60 done in 2.52s (pinned=true)
+[run31b] layer 29/60 done in 2.76s (pinned=true)
+[run31b] layer 44/60 done in 2.41s (pinned=true)
+[run31b] layer 59/60 done in 3.12s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.8000 --shared-mlp-blocks 8 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.22062 ppl=10103.278 top1_acc=0.1633 mean_entropy=3.2660 eval_s=116.12
+EVAL_TEACHER_KL pos=49 kl_t_to_s=5.84092 kl_s_to_t=9.30996 top1_agree=0.1837 top5_agree=0.3265 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=Fp8E4M3 raw_bytes=136970240 compressed_bytes=34753280 shrink=3.94x
+MLP_SPARSE top_p=0.800 skipped_blks=4032 total_blks=96526080 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=1 gate_total_blks=5040 gate_saved_pct=0.0%
+PROFILE31B steps=1 attn_s=34.993 gate_s=22.093 up_s=19.813 down_s=27.796 norm_kv_s=6.401 lmhead_s=3.057 avg_step_s=116.362 router_s=2.209
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=116.12 decode_s=0.00 vm_hwm_kb=Some(6888124) vm_rss_kb=Some(6888124)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.03s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6886264), Some(6824472))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6886264), Some(6824300)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.11s (pinned=true)
+[run31b] layer 05/60 done in 2.31s (pinned=true)
+[run31b] layer 14/60 done in 2.04s (pinned=true)
+[run31b] layer 29/60 done in 2.32s (pinned=true)
+[run31b] layer 44/60 done in 1.99s (pinned=true)
+[run31b] layer 59/60 done in 2.21s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=8.07469 ppl=3212.141 top1_acc=0.2381 mean_entropy=3.1150 eval_s=142.14
+EVAL_TEACHER_KL pos=63 kl_t_to_s=5.31732 kl_s_to_t=9.50547 top1_agree=0.3175 top5_agree=0.3651 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Fp8E4M3 raw_bytes=165806080 compressed_bytes=42069760 shrink=3.94x
+MLP_SPARSE top_p=0.750 skipped_blks=24192 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=6 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=42.547 gate_s=26.820 up_s=24.377 down_s=33.371 norm_kv_s=8.800 lmhead_s=3.725 avg_step_s=142.302 router_s=2.661
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=142.14 decode_s=0.00 vm_hwm_kb=Some(6935676) vm_rss_kb=Some(6935676)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.05s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6897016), Some(6835208))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6897016), Some(6835036)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.60s (pinned=true)
+[run31b] layer 05/60 done in 2.84s (pinned=true)
+[run31b] layer 14/60 done in 2.48s (pinned=true)
+[run31b] layer 29/60 done in 2.76s (pinned=true)
+[run31b] layer 44/60 done in 2.51s (pinned=true)
+[run31b] layer 59/60 done in 2.76s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain why stiff reaction-diffusion PDEs constrain explicit Runge-Kutta step sizes and how Crank-Nicolson helps.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>When integrating stiff reaction-diffusion equations with explicit Runge-Kutta schemes, step sizes are constrained quadratically by the smallest spatial grid spacing. Switching to an implicit Crank-Nicolson discretization preserves second-order temporal accuracy while remaining unconditionally stable across diffusive eigenmodes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_numerical_pde.lgt1
+EVAL_NLL tokens=91 eval_start=36 eval_pos=54 mean_nll=6.51843 ppl=677.512 top1_acc=0.3704 mean_entropy=2.1168 eval_s=139.65
+EVAL_TEACHER_KL pos=54 kl_t_to_s=4.88694 kl_s_to_t=9.19764 top1_agree=0.3889 top5_agree=0.5000 teacher_nll=4.76460 teacher_ppl=117.284
+KV31B mode=Fp8E4M3 raw_bytes=164003840 compressed_bytes=41612480 shrink=3.94x
+MLP_SPARSE top_p=0.750 skipped_blks=20160 total_blks=116847360 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=5 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=42.318 gate_s=26.444 up_s=23.954 down_s=32.979 norm_kv_s=8.535 lmhead_s=3.219 avg_step_s=140.092 router_s=2.642
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=139.65 decode_s=0.00 vm_hwm_kb=Some(6933140) vm_rss_kb=Some(6933140)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.97s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6897016), Some(6835212))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6897016), Some(6835040)))
+[run31b] prompt 91 tokens ids=[2, 105, 2364, 107, 155122, 3217, 24807, 6608, 236772, 86087, 214486, 102497, 14481, 9793, 787, 236772, 236855, 37838, 2918, 11550, 532, 1217, 202387, 236772, 118182, 1588, 7351, 236761, 106, 107, 105, 4368]
+[run31b] layer 00/60 done in 2.53s (pinned=true)
+[run31b] layer 05/60 done in 2.78s (pinned=true)
+[run31b] layer 14/60 done in 2.47s (pinned=true)
+[run31b] layer 29/60 done in 2.80s (pinned=true)
+[run31b] layer 44/60 done in 2.38s (pinned=true)
+[run31b] layer 59/60 done in 2.73s (pinned=true)
+
+$ /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_cliff_fix_vlm.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --threads 4 --kv-quant fp8 --lmhead-cs exact --andvcnt-bits 6 --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --profile-components --cortical-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr --mlp-top-p 0.7500 --shared-mlp-blocks 8 --head-router /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr --head-top-p 0.8500 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how static single assignment form and phi nodes simplify compiler optimization passes.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>Static single assignment form simplifies dead-code elimination and global value numbering because every virtual register has exactly one lexical definition site. Phi nodes placed at iterated dominance frontiers reconcile control-flow merges before register allocation maps virtual temporaries onto physical machine lanes.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_compiler_ir.lgt1
+EVAL_NLL tokens=76 eval_start=26 eval_pos=49 mean_nll=9.48794 ppl=13199.611 top1_acc=0.1429 mean_entropy=3.3059 eval_s=115.95
+EVAL_TEACHER_KL pos=49 kl_t_to_s=6.13290 kl_s_to_t=9.75868 top1_agree=0.1837 top5_agree=0.2857 teacher_nll=5.62773 teacher_ppl=278.031
+KV31B mode=Fp8E4M3 raw_bytes=136970240 compressed_bytes=34753280 shrink=3.94x
+MLP_SPARSE top_p=0.750 skipped_blks=28224 total_blks=96526080 dram_saved_pct=0.0%
+CORTICAL_ROUTER gate_skipped_blks=7 gate_total_blks=5040 gate_saved_pct=0.1%
+PROFILE31B steps=1 attn_s=35.098 gate_s=22.081 up_s=19.927 down_s=27.486 norm_kv_s=6.331 lmhead_s=3.073 avg_step_s=116.197 router_s=2.200
+MEM31B pinned_bytes=6075287824 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=115.95 decode_s=0.00 vm_hwm_kb=Some(6898864) vm_rss_kb=Some(6898864)
+
+[STDERR]
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Fp8E4M3 kv_lod=(0, 0, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=6069439328 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Fp8E4M3
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_c8d.c8d: entries=3 norms=1 payload_bytes=9071552 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] loaded HeadRouter /mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_v9_2_head_router.crtr: layers=60 rank=32 heads=32 top_p=1.000 shared=4 (10.24 MB)
+[run31b] configured Row-Major AND+VCNT activation bits = 6
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.750
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.03s pinned_layers=60/60 pinned_bytes=6075287824 embed_bytes=539492352 vm=(Some(6897016), Some(6835212))
+[run31b] vision on-demand: text-only run evicted 233631744 B (vm=(Some(6897016), Some(6835040)))
+[run31b] prompt 76 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2002, 3161, 18327, 1183, 532, 38202, 13653, 30091, 47133, 18088, 16349, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 39217, 3161, 18327, 1183, 79969]
+[run31b] layer 00/60 done in 2.14s (pinned=true)
+[run31b] layer 05/60 done in 2.32s (pinned=true)
+[run31b] layer 14/60 done in 2.05s (pinned=true)
+[run31b] layer 29/60 done in 2.26s (pinned=true)
+[run31b] layer 44/60 done in 1.98s (pinned=true)
+[run31b] layer 59/60 done in 2.24s (pinned=true)
+

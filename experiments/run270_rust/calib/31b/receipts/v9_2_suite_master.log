@@ -1,0 +1,62 @@
+=== STAGE 3A: DENSE 15-PROMPT BATTERY (abits=6, lmhead-cs=exact, kv=glyph-lod) ===
+[BAT:dense] P1_arith        pass=1 pre=32.08s dec=16.81s text='The answer is 4.<turn|>'
+[BAT:dense] P2_france       pass=1 pre=25.96s dec=57.27s text='It seems you are referring to the **capital of France**.\n\nThe capital of the city is Paris.<turn|>'
+[BAT:dense] P3_hamlet_quote pass=0 pre=33.13s dec=55.13s text="It seems that the sentence is a bit of an odd, and it's not to be.<turn|>"
+[BAT:dense] P4_prime_py     pass=1 pre=36.43s dec=130.83s text='It seems you are looking for a "prime" (which is likely **Prime**). However, it\'s not possible to check if the number is prime.\n\nThe function can be used as follows:\n```python\ndef check'
+[BAT:dense] P5_speed        pass=1 pre=45.44s dec=86.0s text='To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 km/h'
+[BAT:dense] P6_photo        pass=1 pre=31.88s dec=38.25s text='Photosynthesis is the process of using light to create a chemical reaction.<turn|>'
+[BAT:dense] P7_bsearch      pass=0 pre=41.33s dec=85.77s text='It seems you are referring to **Binary Search** (which is a search algorithm for finding the elements of an array.\n\nThe time complexity of binary search on'
+[BAT:dense] P8_romeo        pass=0 pre=30.44s dec=85.29s text='It seems you are referring to the play **Romeo and Juliet**.\n\nThe play is a story of Romeo and Julie. The plot consists of two people, who'
+[BAT:dense] B5_hamlet       pass=0 pre=27.3s dec=84.8s text='It seems you are referring to the play **Hamlet**.\n\nThe playwright of Hamlet is a writer who wrote the plays. The player\'s name was "Ham'
+[BAT:dense] B5_multistep    pass=0 pre=36.79s dec=74.43s text='To compute the result:\n\n12 * 8 = 96\n96 - 27 = **53**<turn|>'
+[BAT:dense] B5_min          pass=1 pre=39.94s dec=24.81s text='The smaller number is **193**.<turn|>'
+[BAT:dense] U1_algebra      pass=0 pre=53.14s dec=132.13s text='To find the value of 2x - 1, we first calculate the total value for x.\n\n**Step 1: Find x**\n5x + 3 = 38\n(5 * x) = ('
+[BAT:dense] U2_units        pass=0 pre=53.39s dec=132.07s text='To calculate the total distance, we first find the speed of the cyclist.\n\n18 kilometers per hour = 12 km/hour (Wait)\n40 minutes = (40 / 60) * 3 hours'
+[BAT:dense] U3_bugfix       pass=1 pre=57.25s dec=86.89s text='The bug in the code is that it cannot calculate the average of a list.\n\nIf you have an empty list, this function will return 0.<turn|>'
+[BAT:dense] U4_syllogism    pass=1 pre=55.94s dec=24.78s text='Based on the provided text, **No**.<turn|>'
+[BATTERY SUMMARY:dense] 8/15 passed hwm=6866980
+[REPORT WRITTEN] /mnt/SHE-VAULT/gemma4_v9_2/eval_out/battery_dense/v9_2_battery_report.json
+=== STAGE 3B: NLL-PARETO (glyph-lod & fp8, dense + CRTR + HeadRouter) ===
+[PARETO] dense_glyph-lod        nll=7.69618 ppl=2199.93 kl_t2s=4.82309 agree1=0.31325 mlp_save=None head_save=None hwm=6876548
+[PARETO] crtr_p80_glyph-lod     nll=7.74860 ppl=2318.32 kl_t2s=5.1352 agree1=0.30122 mlp_save=0.0 head_save=None hwm=6897592
+[PARETO] crtr_p75_hr85_glyph-lod nll=7.97925 ppl=2919.74 kl_t2s=5.39888 agree1=0.30725 mlp_save=0.1 head_save=None hwm=6908284
+[PARETO] dense_fp8              nll=7.68050 ppl=2165.70 kl_t2s=4.80107 agree1=0.30724 mlp_save=None head_save=None hwm=6900412
+[PARETO] crtr_p80_fp8           nll=7.75317 ppl=2328.94 kl_t2s=5.14877 agree1=0.30122 mlp_save=0.0 head_save=None hwm=6924940
+[PARETO] crtr_p75_hr85_fp8      nll=7.98560 ppl=2938.34 kl_t2s=5.41806 agree1=0.30123 mlp_save=0.1 head_save=None hwm=6935676
+[REPORT WRITTEN] /mnt/SHE-VAULT/gemma4_v9_2/eval_out/nll_pareto/v9_2_nll_pareto_report.json
+=== STAGE 3C: ASSISTANT-V7 BHDR SPEC-AB ===
+[SPEC:dense_k1        ] P1_arith     pass=1 s_tok=2.695 acc=None dec=16.17s hwm=6866928 text='The answer is 4.<turn|>'
+[SPEC:dense_k1        ] P2_france    pass=1 s_tok=2.722 acc=None dec=57.16s hwm=6866936 text='It seems you are referring to the **capital of France**.\n\nThe capital of the city is Paris.<turn|>'
+[SPEC:dense_k1        ] P5_speed     pass=1 s_tok=2.784 acc=None dec=86.3s hwm=6866936 text='To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 km/h'
+[SPEC:dense_k1        ] B5_multistep pass=0 s_tok=2.755 acc=None dec=74.38s hwm=6866936 text='To compute the result:\n\n12 * 8 = 96\n96 - 27 = **53**<turn|>'
+[SPEC:bhdr_spec_k4    ] P1_arith     pass=1 s_tok=3.587 acc=0.286 dec=21.52s hwm=6866936 text='The answer is 4.<turn|>'
+[SPEC:bhdr_spec_k4    ] P2_france    pass=1 s_tok=3.219 acc=0.188 dec=67.59s hwm=6866944 text='It seems you are referring to the **capital of France**.\n\nThe capital of the city is Paris.<turn|>'
+[SPEC:bhdr_spec_k4    ] P5_speed     pass=1 s_tok=3.279 acc=0.158 dec=101.65s hwm=6901296 text='To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 km/h'
+[SPEC:bhdr_spec_k4    ] B5_multistep pass=0 s_tok=3.392 acc=0.214 dec=91.59s hwm=6882724 text='To compute the result:\n\n12 * 8 = 96\n96 - 27 = **53**<turn|>'
+[SPEC:bhdr_spec_k4_tmg] P1_arith     pass=1 s_tok=3.429 acc=0.333 dec=20.58s hwm=6866956 text='The answer is 4.<turn|>'
+[SPEC:bhdr_spec_k4_tmg] P2_france    pass=1 s_tok=3.014 acc=0.25 dec=93.43s hwm=6874196 text='It seems you are referring to the **capital of France**.\n\nThe capital of French is **Paris**, which is the most important city in this country.<turn|>'
+[SPEC:bhdr_spec_k4_tmg] P5_speed     pass=1 s_tok=3.249 acc=0.167 dec=100.71s hwm=6898960 text='To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 kilometers per hour'
+[SPEC:bhdr_spec_k4_tmg] B5_multistep pass=0 s_tok=3.198 acc=0.25 dec=124.74s hwm=6901408 text="To compute the result:\n\n12 * 8 = 96\n90 - 27 = **53** (Wait, I'm not sure. Wait, it is"
+[REPORT WRITTEN] /mnt/SHE-VAULT/gemma4_v9_2/eval_out/spec_ab/v9_2_spec_ab_report.json
+=== STAGE 3D: COCO VISION QA (abits=6, lmhead-cs=exact, kv=glyph-lod) ===
+[VISION] text='A motorcycle is parked on a grassy area.<turn|>' pre=581.38s dec=29.75s hwm=6953508 ssd=0
+[REPORT WRITTEN] /mnt/SHE-VAULT/gemma4_v9_2/eval_out/vision/v9_2_vision_report.json
+=== STAGE 3E: SPARSE CRTR+HR 15-PROMPT BATTERY ===
+[BAT:crtr80_hr85] P1_arith        pass=1 pre=30.85s dec=15.06s text='The answer is 4.<turn|>'
+[BAT:crtr80_hr85] P2_france       pass=0 pre=26.58s dec=62.77s text="It seems you are referring to the **capital of France**.\n\nThe capital of same is **the city's center.<turn|>"
+[BAT:crtr80_hr85] P3_hamlet_quote pass=0 pre=33.55s dec=40.15s text="It seems that the sentence is not to be, and it's a.<turn|>"
+[BAT:crtr80_hr85] P4_prime_py     pass=1 pre=37.15s dec=120.12s text='It seems you meant to "check if a number is prime" (which probably be an **prime** in the context of mathematics.\n\nThe most common way to check whether a same number\'s prime is that itâ\x80\x99s not just'
+[BAT:crtr80_hr85] P5_speed        pass=1 pre=46.45s dec=79.13s text='To find the average speed, you divide the total distance by the time.\n\n**120 km / 2 hours = 60 own per hour'
+[BAT:crtr80_hr85] P6_photo        pass=0 pre=32.53s dec=27.28s text='Photosynthesis is a process of the synthesis of proteins.<turn|>'
+[BAT:crtr80_hr85] P7_bsearch      pass=0 pre=38.33s dec=79.6s text='It appears you are referring to **Binary Search** (which is a search algorithm for finding the elements of an array.\n\nThe time complexity of binary search on'
+[BAT:crtr80_hr85] P8_romeo        pass=0 pre=30.86s dec=78.31s text='It seems you are referring to the **Romeo and Juliet** (which is a play of Romeo and Julie.\n\nTheplay\'s name was "Romeo'
+[BAT:crtr80_hr85] B5_hamlet       pass=0 pre=27.75s dec=77.97s text="It appears you are referring a **Hamlet** (which is an unconventional concept of the play.\n\nTheplay Hamlet's design was developed by the playwrightâ\x80\x99"
+[BAT:crtr80_hr85] B5_multistep    pass=0 pre=37.16s dec=68.25s text='To compute the result:\n\n12 * 8 = 40\n40 - 27 = **33**<turn|>'
+[BAT:crtr80_hr85] B5_min          pass=1 pre=40.49s dec=22.68s text='The smaller number is **193**.<turn|>'
+[BAT:crtr80_hr85] U1_algebra      pass=0 pre=54.66s dec=121.67s text='To find the value of 2x - 1, we first need to calculate the x.\n\n**Step:**\n5x + 3 = 38\n(5-3) = (4+10) /'
+[BAT:crtr80_hr85] U2_units        pass=0 pre=54.45s dec=121.57s text='Based on the information provided, it is a bit of an error.\n\nThe cyclist rides at 18 kilometers per hour for 40 minutes. To find how many meters did the cyclist travel:\n(15 / (4'
+[BAT:crtr80_hr85] U3_bugfix       pass=0 pre=58.36s dec=122.06s text='It seems you are referring a "bug" (which is likely an **error** in the code.\n\nThe provided function `def avg(nums): return sum(num) / len(sum)` has several errors:\n\n1'
+[BAT:crtr80_hr85] U4_syllogism    pass=1 pre=57.22s dec=28.17s text='Based on the provided text, it is **No**.<turn|>'
+[BATTERY SUMMARY:crtr80_hr85] 5/15 passed hwm=6898852
+[REPORT WRITTEN] /mnt/SHE-VAULT/gemma4_v9_2/eval_out/battery_sparse/v9_2_battery_report.json
+=== ALL V9.2 PI 4 EVAL STAGES COMPLETE ===

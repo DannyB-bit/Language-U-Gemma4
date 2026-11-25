@@ -1,0 +1,76 @@
+[V9.2 INIT] src=/mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_fused_vlm.t16c upgrade_full=[9, 34, 38, 40, 43, 44, 45, 46, 48, 49, 50, 51] upgrade_gu=[] upgrade_down=[53] hblk=256 rk=16
+[V9.2 C8DB] Preserved Vision adapter model.embed_vision.embedding_projection.weight (rank=32)
+L00 [keep(0x05)    ] cos_t2=0.99924 nr_t2=0.9998 | cos_tf=0.99774 nr_tf=0.9993 | lsc=0.099->0.099 c8d=0 crtr_rec=0.650 hr_rec=0.734 [27.1s]
+L01 [keep(0x05)    ] cos_t2=0.99837 nr_t2=0.9829 | cos_tf=0.99526 nr_tf=0.9875 | lsc=0.073->0.073 c8d=0 crtr_rec=0.651 hr_rec=0.750 [23.8s]
+L02 [keep(0x05)    ] cos_t2=0.99851 nr_t2=0.9836 | cos_tf=0.99555 nr_tf=0.9881 | lsc=0.992->0.992 c8d=0 crtr_rec=0.585 hr_rec=0.713 [24.0s]
+L03 [keep(0x05)    ] cos_t2=0.99884 nr_t2=0.9861 | cos_tf=0.99619 nr_tf=0.9921 | lsc=0.973->0.973 c8d=0 crtr_rec=0.608 hr_rec=0.759 [24.3s]
+L04 [keep(0x05)    ] cos_t2=0.99879 nr_t2=0.9853 | cos_tf=0.99598 nr_tf=0.9915 | lsc=0.984->0.984 c8d=0 crtr_rec=0.585 hr_rec=0.667 [24.0s]
+L05 [keep(0x05)    ] cos_t2=0.99929 nr_t2=0.9899 | cos_tf=0.99731 nr_tf=0.9977 | lsc=0.895->0.895 c8d=0 crtr_rec=0.594 hr_rec=0.713 [26.3s]
+L06 [keep(0x05)    ] cos_t2=0.99946 nr_t2=0.9902 | cos_tf=0.99778 nr_tf=0.9925 | lsc=0.922->0.922 c8d=0 crtr_rec=0.604 hr_rec=0.780 [24.2s]
+L07 [keep(0x41)    ] cos_t2=0.99912 nr_t2=0.9904 | cos_tf=0.99689 nr_tf=0.9872 | lsc=0.863->0.863 c8d=0 crtr_rec=0.638 hr_rec=0.896 [21.2s]
+L08 [keep(0x41)    ] cos_t2=0.99831 nr_t2=0.9876 | cos_tf=0.99455 nr_tf=0.9765 | lsc=0.867->0.867 c8d=0 crtr_rec=0.643 hr_rec=0.789 [21.1s]
+L09 [2b_gauss_full ] cos_t2=0.99857 nr_t2=0.9880 | cos_tf=0.99508 nr_tf=0.9723 | lsc=0.867->0.867 c8d=0 crtr_rec=0.711 hr_rec=0.771 [165.3s]
+L10 [keep(0x41)    ] cos_t2=0.99867 nr_t2=0.9930 | cos_tf=0.99578 nr_tf=0.9787 | lsc=0.914->0.914 c8d=0 crtr_rec=0.646 hr_rec=0.773 [21.5s]
+L11 [keep(0x05)    ] cos_t2=0.99884 nr_t2=0.9917 | cos_tf=0.99515 nr_tf=0.9758 | lsc=0.801->0.801 c8d=0 crtr_rec=0.612 hr_rec=0.796 [25.9s]
+L12 [keep(0x41)    ] cos_t2=0.99871 nr_t2=0.9934 | cos_tf=0.99229 nr_tf=0.9962 | lsc=0.695->0.695 c8d=0 crtr_rec=0.627 hr_rec=0.894 [20.8s]
+L13 [keep(0x41)    ] cos_t2=0.99844 nr_t2=0.9915 | cos_tf=0.99124 nr_tf=0.9942 | lsc=0.973->0.973 c8d=0 crtr_rec=0.612 hr_rec=0.831 [21.2s]
+L14 [keep(0x05)    ] cos_t2=0.99832 nr_t2=0.9906 | cos_tf=0.99035 nr_tf=0.9975 | lsc=0.977->0.977 c8d=0 crtr_rec=0.618 hr_rec=0.766 [23.6s]
+L15 [keep(0x41)    ] cos_t2=0.99816 nr_t2=0.9878 | cos_tf=0.98899 nr_tf=0.9960 | lsc=0.828->0.828 c8d=0 crtr_rec=0.650 hr_rec=0.854 [20.9s]
+L16 [keep(0x41)    ] cos_t2=0.99768 nr_t2=0.9855 | cos_tf=0.98789 nr_tf=0.9972 | lsc=0.977->0.977 c8d=0 crtr_rec=0.622 hr_rec=0.778 [21.1s]
+L17 [keep(0x05)    ] cos_t2=0.99803 nr_t2=0.9757 | cos_tf=0.99028 nr_tf=0.9842 | lsc=0.832->0.832 c8d=0 crtr_rec=0.602 hr_rec=0.715 [25.8s]
+L18 [keep(0x41)    ] cos_t2=0.99739 nr_t2=0.9746 | cos_tf=0.98983 nr_tf=0.9838 | lsc=0.969->0.969 c8d=0 crtr_rec=0.635 hr_rec=0.743 [20.8s]
+L19 [keep(0x41)    ] cos_t2=0.99696 nr_t2=0.9553 | cos_tf=0.98948 nr_tf=0.9503 | lsc=0.895->0.895 c8d=0 crtr_rec=0.645 hr_rec=0.877 [21.2s]
+L20 [keep(0x41)    ] cos_t2=0.99631 nr_t2=0.9733 | cos_tf=0.98931 nr_tf=0.9620 | lsc=0.895->0.912 c8d=0 crtr_rec=0.675 hr_rec=0.845 [20.8s]
+L21 [keep(0x41)    ] cos_t2=0.99492 nr_t2=0.9863 | cos_tf=0.98729 nr_tf=0.9667 | lsc=0.949->0.963 c8d=0 crtr_rec=0.660 hr_rec=0.762 [21.1s]
+L22 [keep(0x41)    ] cos_t2=0.99298 nr_t2=0.9983 | cos_tf=0.98272 nr_tf=0.9589 | lsc=0.895->0.911 c8d=0 crtr_rec=0.651 hr_rec=0.806 [20.8s]
+L23 [keep(0x05)    ] cos_t2=0.99206 nr_t2=0.9808 | cos_tf=0.98056 nr_tf=0.9439 | lsc=0.691->0.691 c8d=0 crtr_rec=0.667 hr_rec=0.771 [25.6s]
+L24 [keep(0x41)    ] cos_t2=0.98818 nr_t2=0.9916 | cos_tf=0.97285 nr_tf=0.9422 | lsc=0.812->0.812 c8d=0 crtr_rec=0.667 hr_rec=0.785 [21.2s]
+L25 [keep(0x41)    ] cos_t2=0.98200 nr_t2=0.9937 | cos_tf=0.96111 nr_tf=0.9215 | lsc=0.773->0.773 c8d=0 crtr_rec=0.653 hr_rec=0.792 [20.9s]
+L26 [keep(0x41)    ] cos_t2=0.97496 nr_t2=1.0148 | cos_tf=0.95563 nr_tf=0.9154 | lsc=0.652->0.652 c8d=0 crtr_rec=0.664 hr_rec=0.801 [20.9s]
+L27 [keep(0x41)    ] cos_t2=0.96767 nr_t2=1.0115 | cos_tf=0.94344 nr_tf=0.9256 | lsc=0.629->0.629 c8d=0 crtr_rec=0.690 hr_rec=0.771 [21.0s]
+L28 [keep(0x41)    ] cos_t2=0.97736 nr_t2=1.0173 | cos_tf=0.95274 nr_tf=0.9783 | lsc=0.455->0.455 c8d=0 crtr_rec=0.681 hr_rec=0.748 [20.9s]
+L29 [keep(0x05)    ] cos_t2=0.98312 nr_t2=1.0135 | cos_tf=0.93953 nr_tf=1.0690 | lsc=0.562->0.562 c8d=0 crtr_rec=0.698 hr_rec=0.782 [26.0s]
+L30 [keep(0x41)    ] cos_t2=0.98336 nr_t2=1.0037 | cos_tf=0.94003 nr_tf=1.0101 | lsc=0.699->0.699 c8d=0 crtr_rec=0.710 hr_rec=0.822 [20.8s]
+L31 [keep(0x41)    ] cos_t2=0.98468 nr_t2=0.9778 | cos_tf=0.94524 nr_tf=0.9604 | lsc=0.762->0.762 c8d=0 crtr_rec=0.672 hr_rec=0.750 [20.8s]
+L32 [keep(0x41)    ] cos_t2=0.98436 nr_t2=0.9722 | cos_tf=0.94508 nr_tf=0.9204 | lsc=0.773->0.782 c8d=0 crtr_rec=0.705 hr_rec=0.725 [21.2s]
+L33 [keep(0x41)    ] cos_t2=0.98230 nr_t2=0.9853 | cos_tf=0.94010 nr_tf=0.9379 | lsc=0.793->0.806 c8d=0 crtr_rec=0.703 hr_rec=0.704 [20.9s]
+L34 [2b_gauss_full ] cos_t2=0.98190 nr_t2=0.9896 | cos_tf=0.93960 nr_tf=0.9574 | lsc=0.766->0.766 c8d=0 crtr_rec=0.780 hr_rec=0.745 [165.3s]
+L35 [keep(0x05)    ] cos_t2=0.98247 nr_t2=0.9641 | cos_tf=0.94526 nr_tf=0.9325 | lsc=0.676->0.649 c8d=0 crtr_rec=0.679 hr_rec=0.706 [26.3s]
+L36 [keep(0x41)    ] cos_t2=0.97503 nr_t2=0.9927 | cos_tf=0.92917 nr_tf=0.9918 | lsc=0.789->0.789 c8d=0 crtr_rec=0.705 hr_rec=0.831 [100.4s]
+L37 [keep(0x41)    ] cos_t2=0.96811 nr_t2=0.9768 | cos_tf=0.90777 nr_tf=0.9720 | lsc=0.805->0.805 c8d=0 crtr_rec=0.716 hr_rec=0.759 [100.9s]
+L38 [2b_gauss_full ] cos_t2=0.95552 nr_t2=0.9515 | cos_tf=0.87293 nr_tf=0.9323 | lsc=0.793->0.793 c8d=0 crtr_rec=0.765 hr_rec=0.766 [165.4s]
+L39 [keep(0x41)    ] cos_t2=0.92798 nr_t2=0.9472 | cos_tf=0.80824 nr_tf=0.9042 | lsc=0.688->0.688 c8d=1 crtr_rec=0.737 hr_rec=0.738 [102.2s]
+L40 [2b_gauss_full ] cos_t2=0.92077 nr_t2=0.8989 | cos_tf=0.78774 nr_tf=0.8712 | lsc=0.633->0.579 c8d=0 crtr_rec=0.774 hr_rec=0.789 [165.6s]
+L41 [keep(0x05)    ] cos_t2=0.93454 nr_t2=0.9228 | cos_tf=0.82620 nr_tf=0.8662 | lsc=0.664->0.636 c8d=0 crtr_rec=0.710 hr_rec=0.685 [26.0s]
+L42 [keep(0x41)    ] cos_t2=0.93637 nr_t2=0.9143 | cos_tf=0.80758 nr_tf=0.8733 | lsc=0.773->0.778 c8d=0 crtr_rec=0.699 hr_rec=0.755 [98.9s]
+L43 [2b_gauss_full ] cos_t2=0.93199 nr_t2=0.9096 | cos_tf=0.78310 nr_tf=0.8524 | lsc=0.816->0.831 c8d=0 crtr_rec=0.743 hr_rec=0.711 [165.7s]
+L44 [2b_gauss_full ] cos_t2=0.92659 nr_t2=0.9139 | cos_tf=0.79028 nr_tf=0.8433 | lsc=0.848->0.861 c8d=0 crtr_rec=0.835 hr_rec=0.688 [163.7s]
+L45 [2b_gauss_full ] cos_t2=0.91259 nr_t2=0.9024 | cos_tf=0.78114 nr_tf=0.8282 | lsc=0.871->0.871 c8d=0 crtr_rec=0.751 hr_rec=0.722 [165.4s]
+L46 [2b_gauss_full ] cos_t2=0.90215 nr_t2=0.9007 | cos_tf=0.77084 nr_tf=0.8236 | lsc=0.891->0.891 c8d=0 crtr_rec=0.774 hr_rec=0.787 [164.4s]
+L47 [keep(0x05)    ] cos_t2=0.91796 nr_t2=0.9176 | cos_tf=0.77530 nr_tf=0.8626 | lsc=0.883->0.883 c8d=0 crtr_rec=0.742 hr_rec=0.685 [26.2s]
+L48 [2b_gauss_full ] cos_t2=0.92663 nr_t2=0.9289 | cos_tf=0.79586 nr_tf=0.8858 | lsc=0.879->0.879 c8d=0 crtr_rec=0.784 hr_rec=0.630 [163.1s]
+L49 [2b_gauss_full ] cos_t2=0.91573 nr_t2=0.9116 | cos_tf=0.77313 nr_tf=0.8532 | lsc=0.844->0.844 c8d=0 crtr_rec=0.800 hr_rec=0.822 [164.7s]
+L50 [2b_gauss_full ] cos_t2=0.90128 nr_t2=0.8980 | cos_tf=0.75156 nr_tf=0.8204 | lsc=0.867->0.867 c8d=0 crtr_rec=0.779 hr_rec=0.722 [164.4s]
+L51 [2b_gauss_full ] cos_t2=0.85251 nr_t2=0.8591 | cos_tf=0.63720 nr_tf=0.7811 | lsc=0.879->0.879 c8d=0 crtr_rec=0.840 hr_rec=0.771 [164.9s]
+L52 [keep(0x41)    ] cos_t2=0.79303 nr_t2=0.8103 | cos_tf=0.44757 nr_tf=0.7401 | lsc=0.828->0.828 c8d=0 crtr_rec=0.803 hr_rec=0.667 [99.5s]
+L53 [2b_gauss_dn   ] cos_t2=0.83422 nr_t2=0.7974 | cos_tf=0.55157 nr_tf=0.7361 | lsc=0.855->0.774 c8d=1 crtr_rec=0.821 hr_rec=0.764 [142.2s]
+L54 [keep(0x05)    ] cos_t2=0.84305 nr_t2=0.8289 | cos_tf=0.58211 nr_tf=0.7684 | lsc=0.898->0.898 c8d=0 crtr_rec=0.798 hr_rec=0.731 [23.8s]
+L55 [keep(0x05)    ] cos_t2=0.85103 nr_t2=0.8498 | cos_tf=0.60765 nr_tf=0.7721 | lsc=0.879->0.879 c8d=0 crtr_rec=0.820 hr_rec=0.743 [101.0s]
+L56 [keep(0x05)    ] cos_t2=0.84616 nr_t2=0.8378 | cos_tf=0.57865 nr_tf=0.7356 | lsc=0.859->0.859 c8d=0 crtr_rec=0.797 hr_rec=0.736 [24.0s]
+L57 [keep(0x05)    ] cos_t2=0.86472 nr_t2=0.8395 | cos_tf=0.54781 nr_tf=0.7078 | lsc=0.793->0.793 c8d=0 crtr_rec=0.786 hr_rec=0.731 [102.3s]
+L58 [keep(0x03)    ] cos_t2=0.89359 nr_t2=0.9261 | cos_tf=0.62909 nr_tf=0.7956 | lsc=0.695->0.695 c8d=0 crtr_rec=0.795 hr_rec=0.731 [24.9s]
+L59 [keep(0x03)    ] cos_t2=0.92792 nr_t2=0.8755 | cos_tf=0.76947 nr_tf=0.8422 | lsc=0.032->0.028 c8d=0 crtr_rec=0.720 hr_rec=0.632 [26.6s]
+[FINAL_NORM] cos_t2=0.88447 nr_t2=0.9768 cos_tf=0.60257 mse=5.10117->5.10117
+Traceback (most recent call last):
+  File "/home/astronautshe/gemma4_verify/experiments/run270_rust/calib/31b/build_v9_2_cliff_fix_vlm.py", line 1544, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/astronautshe/gemma4_verify/experiments/run270_rust/calib/31b/build_v9_2_cliff_fix_vlm.py", line 1540, in main
+    return build_v9_2_cliff_fix_vlm(args)
+  File "/home/astronautshe/gemma4_verify/experiments/run270_rust/calib/31b/build_v9_2_cliff_fix_vlm.py", line 1306, in build_v9_2_cliff_fix_vlm
+    crtr.export_crtr(head_crtr_layers, tmp_hr)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/astronautshe/gemma4_verify/experiments/run270_rust/calib/31b/train_cortical_router.py", line 260, in export_crtr
+    assert rec["d_model"] == d_model and rec["ff"] == ff
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
