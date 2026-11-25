@@ -1,0 +1,29 @@
+{
+  "repack": {
+    "src": "/mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm.t16c",
+    "dst": "/mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_fused_vlm.t16c",
+    "bytes": 6353854848,
+    "n_norms": 585,
+    "n_mats": 604,
+    "rowmajor_converted": 114,
+    "colblock_mats": 116,
+    "max_parity_diff": 0.0,
+    "elapsed_s": 103.44
+  },
+  "t16c_sha256": "1332bd355fd9cb35734b6fe14c73f5750c5994679f3d4b8ebf12c54658e85429",
+  "crtr": {
+    "t16c": "/mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_fused_vlm.t16c",
+    "out_crtr": "/mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_router.crtr",
+    "crtr_bytes": 21360516,
+    "n_layers": 60,
+    "tokens": 979,
+    "sequences": 16,
+    "rank": 64,
+    "top_p": 0.5,
+    "mean_recall": 0.81706,
+    "min_recall": 0.71429,
+    "mean_mod_acc": 0.90782,
+    "elapsed_s": 1949.24
+  },
+  "crtr_sha256": "e801e26b5616a9e680f7908e3b3674717210f7f4e88bcac55a90aeec6ecbcf71"
+}

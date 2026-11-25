@@ -547,6 +547,81 @@ fn init_glyph_kv(cfg: &Gemma4Cfg, kv_quant: KvQuantMode, lod_caps: (usize, usize
     Ok(out)
 }
 
+fn append_glyph_prefix(
+    gkv: &mut GlyphKvLayer,
+    k_batch: &[f32],
+    v_batch: &[f32],
+    stride: usize,
+    nat_ref: Option<&run270_rust::t16c::NativeTile16Kernel>,
+    appended: &mut usize,
+    target: usize,
+) -> Result<(), String> {
+    while *appended < target {
+        let kt = &k_batch[*appended * stride..(*appended + 1) * stride];
+        let vt = if gkv.k_eq_v {
+            &[][..]
+        } else {
+            &v_batch[*appended * stride..(*appended + 1) * stride]
+        };
+        gkv.append_token(kt, vt, nat_ref)?;
+        *appended += 1;
+    }
+    Ok(())
+}
+
+/// Causally append K/V states and evaluate attention token-by-token so recent hot-tail
+/// tokens are never evicted prematurely by later prompt positions during batched prefill.
+#[allow(clippy::too_many_arguments)]
+fn prefill_glyph_kv_causal_batch(
+    gkv: &mut GlyphKvLayer,
+    kv_quant: KvQuantMode,
+    q_batch: &[f32],
+    k_batch: &[f32],
+    v_batch: &[f32],
+    seq_len: usize,
+    start_pos: usize,
+    n_heads: usize,
+    n_kv: usize,
+    hd: usize,
+    sw: Option<usize>,
+    is_full: bool,
+    vis_kv_ends: Option<&[usize]>,
+    nat_ref: Option<&run270_rust::t16c::NativeTile16Kernel>,
+    threads: usize,
+    ctx_batch: &mut [f32],
+) -> Result<(), String> {
+    let base_t = gkv.total_seen();
+    let q_stride = n_heads * hd;
+    let stride = n_kv * hd;
+    let mut appended = 0usize;
+    for t in 0..seq_len {
+        let rel_end = if !is_full {
+            vis_kv_ends.map_or(t, |ends| ends[t])
+        } else {
+            t
+        };
+        let need_len = (rel_end + 1).min(seq_len);
+        append_glyph_prefix(gkv, k_batch, v_batch, stride, nat_ref, &mut appended, need_len)?;
+        let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+        let c_t = if base_t == 0 && rel_end > t && kv_quant != KvQuantMode::GlyphPure {
+            attn_decode_range(q_t, k_batch, v_batch, t, rel_end, start_pos + t, n_heads, n_kv, hd, sw)
+        } else {
+            gkv.attend_range(
+                q_t,
+                base_t + t,
+                base_t + rel_end,
+                start_pos + t,
+                1.0,
+                nat_ref,
+                threads,
+            )?
+        };
+        ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+    }
+    append_glyph_prefix(gkv, k_batch, v_batch, stride, nat_ref, &mut appended, seq_len)?;
+    Ok(())
+}
+
 fn fp8_e4m3_encode_scalar(v: f32) -> u8 {
     let sign = if v.is_sign_negative() { 0x80u8 } else { 0x00u8 };
     let av = v.abs().min(448.0);
@@ -2195,85 +2270,24 @@ impl Runtime31B {
                         let gkv = glyph_kv[l]
                             .as_mut()
                             .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
-                        let base_t = gkv.total_seen();
-                        let stride = n_kv * hd;
-                        for t in 0..seq_len {
-                            let kt = &k_batch[t * stride..(t + 1) * stride];
-                            let vt = if gkv.k_eq_v {
-                                &[][..]
-                            } else {
-                                &v_batch[t * stride..(t + 1) * stride]
-                            };
-                            gkv.append_token(kt, vt, native_t16c.as_deref())?;
-                        }
-                        let gkv_ref: &GlyphKvLayer = &*gkv;
-                        let nat_ref = native_t16c.as_deref();
-                        if seq_len > 1 && threads > 1 {
-                            let tok_chunk = seq_len.div_ceil(threads);
-                            let inner_thr = (threads / seq_len).max(1);
-                            let err_slot = std::sync::Mutex::new(None::<String>);
-                            std::thread::scope(|s| {
-                                for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
-                                    let t_base = ci * tok_chunk;
-                                    let n_tok = dst_chunk.len() / q_stride;
-                                    let q_ref = &q_batch;
-                                    let err_ref = &err_slot;
-                                    s.spawn(move || {
-                                        for dt in 0..n_tok {
-                                            let t = t_base + dt;
-                                            let q_t = &q_ref[t * q_stride..(t + 1) * q_stride];
-                                            let kv_end = if !is_full {
-                                                vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                                            } else {
-                                                base_t + t
-                                            };
-                                            match gkv_ref.attend_range(
-                                                q_t,
-                                                base_t + t,
-                                                kv_end,
-                                                start_pos + t,
-                                                1.0,
-                                                nat_ref,
-                                                inner_thr,
-                                            ) {
-                                                Ok(c_t) => {
-                                                    dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
-                                                }
-                                                Err(e) => {
-                                                    let mut guard = err_ref.lock().unwrap();
-                                                    if guard.is_none() {
-                                                        *guard = Some(e);
-                                                    }
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                            });
-                            if let Some(e) = err_slot.into_inner().unwrap() {
-                                return Err(e);
-                            }
-                        } else {
-                            for t in 0..seq_len {
-                                let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
-                                let kv_end = if !is_full {
-                                    vis_kv_ends.map_or(base_t + t, |ends| base_t + ends[t])
-                                } else {
-                                    base_t + t
-                                };
-                                let c_t = gkv_ref.attend_range(
-                                    q_t,
-                                    base_t + t,
-                                    kv_end,
-                                    start_pos + t,
-                                    1.0,
-                                    nat_ref,
-                                    threads,
-                                )?;
-                                ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
-                            }
-                        }
+                        prefill_glyph_kv_causal_batch(
+                            gkv,
+                            kv_quant,
+                            &q_batch,
+                            &k_batch,
+                            &v_batch,
+                            seq_len,
+                            start_pos,
+                            n_heads,
+                            n_kv,
+                            hd,
+                            sw,
+                            is_full,
+                            vis_kv_ends,
+                            native_t16c.as_deref(),
+                            threads,
+                            &mut ctx_batch,
+                        )?;
                         drop(k_batch);
                         drop(v_batch);
                     }
@@ -6011,5 +6025,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn glyph_kv_causal_prefill_matches_step_by_step_decode() {
+        let seq_len = 80usize;
+        let n_heads = 4usize;
+        let n_kv = 2usize;
+        let hd = 256usize;
+        let q_stride = n_heads * hd;
+        let kv_stride = n_kv * hd;
+        let q_batch: Vec<f32> = (0..seq_len * q_stride)
+            .map(|i| (((i * 17 + 5) % 997) as f32) * 0.002 - 1.0)
+            .collect();
+        let k_batch: Vec<f32> = (0..seq_len * kv_stride)
+            .map(|i| (((i * 31 + 11) % 991) as f32) * 0.002 - 1.0)
+            .collect();
+        let v_batch: Vec<f32> = (0..seq_len * kv_stride)
+            .map(|i| (((i * 43 + 19) % 983) as f32) * 0.002 - 1.0)
+            .collect();
+
+        let mut gkv_seq = GlyphKvLayer::new_with_lod(n_heads, n_kv, hd, false, None, 4, 16, 0, 256).unwrap();
+        let mut expected_ctx = Vec::with_capacity(seq_len * q_stride);
+        for t in 0..seq_len {
+            let kt = &k_batch[t * kv_stride..(t + 1) * kv_stride];
+            let vt = &v_batch[t * kv_stride..(t + 1) * kv_stride];
+            gkv_seq.append_token(kt, vt, None).unwrap();
+            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+            let c_t = gkv_seq.attend_range(q_t, t, t, t, 1.0, None, 1).unwrap();
+            expected_ctx.extend_from_slice(&c_t);
+        }
+
+        let mut gkv_batch = GlyphKvLayer::new_with_lod(n_heads, n_kv, hd, false, None, 4, 16, 0, 256).unwrap();
+        let mut actual_ctx = vec![0.0f32; seq_len * q_stride];
+        prefill_glyph_kv_causal_batch(
+            &mut gkv_batch,
+            KvQuantMode::Glyph,
+            &q_batch,
+            &k_batch,
+            &v_batch,
+            seq_len,
+            0,
+            n_heads,
+            n_kv,
+            hd,
+            None,
+            true,
+            None,
+            None,
+            2,
+            &mut actual_ctx,
+        )
+        .unwrap();
+
+        assert_eq!(actual_ctx.len(), expected_ctx.len());
+        for (idx, (&a, &b)) in actual_ctx.iter().zip(expected_ctx.iter()).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "bit mismatch at float index {idx}: {a} != {b}");
+        }
+        assert_eq!(gkv_batch.total_seen(), seq_len);
     }
 }

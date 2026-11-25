@@ -1,0 +1,315 @@
+=== P1_arith ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 10.92s pinned_layers=60/60 pinned_bytes=5576996368 embed_bytes=539492352 vm=(Some(6396476), Some(6334716))
+[run31b] vision on-demand: text-only run evicted 233721856 B (vm=(Some(6396476), Some(6334544)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.56s (pinned=true)
+[run31b] layer 05/60 done in 0.63s (pinned=true)
+[run31b] layer 14/60 done in 0.55s (pinned=true)
+[run31b] layer 29/60 done in 0.62s (pinned=true)
+[run31b] layer 44/60 done in 0.38s (pinned=true)
+[run31b] layer 59/60 done in 0.60s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9297 read=0.844 hear=1.000 see=1.000 hf=1.03 cr=21.72 marg=1.327 prob=0.768 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 27.58s ssd_read_mb=0.0 vm=(Some(6396476), Some(6335132))
+PREFILL_TOP5 [818:"The"(22.894), 1018:"**"(19.398), 3810:"There"(19.351), 11634:"Two"(19.304), 2021:"To"(18.448)]
+[STEP 0] id=818 text="The"
+[TRIMODAL] step=1 mode=CAUTION score=0.8558 read=0.680 hear=1.000 see=1.000 hf=0.95 cr=8.68 marg=3.212 prob=0.085 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=1 rescued_marg=0.076 rescued_score=0.6370 mode=RESCUE
+[run31b] decode step 0 in 2.37s vm=(Some(6396476), Some(6335132))
+[STEP 1] id=1354 text=" result"
+[TRIMODAL] step=2 mode=CLEAN score=0.9959 read=0.991 hear=1.000 see=1.000 hf=0.96 cr=9.66 marg=3.618 prob=0.974 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.35s vm=(Some(6396476), Some(6335132))
+[STEP 2] id=563 text=" is"
+[TRIMODAL] step=3 mode=CLEAN score=0.9728 read=0.939 hear=1.000 see=1.000 hf=0.99 cr=17.45 marg=1.566 prob=0.827 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.27s vm=(Some(6396476), Some(6335132))
+[STEP 3] id=236743 text=" "
+[TRIMODAL] step=4 mode=CLEAN score=0.9993 read=0.999 hear=1.000 see=1.000 hf=0.99 cr=20.23 marg=6.303 prob=0.996 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.24s vm=(Some(6396476), Some(6335132))
+[STEP 4] id=236812 text="4"
+[TRIMODAL] step=5 mode=CLEAN score=0.9998 read=1.000 hear=1.000 see=1.000 hf=0.96 cr=13.33 marg=8.556 prob=0.999 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.32s vm=(Some(6396476), Some(6335132))
+[STEP 5] id=236761 text="."
+[TRIMODAL] step=6 mode=CLEAN score=0.9994 read=0.999 hear=1.000 see=1.000 hf=1.05 cr=20.94 marg=6.280 prob=0.996 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.26s vm=(Some(6396476), Some(6335132))
+[STEP 6] id=106 text="<turn|>"
+GEN31B ids=[818, 1354, 563, 236743, 236812, 236761, 106]
+GEN31B text="The result is 4.<turn|>"
+KV31B mode=GlyphLod raw_bytes=48660480 naive_bf16_bytes=24330240 compressed_bytes=48660480 glyph_tokens=0 mid_tokens=0 exact_tokens=1620 shrink=1.00x shrink_vs_bf16=0.50x
+MLP_SPARSE top_p=0.800 skipped_blks=5808096 total_blks=60963840 dram_saved_pct=9.5%
+CORTICAL_ROUTER gate_skipped_blks=5762 gate_total_blks=35280 gate_saved_pct=16.3%
+MEM31B pinned_bytes=5576996368 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=1426170 prefill_s=27.58 decode_s=13.81 vm_hwm_kb=Some(6396476) vm_rss_kb=Some(6335132)
+
+=== P2_france ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 10.91s pinned_layers=60/60 pinned_bytes=5576996368 embed_bytes=539492352 vm=(Some(6396464), Some(6334700))
+[run31b] vision on-demand: text-only run evicted 233721856 B (vm=(Some(6396464), Some(6334528)))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.49s (pinned=true)
+[run31b] layer 05/60 done in 0.54s (pinned=true)
+[run31b] layer 14/60 done in 0.47s (pinned=true)
+[run31b] layer 29/60 done in 0.53s (pinned=true)
+[run31b] layer 44/60 done in 0.33s (pinned=true)
+[run31b] layer 59/60 done in 0.51s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9663 read=0.925 hear=1.000 see=1.000 hf=1.03 cr=22.33 marg=1.846 prob=0.786 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 23.59s ssd_read_mb=0.0 vm=(Some(6396464), Some(6335120))
+PREFILL_TOP5 [1509:"It"(23.100), 236777:"I"(21.254), 818:"The"(19.967), 10081:"Since"(18.527), 2021:"To"(18.189)]
+[STEP 0] id=1509 text="It"
+[TRIMODAL] step=1 mode=CLEAN score=0.9996 read=0.999 hear=1.000 see=1.000 hf=0.99 cr=13.34 marg=6.630 prob=0.998 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.29s vm=(Some(6396464), Some(6335120))
+[STEP 1] id=563 text=" is"
+[TRIMODAL] step=2 mode=CLEAN score=0.9264 read=0.837 hear=1.000 see=1.000 hf=1.06 cr=13.86 marg=3.890 prob=0.533 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.29s vm=(Some(6396464), Some(6335120))
+[STEP 2] id=496 text=" a"
+[TRIMODAL] step=3 mode=CLEAN score=0.9883 read=0.974 hear=1.000 see=1.000 hf=0.97 cr=12.87 marg=3.663 prob=0.925 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.21s vm=(Some(6396464), Some(6335120))
+[STEP 3] id=116896 text=" typo"
+[TRIMODAL] step=4 mode=RESCUE score=0.6272 read=0.171 hear=1.000 see=1.000 hf=1.00 cr=9.10 marg=0.022 prob=0.462 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=4 rescued_marg=0.022 rescued_score=0.6271 mode=RESCUE
+[TRIMODAL-OPTICAL] step=4 rescue_canvas_crc32=0xc795a479
+[run31b] decode step 3 in 2.48s vm=(Some(6396464), Some(6335120))
+[STEP 4] id=529 text=" of"
+[TRIMODAL] step=5 mode=CLEAN score=0.9727 read=0.939 hear=1.000 see=1.000 hf=1.04 cr=12.62 marg=2.123 prob=0.827 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 4 in 2.33s vm=(Some(6396464), Some(6335120))
+[STEP 5] id=5213 text=" **"
+[TRIMODAL] step=6 mode=CLEAN score=0.9955 read=0.990 hear=1.000 see=1.000 hf=1.04 cr=15.54 marg=3.833 prob=0.971 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.21s vm=(Some(6396464), Some(6335120))
+[STEP 6] id=31756 text="France"
+[TRIMODAL] step=7 mode=RESCUE score=0.6918 read=0.315 hear=1.000 see=1.000 hf=1.07 cr=14.41 marg=0.404 prob=0.400 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=7 rescued_marg=0.404 rescued_score=0.6913 mode=RESCUE
+[TRIMODAL-OPTICAL] step=7 rescue_canvas_crc32=0xf043bf30
+[run31b] decode step 6 in 2.41s vm=(Some(6396464), Some(6335120))
+[STEP 7] id=1018 text="**"
+[TRIMODAL] step=8 mode=CAUTION score=0.7798 read=0.511 hear=1.000 see=1.000 hf=1.03 cr=14.23 marg=0.861 prob=0.393 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 7 in 2.38s vm=(Some(6396464), Some(6335120))
+[STEP 8] id=568 text=" ("
+[TRIMODAL] step=9 mode=CLEAN score=0.9023 read=0.783 hear=1.000 see=1.000 hf=1.05 cr=13.41 marg=1.402 prob=0.501 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 8 in 2.42s vm=(Some(6396464), Some(6335120))
+[STEP 9] id=7650 text="which"
+[TRIMODAL] step=10 mode=CLEAN score=0.9992 read=0.998 hear=1.000 see=1.000 hf=1.05 cr=11.91 marg=6.320 prob=0.995 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 9 in 2.29s vm=(Some(6396464), Some(6335120))
+[STEP 10] id=563 text=" is"
+[TRIMODAL] step=11 mode=RESCUE score=0.6379 read=0.195 hear=1.000 see=1.000 hf=1.07 cr=12.37 marg=0.192 prob=0.321 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=11 rescued_marg=0.192 rescued_score=0.6372 mode=RESCUE
+[TRIMODAL-OPTICAL] step=11 rescue_canvas_crc32=0x56278219
+[run31b] decode step 10 in 2.42s vm=(Some(6396464), Some(6335120))
+[STEP 11] id=711 text=" not"
+[TRIMODAL] step=12 mode=RESCUE score=0.7067 read=0.348 hear=1.000 see=1.000 hf=1.06 cr=12.91 marg=0.439 prob=0.452 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=12 rescue_canvas_crc32=0x641509e3
+[run31b] decode step 11 in 2.37s vm=(Some(6396464), Some(6335120))
+[STEP 12] id=1186 text=" only"
+[TRIMODAL] step=13 mode=CLEAN score=0.9282 read=0.840 hear=1.000 see=1.000 hf=1.04 cr=14.43 marg=2.005 prob=0.544 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 12 in 2.37s vm=(Some(6396464), Some(6335120))
+[STEP 13] id=886 text=" one"
+[TRIMODAL] step=14 mode=CAUTION score=0.8274 read=0.616 hear=1.000 see=1.000 hf=1.02 cr=12.32 marg=1.104 prob=0.394 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=14 rescued_marg=1.104 rescued_score=0.8246 mode=CAUTION
+[run31b] decode step 13 in 2.49s vm=(Some(6396464), Some(6335120))
+[STEP 14] id=623 text=" \""
+[TRIMODAL] step=15 mode=CLEAN score=0.9527 read=0.895 hear=1.000 see=1.000 hf=1.02 cr=15.80 marg=2.251 prob=0.700 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 14 in 2.40s vm=(Some(6396464), Some(6335120))
+[STEP 15] id=42150 text="French"
+[TRIMODAL] step=16 mode=CLEAN score=0.9987 read=0.997 hear=1.000 see=1.000 hf=1.03 cr=10.93 marg=6.245 prob=0.992 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 15 in 2.34s vm=(Some(6396464), Some(6335120))
+[STEP 16] id=236775 text="\""
+[TRIMODAL] step=17 mode=RESCUE score=0.6570 read=0.238 hear=1.000 see=1.000 hf=1.01 cr=9.73 marg=0.433 prob=0.143 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=17 rescued_marg=1.999 rescued_score=0.9353 mode=CLEAN
+[run31b] decode step 16 in 2.47s vm=(Some(6396464), Some(6335120))
+[STEP 17] id=2891 text=" country"
+[TRIMODAL] step=18 mode=RESCUE score=0.6819 read=0.293 hear=1.000 see=1.000 hf=1.01 cr=12.96 marg=0.369 prob=0.381 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=18 rescued_marg=0.369 rescued_score=0.6778 mode=RESCUE
+[TRIMODAL-OPTICAL] step=18 rescue_canvas_crc32=0x2dcbf225
+[run31b] decode step 17 in 2.47s vm=(Some(6396464), Some(6335120))
+[STEP 18] id=528 text=" in"
+[TRIMODAL] step=19 mode=CAUTION score=0.7617 read=0.470 hear=1.000 see=1.000 hf=1.02 cr=11.36 marg=0.731 prob=0.439 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 18 in 2.41s vm=(Some(6396464), Some(6335120))
+[STEP 19] id=506 text=" the"
+[TRIMODAL] step=20 mode=CAUTION score=0.7981 read=0.551 hear=1.000 see=1.000 hf=1.02 cr=12.94 marg=0.949 prob=0.401 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 19 in 2.43s vm=(Some(6396464), Some(6335120))
+[STEP 20] id=1902 text=" world"
+[TRIMODAL] step=21 mode=CAUTION score=0.8192 read=0.598 hear=1.000 see=1.000 hf=0.99 cr=12.77 marg=0.884 prob=0.615 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 20 in 2.41s vm=(Some(6396464), Some(6335120))
+[STEP 21] id=236761 text="."
+[TRIMODAL] step=22 mode=RESCUE score=0.6280 read=0.173 hear=1.000 see=1.000 hf=1.01 cr=18.31 marg=0.130 prob=0.334 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 21 in 2.42s vm=(Some(6396464), Some(6335120))
+[STEP 22] id=108 text="\n\n"
+[TRIMODAL] step=23 mode=RESCUE score=0.5921 read=0.104 hear=1.000 see=0.983 hf=1.00 cr=19.43 marg=0.023 prob=0.268 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=23 rescue_canvas_crc32=0xed0a4635
+[run31b] decode step 22 in 2.45s vm=(Some(6396464), Some(6335120))
+[STEP 23] id=4573 text="But"
+[TRIMODAL] step=24 mode=CAUTION score=0.7870 read=0.527 hear=1.000 see=1.000 hf=1.00 cr=12.61 marg=1.014 prob=0.249 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 23 in 2.42s vm=(Some(6396464), Some(6335120))
+[STEP 24] id=625 text=" it"
+[TRIMODAL] step=25 mode=CLEAN score=0.9861 read=0.969 hear=1.000 see=1.000 hf=1.03 cr=11.93 marg=2.686 prob=0.912 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 24 in 2.45s vm=(Some(6396464), Some(6335120))
+[STEP 25] id=236789 text="'"
+[TRIMODAL] step=26 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.03 cr=12.82 marg=11.624 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 25 in 2.34s vm=(Some(6396464), Some(6335120))
+[STEP 26] id=236751 text="s"
+[TRIMODAL] step=27 mode=CLEAN score=0.9605 read=0.912 hear=1.000 see=1.000 hf=1.06 cr=11.94 marg=1.708 prob=0.749 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 26 in 2.41s vm=(Some(6396464), Some(6335120))
+[STEP 27] id=711 text=" not"
+[TRIMODAL] step=28 mode=CLEAN score=0.9716 read=0.937 hear=1.000 see=1.000 hf=1.08 cr=13.59 marg=2.206 prob=0.820 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 27 in 2.32s vm=(Some(6396464), Some(6335120))
+[STEP 28] id=614 text=" an"
+[TRIMODAL] step=29 mode=RESCUE score=0.6064 read=0.125 hear=1.000 see=1.000 hf=1.00 cr=12.79 marg=0.008 prob=0.348 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=29 rescued_marg=0.008 rescued_score=0.5947 mode=RESCUE
+[TRIMODAL-OPTICAL] step=29 rescue_canvas_crc32=0xd99d0c2b
+[run31b] decode step 28 in 2.64s vm=(Some(6396464), Some(6335120))
+[STEP 29] id=5396 text=" actual"
+[TRIMODAL] step=30 mode=RESCUE score=0.5919 read=0.093 hear=1.000 see=1.000 hf=0.99 cr=8.62 marg=0.028 prob=0.231 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=30 rescue_canvas_crc32=0xa4b51bc7
+[run31b] decode step 29 in 2.43s vm=(Some(6396464), Some(6335120))
+[STEP 30] id=1463 text=" name"
+[TRIMODAL] step=31 mode=RESCUE score=0.6962 read=0.325 hear=1.000 see=1.000 hf=1.01 cr=11.52 marg=0.474 prob=0.341 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=31 rescue_canvas_crc32=0xe0339876
+[run31b] decode step 30 in 2.47s vm=(Some(6396464), Some(6335120))
+[STEP 31] id=607 text=" with"
+GEN31B ids=[1509, 563, 496, 116896, 529, 5213, 31756, 1018, 568, 7650, 563, 711, 1186, 886, 623, 42150, 236775, 2891, 528, 506, 1902, 236761, 108, 4573, 625, 236789, 236751, 711, 614, 5396, 1463, 607]
+GEN31B text="It is a typo of **France** (which is not only one \"French\" country in the world.\n\nBut it's not an actual name with"
+KV31B mode=GlyphLod raw_bytes=88309760 naive_bf16_bytes=44154880 compressed_bytes=66291200 glyph_tokens=0 mid_tokens=980 exact_tokens=1960 shrink=1.33x shrink_vs_bf16=0.67x
+MLP_SPARSE top_p=0.800 skipped_blks=29999088 total_blks=182891520 dram_saved_pct=16.4%
+CORTICAL_ROUTER gate_skipped_blks=29761 gate_total_blks=161280 gate_saved_pct=18.5%
+MEM31B pinned_bytes=5576996368 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4145080 prefill_s=23.59 decode_s=74.25 vm_hwm_kb=Some(6396464) vm_rss_kb=Some(6335120)
+
+=== P5_speed ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v9_1_router.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.800
+[run31b] enabled LM-head CS pruning: sieve_frac=0.250 norms_bytes=688128
+[run31b] loaded in 10.91s pinned_layers=60/60 pinned_bytes=5576996368 embed_bytes=539492352 vm=(Some(6396480), Some(6334720))
+[run31b] vision on-demand: text-only run evicted 233721856 B (vm=(Some(6396480), Some(6334548)))
+[run31b] prompt 32 tokens ids=[2, 105, 2364, 107, 236776, 2519, 33036, 236743, 236770, 236778, 236771, 7251, 528, 236743, 236778, 3885, 236761, 2900, 563, 1061, 4398, 4249, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.84s (pinned=true)
+[run31b] layer 05/60 done in 0.97s (pinned=true)
+[run31b] layer 14/60 done in 0.82s (pinned=true)
+[run31b] layer 29/60 done in 0.92s (pinned=true)
+[run31b] layer 44/60 done in 0.57s (pinned=true)
+[run31b] layer 59/60 done in 0.90s (pinned=true)
+[TRIMODAL] step=0 mode=CLEAN score=0.9431 read=0.874 hear=1.000 see=1.000 hf=1.02 cr=24.04 marg=1.848 prob=0.639 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] prefill done in 41.18s ssd_read_mb=0.0 vm=(Some(6396480), Some(6335140))
+PREFILL_TOP5 [2021:"To"(21.938), 818:"The"(19.738), 1509:"It"(19.187), 236777:"I"(19.002), 2859:"If"(18.192)]
+[STEP 0] id=2021 text="To"
+[TRIMODAL] step=1 mode=CLEAN score=0.9777 read=0.951 hear=1.000 see=1.000 hf=1.00 cr=17.91 marg=1.834 prob=0.859 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 0 in 2.38s vm=(Some(6396480), Some(6335140))
+[STEP 1] id=1586 text=" find"
+[TRIMODAL] step=2 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.02 cr=14.59 marg=10.539 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 1 in 2.29s vm=(Some(6396480), Some(6335140))
+[STEP 2] id=506 text=" the"
+[TRIMODAL] step=3 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=1.01 cr=9.53 marg=8.897 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 2 in 2.27s vm=(Some(6396480), Some(6335140))
+[STEP 3] id=4398 text=" average"
+[TRIMODAL] step=4 mode=CLEAN score=1.0000 read=1.000 hear=1.000 see=1.000 hf=0.98 cr=8.81 marg=10.014 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 3 in 2.32s vm=(Some(6396480), Some(6335140))
+[STEP 4] id=4249 text=" speed"
+[TRIMODAL] step=5 mode=RESCUE score=0.6399 read=0.200 hear=1.000 see=1.000 hf=1.01 cr=11.97 marg=0.081 prob=0.471 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=5 rescued_marg=0.081 rescued_score=0.6397 mode=RESCUE
+[TRIMODAL-OPTICAL] step=5 rescue_canvas_crc32=0xbd9cb49e
+[run31b] decode step 4 in 2.53s vm=(Some(6396480), Some(6335140))
+[STEP 5] id=568 text=" ("
+[TRIMODAL] step=6 mode=CLEAN score=0.9542 read=0.898 hear=1.000 see=1.000 hf=0.99 cr=14.89 marg=2.164 prob=0.709 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 5 in 2.45s vm=(Some(6396480), Some(6335140))
+[STEP 6] id=11243 text="speed"
+[TRIMODAL] step=7 mode=RESCUE score=0.6151 read=0.145 hear=1.000 see=1.000 hf=1.01 cr=11.41 marg=0.068 prob=0.329 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=7 rescued_marg=0.068 rescued_score=0.6149 mode=RESCUE
+[TRIMODAL-OPTICAL] step=7 rescue_canvas_crc32=0xa3f42c01
+[run31b] decode step 6 in 2.46s vm=(Some(6396480), Some(6335140))
+[STEP 7] id=236768 text=")"
+[TRIMODAL] step=8 mode=RESCUE score=0.6357 read=0.190 hear=1.000 see=1.000 hf=0.99 cr=11.97 marg=0.088 prob=0.436 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=8 rescue_canvas_crc32=0x29b8523f
+[run31b] decode step 7 in 2.45s vm=(Some(6396480), Some(6335140))
+[STEP 8] id=573 text=" for"
+[TRIMODAL] step=9 mode=CLEAN score=0.9860 read=0.969 hear=1.000 see=1.000 hf=1.03 cr=12.88 marg=2.458 prob=0.911 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 8 in 2.52s vm=(Some(6396480), Some(6335140))
+[STEP 9] id=496 text=" a"
+[TRIMODAL] step=10 mode=CLEAN score=0.9988 read=0.997 hear=1.000 see=1.000 hf=0.94 cr=7.92 marg=4.973 prob=0.993 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 9 in 2.35s vm=(Some(6396480), Some(6335140))
+[STEP 10] id=2519 text=" train"
+[TRIMODAL] step=11 mode=CAUTION score=0.7911 read=0.536 hear=1.000 see=1.000 hf=0.98 cr=11.98 marg=0.779 prob=0.567 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=11 rescued_marg=0.779 rescued_score=0.7909 mode=CAUTION
+[run31b] decode step 10 in 2.48s vm=(Some(6396480), Some(6335140))
+[STEP 11] id=236764 text=","
+[TRIMODAL] step=12 mode=RESCUE score=0.6646 read=0.255 hear=1.000 see=1.000 hf=1.03 cr=9.72 marg=0.159 prob=0.531 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 11 in 2.43s vm=(Some(6396480), Some(6335140))
+[STEP 12] id=692 text=" we"
+[TRIMODAL] step=13 mode=RESCUE score=0.6761 read=0.280 hear=1.000 see=1.000 hf=1.01 cr=10.31 marg=0.363 prob=0.351 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=13 rescue_canvas_crc32=0xb79d0ff6
+[run31b] decode step 12 in 2.46s vm=(Some(6396480), Some(6335140))
+[STEP 13] id=740 text=" can"
+[TRIMODAL] step=14 mode=CLEAN score=0.9518 read=0.893 hear=1.000 see=1.000 hf=0.97 cr=14.57 marg=1.728 prob=0.694 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 13 in 2.63s vm=(Some(6396480), Some(6335140))
+[STEP 14] id=1161 text=" use"
+[TRIMODAL] step=15 mode=RESCUE score=0.7035 read=0.341 hear=1.000 see=1.000 hf=0.99 cr=10.71 marg=0.354 prob=0.537 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=15 rescued_marg=0.354 rescued_score=0.7031 mode=RESCUE
+[TRIMODAL-OPTICAL] step=15 rescue_canvas_crc32=0x25c58be9
+[run31b] decode step 14 in 2.48s vm=(Some(6396480), Some(6335140))
+[STEP 15] id=236787 text=":"
+[TRIMODAL] step=16 mode=RESCUE score=0.6211 read=0.158 hear=1.000 see=1.000 hf=1.00 cr=17.57 marg=0.043 prob=0.398 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-OPTICAL] step=16 rescue_canvas_crc32=0x23ecb242
+[run31b] decode step 15 in 2.46s vm=(Some(6396480), Some(6335140))
+[STEP 16] id=108 text="\n\n"
+[TRIMODAL] step=17 mode=CAUTION score=0.8365 read=0.661 hear=1.000 see=0.961 hf=1.02 cr=20.56 marg=0.993 prob=0.658 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 16 in 2.46s vm=(Some(6396480), Some(6335140))
+[STEP 17] id=236770 text="1"
+[TRIMODAL] step=18 mode=RESCUE score=0.6015 read=0.202 hear=1.000 see=0.858 hf=0.92 cr=23.58 marg=0.054 prob=0.509 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 17 in 2.47s vm=(Some(6396480), Some(6335140))
+[STEP 18] id=236761 text="."
+[TRIMODAL] step=19 mode=CAUTION score=0.7795 read=0.510 hear=1.000 see=1.000 hf=1.01 cr=16.12 marg=0.710 prob=0.578 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 18 in 2.64s vm=(Some(6396480), Some(6337188))
+[STEP 19] id=5213 text=" **"
+[TRIMODAL] step=20 mode=RESCUE score=0.6833 read=0.296 hear=1.000 see=1.000 hf=1.01 cr=15.18 marg=0.395 prob=0.357 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 19 in 2.47s vm=(Some(6396480), Some(6338340))
+[STEP 20] id=50702 text="Calculate"
+[TRIMODAL] step=21 mode=CLEAN score=0.9970 read=0.993 hear=1.000 see=1.000 hf=1.01 cr=13.03 marg=4.575 prob=0.981 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 20 in 2.52s vm=(Some(6396480), Some(6341028))
+[STEP 21] id=506 text=" the"
+[TRIMODAL] step=22 mode=RESCUE score=0.6249 read=0.166 hear=1.000 see=1.000 hf=0.96 cr=10.80 marg=0.042 prob=0.424 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=22 rescued_marg=0.042 rescued_score=0.6246 mode=RESCUE
+[TRIMODAL-OPTICAL] step=22 rescue_canvas_crc32=0xde30484d
+[run31b] decode step 21 in 2.51s vm=(Some(6396480), Some(6342740))
+[STEP 22] id=2558 text=" total"
+[TRIMODAL] step=23 mode=CLEAN score=0.9774 read=0.950 hear=1.000 see=1.000 hf=0.96 cr=10.35 marg=1.867 prob=0.856 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 22 in 2.46s vm=(Some(6396480), Some(6344596))
+[STEP 23] id=5149 text=" distance"
+[TRIMODAL] step=24 mode=RESCUE score=0.6281 read=0.174 hear=1.000 see=1.000 hf=1.00 cr=11.92 marg=0.054 prob=0.429 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[TRIMODAL-EXACT] step=24 rescued_marg=0.054 rescued_score=0.6279 mode=RESCUE
+[TRIMODAL-OPTICAL] step=24 rescue_canvas_crc32=0x4a6533d0
+[run31b] decode step 23 in 2.55s vm=(Some(6396480), Some(6346472))
+[STEP 24] id=53121 text=":**"
+[TRIMODAL] step=25 mode=CAUTION score=0.7756 read=0.501 hear=1.000 see=1.000 hf=1.01 cr=16.78 marg=0.643 prob=0.637 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 24 in 2.60s vm=(Some(6396480), Some(6348360))
+[STEP 25] id=236743 text=" "
+[TRIMODAL] step=26 mode=CAUTION score=0.8809 read=0.961 hear=1.000 see=0.631 hf=1.04 cr=28.09 marg=2.086 prob=0.888 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 25 in 2.46s vm=(Some(6396480), Some(6350232))
+[STEP 26] id=107 text="\n"
+[TRIMODAL] step=27 mode=CAUTION score=0.9398 read=0.955 hear=1.000 see=0.855 hf=1.03 cr=21.99 marg=2.473 prob=0.871 sieve=0.000 cs=0.00e0 k=1 c8db=true
+[run31b] decode step 26 in 2.46s vm=(Some(6396480), Some(6352104))
+[STEP 27] id=140 text="    "
+[TRIMODAL] step=28 mode=CLEAN score=0.9798 read=0.988 hear=1.000 see=0.946 hf=1.05 cr=19.50 marg=4.597 prob=0.966 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 27 in 2.45s vm=(Some(6396480), Some(6353980))
+[STEP 28] id=236770 text="1"
+[TRIMODAL] step=29 mode=CLEAN score=0.9638 read=1.000 hear=1.000 see=0.869 hf=0.98 cr=22.76 marg=9.922 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 28 in 2.36s vm=(Some(6396480), Some(6355852))
+[STEP 29] id=236778 text="2"
+[TRIMODAL] step=30 mode=CLEAN score=0.9958 read=1.000 hear=1.000 see=0.985 hf=1.05 cr=20.87 marg=9.820 prob=1.000 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 29 in 2.39s vm=(Some(6396480), Some(6357724))
+[STEP 30] id=236771 text="0"
+[TRIMODAL] step=31 mode=CLEAN score=0.9618 read=0.915 hear=1.000 see=1.000 hf=0.99 cr=14.87 marg=2.013 prob=0.757 sieve=0.250 cs=0.00e0 k=1 c8db=false
+[run31b] decode step 30 in 2.37s vm=(Some(6396480), Some(6359596))
+[STEP 31] id=7251 text=" km"
+GEN31B ids=[2021, 1586, 506, 4398, 4249, 568, 11243, 236768, 573, 496, 2519, 236764, 692, 740, 1161, 236787, 108, 236770, 236761, 5213, 50702, 506, 2558, 5149, 53121, 236743, 107, 140, 236770, 236778, 236771, 7251]
+GEN31B text="To find the average speed (speed) for a train, we can use:\n\n1. **Calculate the total distance:** \n    120 km"
+KV31B mode=GlyphLod raw_bytes=113541120 naive_bf16_bytes=56770560 compressed_bytes=72993280 glyph_tokens=0 mid_tokens=1820 exact_tokens=1960 shrink=1.56x shrink_vs_bf16=0.78x
+MLP_SPARSE top_p=0.800 skipped_blks=30000096 total_blks=198132480 dram_saved_pct=15.1%
+CORTICAL_ROUTER gate_skipped_blks=29761 gate_total_blks=161280 gate_saved_pct=18.5%
+MEM31B pinned_bytes=5576996368 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=3651905 prefill_s=41.18 decode_s=76.13 vm_hwm_kb=Some(6396480) vm_rss_kb=Some(6359596)

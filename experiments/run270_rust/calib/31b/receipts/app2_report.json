@@ -1,0 +1,42 @@
+{
+  "version": "V9.0-FASTKERNEL-SPARSE10OF84-HEAD10OF32-DISPERSION-QAT-APP2-RIDGE",
+  "gpu": "NVIDIA L4",
+  "elapsed_s": 3758.97,
+  "t16c_bytes": 5650538880,
+  "t16c_gib": 5.2625,
+  "colblock_mats": 116,
+  "l59_cos": 0.78922,
+  "val_kl": 4.2585,
+  "val_top1_agree": 0.2026,
+  "val_top5_agree": 0.4045,
+  "post_cell60_kept": true,
+  "crtr_mean_recall": 0.83335,
+  "head_crtr_mean_recall": 0.84086,
+  "assistant_align": {
+    "kl_before": 0.0,
+    "kl_after": 0.0,
+    "top1_before": 0.0,
+    "top1_after": 0.0
+  },
+  "bhdr": {
+    "skipped": true
+  },
+  "artifacts": {
+    "v9_app2_work.t16c": {
+      "bytes": 5650538880,
+      "sha256": "5b2b71ade3dc5ee937a84af11116b709e0e779247f64fc0f1416fc354aee82ba"
+    },
+    "app2_crtr.crtr": {
+      "bytes": 21360516,
+      "sha256": "580923975d2dbff8bc2a424f66a643902c11f7dba4958e2177486db76bd5dd55"
+    },
+    "app2_head_router.crtr": {
+      "bytes": 10414116,
+      "sha256": "fe2f48e46921e29de35efeebba31c5a607c0cd1ee26b63f6a94c7e01f1ccfa90"
+    },
+    "app2_c8d.c8d": {
+      "bytes": 219743936,
+      "sha256": "4086f2310014300536ed2d5ac3e5a66673d0e8330e205923f36d66a5aaf79b26"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-11-25T09:17:19Z",
+  "mode": "vision",
+  "vision": {
+    "gen_text": "A motorcycle is parked on a the a pavement.<turn|>",
+    "pinned_bytes": 5576996368,
+    "embed_bytes": 539492352,
+    "ssd_read_bytes": 0,
+    "prefill_s": 533.12,
+    "decode_s": 30.46,
+    "vm_hwm_kb": 6682056,
+    "vm_rss_kb": 6524140
+  }
+}

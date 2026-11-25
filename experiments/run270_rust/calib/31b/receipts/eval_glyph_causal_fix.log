@@ -1,0 +1,37 @@
+=== glyph ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 37.26s pinned_layers=60/60 pinned_bytes=5576996368 embed_bytes=539492352 vm=(Some(6253396), Some(6182244))
+[run31b] vision on-demand: text-only run evicted 233721856 B (vm=(Some(6253396), Some(6182092)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.49s (pinned=true)
+[run31b] layer 05/60 done in 2.78s (pinned=true)
+[run31b] layer 14/60 done in 2.41s (pinned=true)
+[run31b] layer 29/60 done in 2.66s (pinned=true)
+[run31b] layer 44/60 done in 1.70s (pinned=true)
+[run31b] layer 59/60 done in 2.68s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=8.89081 ppl=7264.891 top1_acc=0.1905 mean_entropy=2.3088 eval_s=127.64
+EVAL_TEACHER_KL pos=63 kl_t_to_s=6.19970 kl_s_to_t=9.72725 top1_agree=0.2540 top5_agree=0.3651 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Glyph raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=63365120 glyph_tokens=3560 mid_tokens=0 exact_tokens=1960 shrink=2.62x shrink_vs_bf16=1.31x
+MEM31B pinned_bytes=5576996368 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=127.64 decode_s=0.00 vm_hwm_kb=Some(6308996) vm_rss_kb=Some(6303724)
+
+=== glyph-lod ===
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=GlyphLod kv_lod=(4, 32, 192) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5571147872 streamed_cold_bytes=0 vision_bytes=237253152 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=GlyphLod
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_1/gemma4_31b_v4_3_vlm_c8d.c8d: entries=4 norms=1 payload_bytes=9295104 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.80s pinned_layers=60/60 pinned_bytes=5576996368 embed_bytes=539492352 vm=(Some(6375360), Some(6313600))
+[run31b] vision on-demand: text-only run evicted 233721856 B (vm=(Some(6375360), Some(6313428)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 2.46s (pinned=true)
+[run31b] layer 05/60 done in 2.85s (pinned=true)
+[run31b] layer 14/60 done in 2.39s (pinned=true)
+[run31b] layer 29/60 done in 2.69s (pinned=true)
+[run31b] layer 44/60 done in 1.72s (pinned=true)
+[run31b] layer 59/60 done in 2.74s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=7.46533 ppl=1746.440 top1_acc=0.2381 mean_entropy=2.2728 eval_s=128.14
+EVAL_TEACHER_KL pos=63 kl_t_to_s=4.73442 kl_s_to_t=8.79689 top1_agree=0.2857 top5_agree=0.3968 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=GlyphLod raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=86876160 glyph_tokens=0 mid_tokens=3560 exact_tokens=1960 shrink=1.91x shrink_vs_bf16=0.95x
+MEM31B pinned_bytes=5576996368 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=128.14 decode_s=0.00 vm_hwm_kb=Some(6382476) vm_rss_kb=Some(6382476)

@@ -820,9 +820,9 @@ def solve_block_ridge_headers(
     w_lr: Optional[torch.Tensor] = None,
     val_x: Optional[torch.Tensor] = None,
     val_y_target: Optional[torch.Tensor] = None,
-    lambdas: Tuple[float, ...] = (0.5, 0.1, 0.02, 0.004, 0.0008),
+    lambdas: Tuple[float, ...] = (2.0, 0.5, 0.15, 0.05),
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], float, float, float]:
-    """Closed-form activation-covariance Ridge solver for FP16 `(sc*, bi*)` with strict held-out MSE rollback."""
+    """Closed-form activation-covariance Ridge solver for FP16 `(sc*, bi*)` with strict held-out MSE + cosine/norm guards."""
     d_out, d_in = int(w_target.shape[0]), int(w_target.shape[1])
     bsize = int(h_mat.shape[0])
     n_blks = d_in // bsize
@@ -831,6 +831,16 @@ def solve_block_ridge_headers(
         w_res = w_res / inv_s.float().unsqueeze(0)
     T_rot = (w_res.reshape(-1, bsize) @ h_mat.float()).reshape(d_out, n_blks, bsize)
     u_blk = units_rot.float().reshape(d_out, n_blks, bsize)
+    t_norm = float(T_rot.norm().item())
+
+    def _rot_cos_and_rat(sc_c: torch.Tensor, bi_c: Optional[torch.Tensor]) -> Tuple[float, float]:
+        wc = u_blk * sc_c.unsqueeze(-1)
+        if bi_c is not None:
+            wc = wc + bi_c.unsqueeze(-1)
+        wn = float(wc.norm().item())
+        cos_v = float((wc * T_rot).sum().item()) / max(wn * t_norm, 1e-12)
+        rat_v = wn / max(t_norm, 1e-12)
+        return cos_v, rat_v
 
     sc_base = sc0.float().half().float()
     bi_base = bi0.float().half().float() if bi0 is not None else None
@@ -850,28 +860,38 @@ def solve_block_ridge_headers(
         bi_wls = None
     sc_wls = sc_wls.half().float()
     bi_wls = bi_wls.half().float() if bi_wls is not None else None
+    cos_wls, _ = _rot_cos_and_rat(sc_wls, bi_wls)
 
     if val_x is None or val_y_target is None:
         return sc_wls, bi_wls, 0.0, 0.0, 1e9
 
-    def _eval_cand(sc_c: torch.Tensor, bi_c: Optional[torch.Tensor]) -> float:
+    def _eval_cand(sc_c: torch.Tensor, bi_c: Optional[torch.Tensor], enforce_guard: bool = True) -> float:
+        if enforce_guard:
+            cos_c, rat_c = _rot_cos_and_rat(sc_c, bi_c)
+            if cos_c < cos_wls - 0.015 or not (0.80 <= rat_c <= 1.20):
+                return 1e30
         w_c = reconstruct_from_headers(units_rot, sc_c, bi_c, inv_s, h_mat)
         if w_lr is not None:
             w_c = w_c + w_lr.float()
         yp = F.linear(val_x.float(), w_c)
         return float(F.mse_loss(yp, val_y_target.float()).item())
 
-    mse_base = _eval_cand(sc_base, bi_base)
-    mse_wls = _eval_cand(sc_wls, bi_wls)
-    best_sc, best_bi, best_mse, best_lam = (sc_wls, bi_wls, mse_wls, 0.0) if mse_wls < mse_base else (sc_base, bi_base, mse_base, 1e9)
+    mse_base = _eval_cand(sc_base, bi_base, enforce_guard=False)
+    mse_wls = _eval_cand(sc_wls, bi_wls, enforce_guard=False)
+    cos_b, rat_b = _rot_cos_and_rat(sc_base, bi_base)
+    base_healthy = (cos_b >= cos_wls - 0.015) and (0.80 <= rat_b <= 1.20)
+    if base_healthy and mse_base < mse_wls:
+        best_sc, best_bi, best_mse, best_lam = sc_base, bi_base, mse_base, 1e9
+    else:
+        best_sc, best_bi, best_mse, best_lam = sc_wls, bi_wls, mse_wls, 0.0
 
     t_rms = T_rot.pow(2).mean(dim=-1).sqrt().clamp(min=1e-6)
-    sc_max = 4.5 * t_rms
-    bi_lim = 3.5 * t_rms
+    sc_max = 1.35 * torch.maximum(sc_wls, 0.25 * t_rms)
+    bi_lim = 1.5 * t_rms
 
     if h_blks_rot is not None:
         hb = h_blks_rot.float()
-        # 2) Diagonal-Hessian weighted LS candidate (handles SmoothQuant inv_s [0.25, 4.0] cleanly)
+        # 2) Diagonal-Hessian weighted LS candidate (anchored strictly to healthy WLS/base, never corrupted sc0)
         wd = hb.diagonal(dim1=-2, dim2=-1).clamp(min=1e-8)  # [n_blks, bsize]
         wd_n = wd / wd.mean(dim=-1, keepdim=True).clamp(min=1e-8)
         d_uu = (u_blk * u_blk * wd_n.unsqueeze(0)).sum(dim=-1)
@@ -891,10 +911,11 @@ def solve_block_ridge_headers(
         if mse_dwls < best_mse * 0.9999:
             best_sc, best_bi, best_mse, best_lam = sc_dwls, bi_dwls, mse_dwls, -1.0
 
-        sc_anc = best_sc
-        bi_anc = best_bi
+        # Anchor full 256x256 Ridge strictly at clean WLS (never corrupted sc0)
+        sc_anc = sc_wls
+        bi_anc = bi_wls
 
-        # 3) Exact full 256x256 block-covariance Ridge sweep anchored at best MSE point
+        # 3) Exact full 256x256 block-covariance Ridge sweep anchored at clean WLS
         v_u = torch.einsum("rbj,bjk->rbk", u_blk, hb)
         h_uu = (u_blk * v_u).sum(dim=-1)
         h_ut = (T_rot * v_u).sum(dim=-1)
@@ -1836,6 +1857,26 @@ def run_selftest() -> int:
             and mo_t == ["model.language_model.embed_tokens.weight"]
             and "model.language_model.embed_tokens.weight" in mm_t
         )
+    # Regression check: reject 10x poisoned sc0 anchor & ensure rank-deficient H + sparse ALS never degrade Frobenius norm
+    x_lowrank_tr = torch.zeros(32, d_q)
+    x_lowrank_tr[:, :16] = torch.randn(32, 16)
+    x_lowrank_va = torch.zeros(16, d_q)
+    x_lowrank_va[:, :16] = torch.randn(16, 16)
+    hb_rk_rot = torch.stack([h_q @ (x_lowrank_tr[:, :32].T @ x_lowrank_tr[:, :32]) @ h_q, h_q @ (x_lowrank_tr[:, 32:].T @ x_lowrank_tr[:, 32:]) @ h_q], dim=0)
+    sc_poison = torch.full((64, 2), 0.15)
+    sc_rg, bi_rg, _, _, _ = solve_block_ridge_headers(w_toy, u_toy, sc_poison, bi_bad, hb_rk_rot, None, h_q, val_x=x_lowrank_va, val_y_target=F.linear(x_lowrank_va, w_toy))
+    w_eff_rg = reconstruct_from_headers(u_toy, sc_rg, bi_rg, None, h_q)
+    cos_rg = float(F.cosine_similarity(w_eff_rg.reshape(-1), w_toy.reshape(-1), dim=0).item())
+    rat_rg = float((w_eff_rg.norm() / w_toy.norm()).item())
+    ridge_guard_ok = cos_rg >= 0.78 and 0.80 <= rat_rg <= 1.20
+    # Ensure _fit_als_lr_int8 never degrades Frobenius error even with corrupted sparse inputs
+    x_sp_bad = torch.zeros(48, d_q)
+    x_sp_bad[:, :8] = torch.randn(48, 8)
+    w_base_als = reconstruct_from_headers(u_toy, sc_r, bi_r, None, h_q)
+    err_als_0 = float((w_toy - w_base_als).norm().item())
+    _, lr_als_d = _fit_als_lr_int8(w_toy, w_base_als, x_sp_bad, 4)
+    als_guard_ok = (lr_als_d is None) or (float((w_toy - (w_base_als + lr_als_d)).norm().item()) < 0.99 * err_als_0)
+
     # Test finiteness & stability
     g4_ok = (
         mse_r < mse_bad * 0.15
@@ -1844,6 +1885,8 @@ def run_selftest() -> int:
         and pi_rec_ok
         and sq_ridge_ok
         and t16c_hdr_ok
+        and ridge_guard_ok
+        and als_guard_ok
         and 0.70 <= norm_rat_g4 <= 1.25
         and torch.isfinite(w_b1).all().item()
         and torch.isfinite(w_b2).all().item()
@@ -1852,7 +1895,7 @@ def run_selftest() -> int:
     gate(
         "Gate 4: Closed-form Ridge (sc~0.006) + C8DB + _update_raw_pb_headers + GPU pi_l + SmoothQuant + T16C hdr",
         g4_ok,
-        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}, pi={pi_rec_ok}, sq={mse_sq_wls:.5f}->{mse_sq_r:.5f}, t16c={t16c_hdr_ok}",
+        f"mse {mse_bad:.5f}->{mse_r:.5f}->{mse_c8:.5f}, norm_rat={norm_rat_g4:.3f}, pb_rt={pb_rt_ok}, pi={pi_rec_ok}, sq={mse_sq_wls:.5f}->{mse_sq_r:.5f}, t16c={t16c_hdr_ok}, rg={cos_rg:.3f}/{rat_rg:.3f}, als={als_guard_ok}",
     )
 
     # Gate 5: Strict Rule 2 Decontamination Detector (0 overlap on clean strings, catches injected holdout)
@@ -3939,9 +3982,10 @@ def _h_full_to_blks_rot(h_full: torch.Tensor, inv_s: Optional[torch.Tensor], h_m
     return 0.5 * (h_rot + h_rot.mT)
 
 
-def _fit_als_lr_int8(w_target: torch.Tensor, w_base: torch.Tensor, xv: torch.Tensor, lr_rank: int) -> Tuple[tuple, torch.Tensor]:
+def _fit_als_lr_int8(w_target: torch.Tensor, w_base: torch.Tensor, xv: torch.Tensor, lr_rank: int) -> Tuple[Optional[tuple], Optional[torch.Tensor]]:
     do, di = int(w_target.shape[0]), int(w_target.shape[1])
     x_f = xv[: min(4096, xv.shape[0])].float()
+    err_base = float((w_target.float() - w_base.float()).norm().item())
     y_err = (x_f @ w_target.float().T) - (x_f @ w_base.float().T)
     if x_f.shape[0] <= do:
         _, evs = torch.linalg.eigh(y_err @ y_err.T)
@@ -3950,7 +3994,7 @@ def _fit_als_lr_int8(w_target: torch.Tensor, w_base: torch.Tensor, xv: torch.Ten
     else:
         _, evs = torch.linalg.eigh(y_err.T @ y_err)
         u_f = evs[:, -lr_rank:].flip(1).contiguous()
-    reg = max(0.02 * float((x_f * x_f).sum().item()) / float(max(di, 1)), 1e-6)
+    reg = max(0.15 * float((x_f * x_f).sum().item()) / float(max(x_f.shape[0], 1)), 1e-4)
     use_dual = x_f.shape[0] < di
     gram = (x_f @ x_f.T) if use_dual else (x_f.T @ x_f)
     gram.diagonal().add_(reg)
@@ -3961,6 +4005,9 @@ def _fit_als_lr_int8(w_target: torch.Tensor, w_base: torch.Tensor, xv: torch.Ten
     v_i8 = torch.clamp(torch.round(v_f / sv.unsqueeze(1)), -127, 127).to(torch.int8)
     lr_t = (su.cpu().numpy().astype("<f4"), sv.cpu().numpy().astype("<f4"), u_i8.cpu().numpy().astype(np.int8), v_i8.cpu().numpy().astype(np.int8))
     lr_dense = (u_i8.float() * su.unsqueeze(1)) @ (v_i8.float() * sv.unsqueeze(1))
+    err_after = float((w_target.float() - (w_base.float() + lr_dense)).norm().item())
+    if err_after >= 0.99 * err_base:
+        return None, None
     return lr_t, lr_dense
 
 
@@ -4352,10 +4399,10 @@ def _calibrate_branch_layer(
     del blk_e_cpu, be_s, ms_s, mod_sal_cpu, xf_flat, r_net
     torch.cuda.empty_cache()
 
-    # Collect sparse-masked GeGLU activations (10/84 = 11.9%) on tr/va
-    act_tr_l, xm_tr_l, xt_tr_l, act_va_l, xm_va_l, xt_va_l = [], [], [], [], [], []
+    # Collect sparse-masked GeGLU activations (10/84 = 11.9%) on tr/va + dense tr subset for ALS low-rank
+    act_tr_l, act_dense_l, xm_tr_l, xt_tr_l, act_va_l, xm_va_l, xt_va_l = [], [], [], [], [], [], []
     with torch.no_grad():
-        for seq_grp, dst_a, dst_m, dst_t in ((tr_c8_s, act_tr_l, xm_tr_l, xt_tr_l), (va_seq_ids, act_va_l, xm_va_l, xt_va_l)):
+        for seq_grp, is_tr_grp, dst_a, dst_m, dst_t in ((tr_c8_s, True, act_tr_l, xm_tr_l, xt_tr_l), (va_seq_ids, False, act_va_l, xm_va_l, xt_va_l)):
             for i0 in range(0, len(seq_grp), MB_FWD):
                 sl = seq_grp[i0 : i0 + MB_FWD]
                 xf_b = xf_cpu[sl].to(device, dtype=torch.float32).reshape(-1, D_MOD)
@@ -4364,13 +4411,16 @@ def _calibrate_branch_layer(
                 blk_m = torch.zeros((xf_b.shape[0], V9_MLP_BLOCKS), device=device)
                 blk_m[:, :V9_SHARED_BLOCKS] = 1.0
                 blk_m.scatter_(1, r_sp, 1.0)
-                act_sp = (F.gelu(F.linear(xf_b, wg_fin), approximate="tanh") * F.linear(xf_b, wu_fin)) * blk_m.repeat_interleave(V9_BLOCK_SIZE, dim=-1)
+                act_dense = F.gelu(F.linear(xf_b, wg_fin), approximate="tanh") * F.linear(xf_b, wu_fin)
+                act_sp = act_dense * blk_m.repeat_interleave(V9_BLOCK_SIZE, dim=-1)
+                if is_tr_grp:
+                    act_dense_l.append(act_dense[::4].to(torch.float16))
                 dst_a.append(act_sp[::4].to(torch.float16))
                 dst_m.append(xm_cpu[sl].to(device, dtype=torch.float32).reshape(-1, D_MOD)[::4].to(torch.float16))
                 dst_t.append(X_teach_next[sl].to(device, dtype=torch.float32).reshape(-1, D_MOD)[::4].to(torch.float16))
-    act_tr = torch.cat(act_tr_l, 0); xm_tr = torch.cat(xm_tr_l, 0); xt_tr = torch.cat(xt_tr_l, 0)
+    act_tr = torch.cat(act_tr_l, 0); act_dense_tr = torch.cat(act_dense_l, 0); xm_tr = torch.cat(xm_tr_l, 0); xt_tr = torch.cat(xt_tr_l, 0)
     act_va = torch.cat(act_va_l, 0); xm_va = torch.cat(xm_va_l, 0); xt_va = torch.cat(xt_va_l, 0)
-    del act_tr_l, xm_tr_l, xt_tr_l, act_va_l, xm_va_l, xt_va_l
+    del act_tr_l, act_dense_l, xm_tr_l, xt_tr_l, act_va_l, xm_va_l, xt_va_l
 
     # Down_proj (Re-quantize to 2b_gauss COLBLOCK + rk=16 on App3 stem/pre-head, otherwise Ridge + rk=16 upgrade)
     m_d = f"{pfx}.mlp.down_proj.weight"
@@ -4393,7 +4443,7 @@ def _calibrate_branch_layer(
         del w_rot_d
         u_d, sc_d, bi_d = unpack_tile16_headers_and_units(pb_d_arr, D_MOD, V9_FF, V9_BLOCK_SIZE, mode_d, H256_GPU)
         w_d0 = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU)
-        lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_tr[: min(2048, act_tr.shape[0])].float(), lrr_d) if lrr_d > 0 else (None, None)
+        lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_dense_tr[: min(2048, act_dense_tr.shape[0])].float(), lrr_d) if lrr_d > 0 else (None, None)
         del w_d0
         sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
         del h_down_blks_rot
@@ -4414,13 +4464,15 @@ def _calibrate_branch_layer(
         h_down_blks_rot = 0.5 * (h_down_blks_rot + h_down_blks_rot.mT)
         del H_down_blks
 
+        sc_d_wls, bi_d_wls, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, None, is_d_g, H256_GPU)
         if is_app3 and lr_d is None and get_v9_proj_spec(l_idx, "mlp.down_proj", is_f)[2] == 16:
-            w_d0 = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU)
-            lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_tr[: min(2048, act_tr.shape[0])].float(), 16)
+            w_d0 = reconstruct_from_headers(u_d, sc_d_wls, bi_d_wls, is_d_g, H256_GPU)
+            lr_d, lrd_d = _fit_als_lr_int8(wd_t, w_d0, act_dense_tr[: min(2048, act_dense_tr.shape[0])].float(), 16)
+            del w_d0
         else:
             lrd_d = _lr_tuple_to_dense(lr_d, device)
 
-        sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d, bi_d, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
+        sc_d, bi_d, _, _, _ = solve_block_ridge_headers(wd_t, u_d, sc_d_wls, bi_d_wls, h_down_blks_rot, is_d_g, H256_GPU, w_lr=lrd_d, val_x=act_va.float(), val_y_target=F.linear(act_va.float(), wd_t))
         del h_down_blks_rot
         pb_d_upd = _update_raw_pb_headers(pb_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], sc_d, bi_d)
         if not is_app3:
@@ -4428,6 +4480,7 @@ def _calibrate_branch_layer(
         wd_fin = reconstruct_from_headers(u_d, sc_d, bi_d, is_d_g, H256_GPU) + (lrd_d if lrd_d is not None else 0.0)
         d_write_rec = (m_d, int(meta_d["d_out"]), int(meta_d["d_in"]), int(meta_d["bsize"]), meta_d["n_bits"], meta_d["is_asym"], meta_d["has_fwht"], pb_d_upd, is_d_np, lr_d)
         del u_d
+    del act_dense_tr
 
     # Wiener post_feedforward_layernorm & layer_scalar + Accept-Only C8DB (rank=16)
     with torch.no_grad():

@@ -710,6 +710,214 @@ def run_approach1(t16c_path: Path, sf_path: Path, patch_dir: Path, start_layer: 
     return rpt
 
 
+def _zero_lr_sv_inplace(fp, meta: dict) -> None:
+    """Zero out `sv` (`rk` float32s) in-place inside a `.t16c` record without shifting offsets."""
+    rk = int(meta["rk"])
+    if rk <= 0:
+        return
+    sv_off = meta["offset"] + meta["pb_len"] + meta["inv_len"] + meta["d_out"] * 4
+    cur = fp.tell()
+    fp.seek(sv_off)
+    fp.write(b"\x00" * (rk * 4))
+    fp.seek(cur)
+
+
+def run_approach3_repair(t16c_path: Path, sf_path: Path, patch_dir: Path, start_layer: int = 0) -> Dict[str, object]:
+    """Repair Approach 3 (`gemma4_31b_v9_0_app3_zero1b.t16c`) in-place via closed-form WLS, teacher norms, and corrupted-LR scrubbing."""
+    lib = try_load_c_lib()
+    patch_dir.mkdir(parents=True, exist_ok=True)
+    orig_patch = patch_dir / "app3_orig_headers_norms.bin"
+    if not orig_patch.is_file():
+        print(f"[Backup] Saving reversible App3 header+norm snapshot to {orig_patch}...", flush=True)
+        bk_info = save_header_norm_patch(t16c_path, orig_patch)
+        print(f"[Backup] Saved {bk_info['bytes']:,} B sha256={bk_info['patch_sha256'][:16]}...", flush=True)
+
+    idx = T16CRecordIndex(t16c_path)
+    pi_ckpt = patch_dir / "app3_pi_l_all_partial.npy"
+    pi_l_all = np.load(pi_ckpt) if (start_layer > 0 and pi_ckpt.is_file()) else np.empty((60, 21504), dtype=np.int32)
+    layer_stats: List[dict] = []
+    zeroed_lr: List[dict] = []
+    words_per_proj = 4
+
+    with FastSafetensorsReader(sf_path) as sf, open(t16c_path, "r+b") as fp:
+        perm_pi, inv_perm_pi = reconstruct_perm_pi(sf, idx, fp)
+
+        def _rot_inplace(mat_f32: np.ndarray) -> np.ndarray:
+            arr = np.ascontiguousarray(mat_f32, dtype=np.float32)
+            if lib is not None:
+                lib.fwht256_rows_f32(arr.ctypes.data, arr.shape[0], arr.shape[1])
+                return arr
+            return _fwht256_np(arr)
+
+        if start_layer == 0:
+            fn_nk = "model.language_model.norm.weight"
+            fn_clean = sf.read_tensor_np(fn_nk)[perm_pi].astype("<f4")
+            fp.seek(idx.norms[fn_nk][0])
+            fp.write(fn_clean.tobytes())
+
+        for l_idx in range(start_layer, 60):
+            pfx = f"model.language_model.layers.{l_idx}"
+            for nk_suf, do_perm in (("post_attention_layernorm.weight", True), ("post_feedforward_layernorm.weight", True), ("layer_scalar", False)):
+                nk = f"{pfx}.{nk_suf}"
+                arr_n = sf.read_tensor_np(nk)
+                if do_perm:
+                    arr_n = arr_n[perm_pi]
+                fp.seek(idx.norms[nk][0])
+                fp.write(np.ascontiguousarray(arr_n, dtype="<f4").tobytes())
+
+            l_rec: Dict[str, object] = {"l": l_idx}
+
+            # Repair q_proj and o_proj across ALL 60 layers (App3 updated Q/O headers via Ridge across L02..L57)
+            for pn, is_o in (("self_attn.q_proj", False), ("self_attn.o_proj", True)):
+                mname = f"{pfx}.{pn}.weight"
+                meta = idx.mats[mname]
+                wt = sf.read_dequant_f32(f"{pfx}.{pn}", lib=lib)
+                wt = wt[perm_pi, :] if is_o else wt[:, perm_pi]
+                inv_s, lr = _read_inv_and_lr(fp, meta)
+                if lr is not None:
+                    n_wt = float(np.linalg.norm(wt))
+                    n_lr = float(np.linalg.norm(lr))
+                    n_res = float(np.linalg.norm(wt - lr))
+                    if n_lr > 0.65 * n_wt or n_res > 1.00 * n_wt:
+                        _zero_lr_sv_inplace(fp, meta)
+                        zeroed_lr.append({"mat": mname, "n_wt": round(n_wt, 3), "n_lr": round(n_lr, 3), "n_res": round(n_res, 3)})
+                        lr = None
+                    else:
+                        wt -= lr
+                    del lr
+                if inv_s is not None:
+                    wt /= inv_s[None, :]
+                wt = _rot_inplace(wt)
+                fp.seek(meta["offset"])
+                pb_u8 = np.frombuffer(fp.read(meta["pb_len"]), dtype=np.uint8)
+                pb_upd, w_cos, n_rat = solve_wls_in_place(pb_u8, meta, wt, lib)
+                fp.seek(meta["offset"])
+                fp.write(pb_upd.tobytes())
+                min_cos = 0.73 if (meta["n_bits"] & 0x1F) == 1 else 0.88
+                if w_cos < min_cos:
+                    raise RuntimeError(f"Fail-closed App3 repair failed: {mname} w_cos={w_cos:.4f} < {min_cos}")
+                l_rec[pn] = {"w_cos": round(w_cos, 5), "norm_rat": round(n_rat, 4)}
+                del wt, pb_u8, pb_upd
+
+            # Recover pi_l for this layer from gate_proj + up_proj intact bitplanes
+            m_g = idx.mats[f"{pfx}.mlp.gate_proj.weight"]
+            m_u = idx.mats[f"{pfx}.mlp.up_proj.weight"]
+            wg_orig = sf.read_dequant_f32(f"{pfx}.mlp.gate_proj", lib=lib)[:, perm_pi]
+            inv_sg, lr_g = _read_inv_and_lr(fp, m_g)
+            if inv_sg is not None:
+                wg_orig /= inv_sg[None, :]
+            wg_rot = _rot_inplace(wg_orig)
+            del wg_orig
+
+            wu_orig = sf.read_dequant_f32(f"{pfx}.mlp.up_proj", lib=lib)[:, perm_pi]
+            inv_su, lr_u = _read_inv_and_lr(fp, m_u)
+            if inv_su is not None:
+                wu_orig /= inv_su[None, :]
+            wu_rot = _rot_inplace(wu_orig)
+            del wu_orig
+
+            fp.seek(m_g["offset"])
+            pb_g = np.frombuffer(fp.read(m_g["pb_len"]), dtype=np.uint8)
+            fp.seek(m_u["offset"])
+            pb_u = np.frombuffer(fp.read(m_u["pb_len"]), dtype=np.uint8)
+
+            pi_l, margin = recover_bijective_perm(wg_rot, pb_g, m_g, wu_rot, pb_u, m_u, lib, words_per_proj=words_per_proj)
+            pi_l_all[l_idx] = pi_l.astype(np.int32)
+            l_rec["pi_l_margin"] = round(margin, 2)
+
+            wg_perm = np.ascontiguousarray(wg_rot[pi_l, :], dtype=np.float32)
+            del wg_rot
+            if lr_g is not None:
+                if float(np.linalg.norm(lr_g)) > 0.65 * float(np.linalg.norm(wg_perm)):
+                    _zero_lr_sv_inplace(fp, m_g)
+                    zeroed_lr.append({"mat": f"{pfx}.mlp.gate_proj.weight"})
+                else:
+                    if inv_sg is not None:
+                        lr_g = lr_g / inv_sg[None, :]
+                    wg_perm -= _rot_inplace(lr_g)
+                del lr_g
+            pb_g_upd, cos_g, rat_g = solve_wls_in_place(pb_g, m_g, wg_perm, lib)
+            del wg_perm, pb_g
+            fp.seek(m_g["offset"]); fp.write(pb_g_upd.tobytes())
+            del pb_g_upd
+
+            wu_perm = np.ascontiguousarray(wu_rot[pi_l, :], dtype=np.float32)
+            del wu_rot
+            if lr_u is not None:
+                if float(np.linalg.norm(lr_u)) > 0.65 * float(np.linalg.norm(wu_perm)):
+                    _zero_lr_sv_inplace(fp, m_u)
+                    zeroed_lr.append({"mat": f"{pfx}.mlp.up_proj.weight"})
+                else:
+                    if inv_su is not None:
+                        lr_u = lr_u / inv_su[None, :]
+                    wu_perm -= _rot_inplace(lr_u)
+                del lr_u
+            pb_u_upd, cos_u, rat_u = solve_wls_in_place(pb_u, m_u, wu_perm, lib)
+            del wu_perm, pb_u
+            fp.seek(m_u["offset"]); fp.write(pb_u_upd.tobytes())
+            del pb_u_upd
+
+            m_d = idx.mats[f"{pfx}.mlp.down_proj.weight"]
+            wd_perm = np.ascontiguousarray(sf.read_dequant_f32(f"{pfx}.mlp.down_proj", lib=lib)[perm_pi, :][:, pi_l], dtype=np.float32)
+            inv_sd, lr_d = _read_inv_and_lr(fp, m_d)
+            if lr_d is not None:
+                n_wt = float(np.linalg.norm(wd_perm))
+                n_lr = float(np.linalg.norm(lr_d))
+                n_res = float(np.linalg.norm(wd_perm - lr_d))
+                if n_lr > 0.65 * n_wt or n_res > 1.00 * n_wt:
+                    _zero_lr_sv_inplace(fp, m_d)
+                    zeroed_lr.append({"mat": f"{pfx}.mlp.down_proj.weight", "n_wt": round(n_wt, 3), "n_lr": round(n_lr, 3), "n_res": round(n_res, 3)})
+                else:
+                    wd_perm -= lr_d
+                del lr_d
+            if inv_sd is not None:
+                wd_perm /= inv_sd[None, :]
+            wd_rot = _rot_inplace(wd_perm)
+            del wd_perm
+            fp.seek(m_d["offset"])
+            pb_d = np.frombuffer(fp.read(m_d["pb_len"]), dtype=np.uint8)
+            pb_d_upd, cos_d, rat_d = solve_wls_in_place(pb_d, m_d, wd_rot, lib)
+            del wd_rot, pb_d
+            fp.seek(m_d["offset"]); fp.write(pb_d_upd.tobytes())
+            del pb_d_upd
+
+            for tag_m, cm, mm_b in (("gate", cos_g, m_g["n_bits"]), ("up", cos_u, m_u["n_bits"]), ("down", cos_d, m_d["n_bits"])):
+                req = 0.73 if (mm_b & 0x1F) == 1 else 0.88
+                if cm < req:
+                    raise RuntimeError(f"Fail-closed App3 MLP repair failed: L{l_idx:02d} {tag_m} w_cos={cm:.4f} < {req}")
+
+            l_rec["mlp_cos"] = [round(cos_g, 4), round(cos_u, 4), round(cos_d, 4)]
+            l_rec["mlp_rat"] = [round(rat_g, 4), round(rat_u, 4), round(rat_d, 4)]
+            layer_stats.append(l_rec)
+            print(
+                f"  [App3-WLS L{l_idx:02d}/59] pi_margin={margin:.1f}/{words_per_proj*128} | mlp_cos={l_rec['mlp_cos']} | "
+                f"q_cos={l_rec['self_attn.q_proj']['w_cos']} o_cos={l_rec['self_attn.o_proj']['w_cos']} zeroed_lr={len(zeroed_lr)}",
+                flush=True,
+            )
+            if (l_idx + 1) % 5 == 0:
+                np.save(pi_ckpt, pi_l_all)
+            gc.collect()
+
+        fp.flush()
+        os.fsync(fp.fileno())
+
+    perms_p = patch_dir / "app3_recovered_perms.npz"
+    np.savez(perms_p, perm_pi=perm_pi.astype(np.int32), inv_perm_pi=inv_perm_pi.astype(np.int32), pi_l_all=pi_l_all)
+    app3_patch = patch_dir / "app3_wls_headers_norms.bin"
+    app3_info = save_header_norm_patch(t16c_path, app3_patch)
+    rpt_p = patch_dir / "app3_wls_repair_report.json"
+    rpt = {
+        "perms_npz": str(perms_p),
+        "patch_bin": str(app3_patch),
+        "patch_info": app3_info,
+        "zeroed_corrupted_lr": zeroed_lr,
+        "layers": layer_stats,
+    }
+    rpt_p.write_text(json.dumps(rpt, indent=2), encoding="utf-8")
+    print(f"[App3-WLS COMPLETE] Saved {app3_patch} ({app3_info['bytes']:,} B) zeroed_lr={len(zeroed_lr)}", flush=True)
+    return rpt
+
+
 def _write_synthetic_w4_sf(path: Path, tensors: Dict[str, np.ndarray]) -> None:
     hdr = {}
     chunks = []
@@ -946,13 +1154,14 @@ def main() -> int:
     ap.add_argument("--save-patch", nargs=2, metavar=("T16C", "OUT_PATCH"))
     ap.add_argument("--apply-patch", nargs=2, metavar=("T16C", "IN_PATCH"))
     ap.add_argument("--run-approach1", action="store_true")
+    ap.add_argument("--repair-app3", action="store_true")
     ap.add_argument("--t16c", type=Path, default=Path("/mnt/SHE-VAULT/gemma4_v9_0/gemma4_31b_v9_0_sparse.t16c"))
     ap.add_argument("--safetensors", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/model.safetensors"))
     ap.add_argument("--patch-dir", type=Path, default=Path("/mnt/SHE-VAULT/gemma4_v9_0/patches"))
     ap.add_argument("--start-layer", type=int, default=0)
     args = ap.parse_args()
 
-    if args.selftest or (not args.save_patch and not args.apply_patch and not args.run_approach1):
+    if args.selftest or (not args.save_patch and not args.apply_patch and not args.run_approach1 and not args.repair_app3):
         return run_selftest()
     if args.save_patch:
         info = save_header_norm_patch(Path(args.save_patch[0]), Path(args.save_patch[1]))
@@ -961,6 +1170,9 @@ def main() -> int:
     if args.apply_patch:
         info = apply_header_norm_patch(Path(args.apply_patch[0]), Path(args.apply_patch[1]))
         print(json.dumps(info, indent=2), flush=True)
+        return 0
+    if args.repair_app3:
+        run_approach3_repair(args.t16c, args.safetensors, args.patch_dir, start_layer=args.start_layer)
         return 0
     run_approach1(args.t16c, args.safetensors, args.patch_dir, start_layer=args.start_layer)
     return 0

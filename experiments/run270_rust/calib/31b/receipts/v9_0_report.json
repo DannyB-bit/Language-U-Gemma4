@@ -1,0 +1,58 @@
+{
+  "version": "V9.0-FASTKERNEL-SPARSE10OF84-HEAD10OF32-DISPERSION-QAT-RECOVER-AUX",
+  "gpu": "NVIDIA L4",
+  "elapsed_s": 2662.92,
+  "t16c_bytes": 5650538880,
+  "t16c_gib": 5.2625,
+  "colblock_mats": 116,
+  "l59_cos": 0.86863,
+  "val_kl": 4.7518,
+  "val_top1_agree": 0.1751,
+  "val_top5_agree": 0.371,
+  "post_cell60_kept": true,
+  "crtr_mean_recall": 0.8834,
+  "head_crtr_mean_recall": 0.75743,
+  "assistant_align": {
+    "kl_before": 12.183,
+    "kl_after": 0.8716,
+    "top1_before": 0.1478,
+    "top1_after": 0.5615
+  },
+  "bhdr": {
+    "val_kl_before": 2.05746,
+    "val_kl_after": 0.12435,
+    "val_tok_acc_before": 0.0,
+    "val_tok_acc_after": 0.6861,
+    "heldout_beam_top1_acc_vs_v9_argmax": 0.4297
+  },
+  "artifacts": {
+    "gemma4_31b_v9_0_sparse.t16c": {
+      "bytes": 5650538880,
+      "sha256": "81cda8e2b1caaf67911f757431a6cfb7092846ea9d0652867b44744e4fa7cd3b"
+    },
+    "gemma4_31b_v9_0_router.crtr": {
+      "bytes": 21360516,
+      "sha256": "58f35b5fe2b4781b6cd5587db8be5197f20c555cfd21f6c97a16c83fc0cca09c"
+    },
+    "gemma4_31b_v9_0_head_router.crtr": {
+      "bytes": 10414116,
+      "sha256": "65ba74fc82301d74a3b8599ac3306ddffbbf244116e1c6fe95ec76bc90c618ca"
+    },
+    "gemma4_31b_v9_0_c8d.c8d": {
+      "bytes": 426213056,
+      "sha256": "b6f08ff99cbafd93d5c43725589ca94e79a2844e96e512a5a92a6a29285a248d"
+    },
+    "gemma4_31b_v9_0_assistant_body_q2.t16c": {
+      "bytes": 56628032,
+      "sha256": "69149aa45d91be4cf8e43b51c9be3d6eea2132cdc8c05e41690a1d321f439beb"
+    },
+    "gemma4_31b_v9_0_assistant_body_q4.t16c": {
+      "bytes": 106894144,
+      "sha256": "bb22ad80c689c580be03c882106e6acbfdc532ef3e80f193f3126afed446a2a5"
+    },
+    "gemma4_31b_v9_0_assistant.bhdr": {
+      "bytes": 2687324,
+      "sha256": "7e17a0692caa2207d9f0c0a00acb9da0daa5464219b708088080e28c3cf188cf"
+    }
+  }
+}

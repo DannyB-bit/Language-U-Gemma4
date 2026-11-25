@@ -1,0 +1,262 @@
+
+=== APP3-WLS-DENSE-NOC8D-NLL ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 43.34s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6291700), Some(6224676))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6291700), Some(6224692)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 1.81s (pinned=true)
+[run31b] layer 05/60 done in 1.90s (pinned=true)
+[run31b] layer 14/60 done in 1.45s (pinned=true)
+[run31b] layer 29/60 done in 1.73s (pinned=true)
+[run31b] layer 44/60 done in 1.44s (pinned=true)
+[run31b] layer 59/60 done in 2.12s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=13.73610 ppl=923656.770 top1_acc=0.0000 mean_entropy=4.1161 eval_s=99.74
+EVAL_TEACHER_KL pos=63 kl_t_to_s=12.71247 kl_s_to_t=17.57422 top1_agree=0.0000 top5_agree=0.0000 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Glyph raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=63365120 glyph_tokens=3560 mid_tokens=0 exact_tokens=1960 shrink=2.62x shrink_vs_bf16=1.31x
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=99.74 decode_s=0.00 vm_hwm_kb=Some(6330464) vm_rss_kb=Some(6282200)
+
+
+=== APP3-WLS-DENSE-WITHC8D-NLL ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --cuneiform-bank /mnt/SHE-VAULT/gemma4_v9_0/ablate/app3_c8d.c8d --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded C8DB /mnt/SHE-VAULT/gemma4_v9_0/ablate/app3_c8d.c8d: entries=61 norms=0 payload_bytes=219736128 cold_va=false native_tbi_hw=true
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.77s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6587540), Some(6525816))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6587540), Some(6525816)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 1.98s (pinned=true)
+[run31b] layer 05/60 done in 1.96s (pinned=true)
+[run31b] layer 14/60 done in 1.51s (pinned=true)
+[run31b] layer 29/60 done in 1.70s (pinned=true)
+[run31b] layer 44/60 done in 1.53s (pinned=true)
+[run31b] layer 59/60 done in 2.18s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=14.34037 ppl=1690212.887 top1_acc=0.0000 mean_entropy=6.9008 eval_s=102.00
+EVAL_TEACHER_KL pos=63 kl_t_to_s=12.82946 kl_s_to_t=18.75737 top1_agree=0.0000 top5_agree=0.0000 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Glyph raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=63365120 glyph_tokens=3560 mid_tokens=0 exact_tokens=1960 shrink=2.62x shrink_vs_bf16=1.31x
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=102.00 decode_s=0.00 vm_hwm_kb=Some(6587540) vm_rss_kb=Some(6555444)
+
+
+[C8D_DECISION] nll_noc8d=13.73610 nll_withc8d=14.34037 -> use_c8d=False
+
+
+=== APP3-WLS-SPARSE-NLL ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --cortical-router /mnt/SHE-VAULT/gemma4_v9_0/ablate/app3_crtr.crtr --mlp-top-p 0.35 --shared-mlp-blocks 4 --eval-nll --eval-nll-after-turn --raw-prompt --prompt-text <|turn>user
+Explain how false sharing affects NUMA multiprocessor servers and how to eliminate it.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>In NUMA multiprocessor servers, cross-socket cache-line invalidations increase tail latency whenever worker threads share mutable counters on the same 64-byte coherence granule. Aligning per-core accumulator structs to cache-line offsets eliminates false sharing and restores linear scaling across memory channels without altering algorithmic complexity.<turn|> --eval-teacher-logits /mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1/heldout_systems_cache.lgt1
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] loaded CorticalRouter /mnt/SHE-VAULT/gemma4_v9_0/ablate/app3_crtr.crtr: layers=60 rank=64 bsize=256 blocks=84 mod_gate=true (20.37 MB)
+[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p=0.350
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 11.22s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6401788), Some(6340212))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6401788), Some(6340212)))
+[run31b] prompt 92 tokens ids=[2, 105, 2364, 107, 155122, 1217, 2416, 11211, 19375, 26304, 236776, 13260, 199490, 23367, 532, 1217, 531, 20504, 625, 236761, 106, 107, 105, 4368, 107, 100, 45518, 107, 101, 902, 26304, 236776]
+[run31b] layer 00/60 done in 1.77s (pinned=true)
+[run31b] layer 05/60 done in 1.82s (pinned=true)
+[run31b] layer 14/60 done in 1.40s (pinned=true)
+[run31b] layer 29/60 done in 1.57s (pinned=true)
+[run31b] layer 44/60 done in 1.26s (pinned=true)
+[run31b] layer 59/60 done in 1.67s (pinned=true)
+EVAL_NLL tokens=92 eval_start=28 eval_pos=63 mean_nll=15.78953 ppl=7199525.720 top1_acc=0.0000 mean_entropy=3.5619 eval_s=91.97
+EVAL_TEACHER_KL pos=63 kl_t_to_s=13.65115 kl_s_to_t=18.01332 top1_agree=0.0000 top5_agree=0.0159 teacher_nll=5.42168 teacher_ppl=226.258
+KV31B mode=Glyph raw_bytes=165806080 naive_bf16_bytes=82903040 compressed_bytes=63365120 glyph_tokens=3560 mid_tokens=0 exact_tokens=1960 shrink=2.62x shrink_vs_bf16=1.31x
+MLP_SPARSE top_p=0.350 skipped_blks=2640960 total_blks=116847360 dram_saved_pct=2.3%
+CORTICAL_ROUTER gate_skipped_blks=655 gate_total_blks=5040 gate_saved_pct=13.0%
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=0 prefill_s=91.97 decode_s=0.00 vm_hwm_kb=Some(6401788) vm_rss_kb=Some(6396720)
+
+
+=== APP3-WLS-GEN-P1_arith ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --max-tokens 32 --lmhead-cs exact --prompt-text What is 2 + 2?
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.89s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6380828), Some(6319088))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6380828), Some(6319088)))
+[run31b] prompt 21 tokens ids=[2, 105, 2364, 107, 3689, 563, 236743, 236778, 900, 236743, 236778, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.41s (pinned=true)
+[run31b] layer 05/60 done in 0.42s (pinned=true)
+[run31b] layer 14/60 done in 0.32s (pinned=true)
+[run31b] layer 29/60 done in 0.37s (pinned=true)
+[run31b] layer 44/60 done in 0.31s (pinned=true)
+[run31b] layer 59/60 done in 0.44s (pinned=true)
+[run31b] prefill done in 20.18s ssd_read_mb=0.0 vm=(Some(6380828), Some(6320820))
+PREFILL_TOP5 [532:" and"(22.879), 594:"th"(22.717), 5213:" **"(22.640), 624:"and"(22.635), 1018:"**"(22.315)]
+[STEP 0] id=532 text=" and"
+[run31b] decode step 0 in 2.02s vm=(Some(6380828), Some(6320820))
+[STEP 1] id=1638 text=" same"
+[run31b] decode step 1 in 2.03s vm=(Some(6380828), Some(6320820))
+[STEP 2] id=1852 text=" own"
+[run31b] decode step 2 in 2.05s vm=(Some(6380828), Some(6320820))
+[STEP 3] id=236762 text="y"
+[run31b] decode step 3 in 2.18s vm=(Some(6380828), Some(6320820))
+[STEP 4] id=236751 text="s"
+[run31b] decode step 4 in 2.04s vm=(Some(6380828), Some(6320820))
+[STEP 5] id=236761 text="."
+[run31b] decode step 5 in 2.04s vm=(Some(6380828), Some(6320820))
+[STEP 6] id=108 text="\n\n"
+[run31b] decode step 6 in 2.04s vm=(Some(6380828), Some(6320820))
+[STEP 7] id=1018 text="**"
+[run31b] decode step 7 in 2.07s vm=(Some(6380828), Some(6320820))
+[STEP 8] id=715 text="//"
+[run31b] decode step 8 in 2.03s vm=(Some(6380828), Some(6320820))
+[STEP 9] id=107 text="\n"
+[run31b] decode step 9 in 2.03s vm=(Some(6380828), Some(6320820))
+[STEP 10] id=236770 text="1"
+[run31b] decode step 10 in 2.33s vm=(Some(6380828), Some(6320820))
+[STEP 11] id=236771 text="0"
+[run31b] decode step 11 in 2.11s vm=(Some(6380828), Some(6326824))
+[STEP 12] id=236810 text="5"
+[run31b] decode step 12 in 2.12s vm=(Some(6380828), Some(6326824))
+[STEP 13] id=236825 text="6"
+[run31b] decode step 13 in 2.08s vm=(Some(6380828), Some(6326824))
+[STEP 14] id=236744 text="e"
+[run31b] decode step 14 in 2.09s vm=(Some(6380828), Some(6326824))
+[STEP 15] id=1852 text=" own"
+[run31b] decode step 15 in 2.10s vm=(Some(6380828), Some(6326892))
+[STEP 16] id=715 text="//"
+[run31b] decode step 16 in 2.13s vm=(Some(6380828), Some(6326892))
+[STEP 17] id=236759 text="g"
+[run31b] decode step 17 in 2.15s vm=(Some(6380828), Some(6326892))
+[STEP 18] id=7243 text="---"
+[run31b] decode step 18 in 2.11s vm=(Some(6380828), Some(6326892))
+[STEP 19] id=1 text="<eos>"
+GEN31B ids=[532, 1638, 1852, 236762, 236751, 236761, 108, 1018, 715, 107, 236770, 236771, 236810, 236825, 236744, 1852, 715, 236759, 7243, 1]
+GEN31B text=" and same ownys.\n\n**//\n1056e own//g---<eos>"
+KV31B mode=Glyph raw_bytes=72089600 naive_bf16_bytes=36044800 compressed_bytes=58972160 glyph_tokens=440 mid_tokens=0 exact_tokens=1960 shrink=1.22x shrink_vs_bf16=0.61x
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=34546 prefill_s=20.18 decode_s=39.76 vm_hwm_kb=Some(6380828) vm_rss_kb=Some(6326892)
+
+
+=== APP3-WLS-GEN-P2_france ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --max-tokens 32 --lmhead-cs exact --prompt-text The capital of France is
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.77s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6380828), Some(6319092))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6380828), Some(6319092)))
+[run31b] prompt 18 tokens ids=[2, 105, 2364, 107, 818, 5279, 529, 7001, 563, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.35s (pinned=true)
+[run31b] layer 05/60 done in 0.37s (pinned=true)
+[run31b] layer 14/60 done in 0.28s (pinned=true)
+[run31b] layer 29/60 done in 0.31s (pinned=true)
+[run31b] layer 44/60 done in 0.26s (pinned=true)
+[run31b] layer 59/60 done in 0.38s (pinned=true)
+[run31b] prefill done in 17.48s ssd_read_mb=0.0 vm=(Some(6380828), Some(6320824))
+PREFILL_TOP5 [236780:"C"(22.900), 594:"th"(22.821), 1619:"]."(22.786), 769:")."(22.742), 1018:"**"(22.292)]
+[STEP 0] id=236780 text="C"
+[run31b] decode step 0 in 2.03s vm=(Some(6380828), Some(6320824))
+[STEP 1] id=236770 text="1"
+[run31b] decode step 1 in 2.01s vm=(Some(6380828), Some(6320824))
+[STEP 2] id=1638 text=" same"
+[run31b] decode step 2 in 2.00s vm=(Some(6380828), Some(6320824))
+[STEP 3] id=1852 text=" own"
+[run31b] decode step 3 in 2.03s vm=(Some(6380828), Some(6320824))
+[STEP 4] id=107 text="\n"
+[run31b] decode step 4 in 2.04s vm=(Some(6380828), Some(6320824))
+[STEP 5] id=715 text="//"
+[run31b] decode step 5 in 2.02s vm=(Some(6380828), Some(6320824))
+[STEP 6] id=236751 text="s"
+[run31b] decode step 6 in 2.09s vm=(Some(6380828), Some(6320824))
+[STEP 7] id=236762 text="y"
+[run31b] decode step 7 in 2.01s vm=(Some(6380828), Some(6320824))
+[STEP 8] id=236761 text="."
+[run31b] decode step 8 in 2.03s vm=(Some(6380828), Some(6320824))
+[STEP 9] id=108 text="\n\n"
+[run31b] decode step 9 in 2.03s vm=(Some(6380828), Some(6320824))
+[STEP 10] id=1018 text="**"
+[run31b] decode step 10 in 2.08s vm=(Some(6380828), Some(6320824))
+[STEP 11] id=236812 text="4"
+[run31b] decode step 11 in 2.05s vm=(Some(6380828), Some(6320824))
+[STEP 12] id=236810 text="5"
+[run31b] decode step 12 in 2.04s vm=(Some(6380828), Some(6320824))
+[STEP 13] id=236825 text="6"
+[run31b] decode step 13 in 2.05s vm=(Some(6380828), Some(6320824))
+[STEP 14] id=236832 text="7"
+[run31b] decode step 14 in 2.14s vm=(Some(6380828), Some(6326828))
+[STEP 15] id=236771 text="0"
+[run31b] decode step 15 in 2.11s vm=(Some(6380828), Some(6326828))
+[STEP 16] id=236744 text="e"
+[run31b] decode step 16 in 2.09s vm=(Some(6380828), Some(6326828))
+[STEP 17] id=1852 text=" own"
+[run31b] decode step 17 in 2.09s vm=(Some(6380828), Some(6326828))
+[STEP 18] id=715 text="//"
+[run31b] decode step 18 in 2.11s vm=(Some(6380828), Some(6326896))
+[STEP 19] id=236759 text="g"
+[run31b] decode step 19 in 2.12s vm=(Some(6380828), Some(6326896))
+[STEP 20] id=7243 text="---"
+[run31b] decode step 20 in 2.12s vm=(Some(6380828), Some(6326896))
+[STEP 21] id=1340 text="of"
+[run31b] decode step 21 in 2.15s vm=(Some(6380828), Some(6326896))
+[STEP 22] id=2167 text="ee"
+[run31b] decode step 22 in 2.14s vm=(Some(6380828), Some(6326896))
+[STEP 23] id=860 text="gh"
+[run31b] decode step 23 in 2.15s vm=(Some(6380828), Some(6326896))
+[STEP 24] id=236768 text=")"
+[run31b] decode step 24 in 2.14s vm=(Some(6380828), Some(6327696))
+[STEP 25] id=4317 text=" idea"
+[run31b] decode step 25 in 2.10s vm=(Some(6380828), Some(6327720))
+[STEP 26] id=236828 text="8"
+[run31b] decode step 26 in 2.15s vm=(Some(6380828), Some(6327744))
+[STEP 27] id=236771 text="0"
+[run31b] decode step 27 in 2.28s vm=(Some(6380828), Some(6327756))
+[STEP 28] id=236786 text="/"
+[run31b] decode step 28 in 2.13s vm=(Some(6380828), Some(6327756))
+[STEP 29] id=236819 text="9"
+[run31b] decode step 29 in 2.14s vm=(Some(6380828), Some(6327756))
+[STEP 30] id=578 text=" ="
+[run31b] decode step 30 in 2.09s vm=(Some(6380828), Some(6327756))
+[STEP 31] id=236775 text="\""
+GEN31B ids=[236780, 236770, 1638, 1852, 107, 715, 236751, 236762, 236761, 108, 1018, 236812, 236810, 236825, 236832, 236771, 236744, 1852, 715, 236759, 7243, 1340, 2167, 860, 236768, 4317, 236828, 236771, 236786, 236819, 578, 236775]
+GEN31B text="C1 same own\n//sy.\n\n**45670e own//g---ofeegh) idea80/9 =\""
+KV31B mode=Glyph raw_bytes=88309760 naive_bf16_bytes=44154880 compressed_bytes=59732480 glyph_tokens=980 mid_tokens=0 exact_tokens=1960 shrink=1.48x shrink_vs_bf16=0.74x
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=77771 prefill_s=17.48 decode_s=64.81 vm_hwm_kb=Some(6380828) vm_rss_kb=Some(6327756)
+
+
+=== APP3-WLS-GEN-P5_speed ===
+CMD: /home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b --t16c /mnt/SHE-VAULT/gemma4_v9_0/ablate/gemma4_31b_v9_0_app3_zero1b.t16c --config /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/config.json --tokenizer /mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/tokenizer.json --so /home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so --threads 4 --kv-quant glyph --max-tokens 32 --lmhead-cs exact --prompt-text A train travels 120 km in 2 hours. What is its average speed?
+[run31b] cfg d=5376 layers=60 ff=21504 heads=32/16 global_kv=4 hd=256/512 window=1024 softcap=Some(30.0) kv_quant=Glyph kv_lod=(4, 32, 0) keep_vis=false cold_mlps=0
+[run31b] weight_source=T16C native_ffi=/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so mats=410 norms=585 body_bytes=5606522624 streamed_cold_bytes=0 vision_bytes=234449280 vision_deferred=true norm_bytes=5848496 embed_bytes=539492352 hybrid_qat=[] (0 B) kv_quant=Glyph
+[run31b] enabled LM-head CS pruning: sieve_frac=0.000 norms_bytes=688128
+[run31b] loaded in 10.72s pinned_layers=60/60 pinned_bytes=5612371120 embed_bytes=539492352 vm=(Some(6380828), Some(6319088))
+[run31b] vision on-demand: text-only run evicted 233684992 B (vm=(Some(6380828), Some(6319088)))
+[run31b] prompt 32 tokens ids=[2, 105, 2364, 107, 236776, 2519, 33036, 236743, 236770, 236778, 236771, 7251, 528, 236743, 236778, 3885, 236761, 2900, 563, 1061, 4398, 4249, 236881, 106, 107, 105, 4368, 107, 100, 45518, 107, 101]
+[run31b] layer 00/60 done in 0.62s (pinned=true)
+[run31b] layer 05/60 done in 0.66s (pinned=true)
+[run31b] layer 14/60 done in 0.48s (pinned=true)
+[run31b] layer 29/60 done in 0.60s (pinned=true)
+[run31b] layer 44/60 done in 0.48s (pinned=true)
+[run31b] layer 59/60 done in 0.74s (pinned=true)
+[run31b] prefill done in 31.01s ssd_read_mb=0.0 vm=(Some(6380828), Some(6321228))
+PREFILL_TOP5 [2712:" kind"(22.015), 2591:" example"(21.882), 129994:" pensiero"(21.645), 1589:" person"(21.565), 594:"th"(21.182)]
+[STEP 0] id=2712 text=" kind"
+[run31b] decode step 0 in 2.16s vm=(Some(6380828), Some(6327228))
+[STEP 1] id=715 text="//"
+[run31b] decode step 1 in 2.11s vm=(Some(6380828), Some(6327228))
+[STEP 2] id=1852 text=" own"
+[run31b] decode step 2 in 2.11s vm=(Some(6380828), Some(6327228))
+[STEP 3] id=1638 text=" same"
+[run31b] decode step 3 in 2.09s vm=(Some(6380828), Some(6327228))
+[STEP 4] id=236751 text="s"
+[run31b] decode step 4 in 2.27s vm=(Some(6380828), Some(6327296))
+[STEP 5] id=236762 text="y"
+[run31b] decode step 5 in 2.13s vm=(Some(6380828), Some(6327296))
+[STEP 6] id=107 text="\n"
+[run31b] decode step 6 in 2.18s vm=(Some(6380828), Some(6327296))
+[STEP 7] id=1 text="<eos>"
+GEN31B ids=[2712, 715, 1852, 1638, 236751, 236762, 107, 1]
+GEN31B text=" kind// own samesy\n<eos>"
+KV31B mode=Glyph raw_bytes=70287360 naive_bf16_bytes=35143680 compressed_bytes=58887680 glyph_tokens=380 mid_tokens=0 exact_tokens=1960 shrink=1.19x shrink_vs_bf16=0.60x
+MEM31B pinned_bytes=5612371120 embed_bytes=539492352 ssd_read_bytes=0 cs_skipped_blocks=0 lmhead_cs_skipped_blocks=4830 prefill_s=31.01 decode_s=15.06 vm_hwm_kb=Some(6380828) vm_rss_kb=Some(6327296)
