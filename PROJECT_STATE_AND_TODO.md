@@ -156,3 +156,13 @@ All active source files, Colab/Kaggle calibration runners, reference drafts, and
 - **Git Branches Synced:** All receipts, calibration scripts, and evaluator enhancements merged and pushed to both `v5-qat-dev` and `main` branches on GitHub (`https://github.com/DannyB-bit/Language-U-Gemma4`).
 - **Pi 4 Environment:** Native ARM64 binary `/home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b` compiled and passing `93/93` tests. Evaluation suite `eval_v6_1_skeptic_proof.py` synced and passing `6/6` fail-closed selftest gates on physical Raspberry Pi 4 silicon (`192.168.1.207`).
 
+### Step 12: V8.0 Final Verification Gate — CODE CLOSED, PI EVIDENCE PENDING (`2026-11-24`)
+- [x] Clarified that V8.0 `COMPLETED_AND_SEALED` proves GPU artifact production, not Pi 4 execution.
+- [x] Wired previously dead `adaptive_mod_q` and minimum-layer `dyn_draft_k` controls in `run31b`; preserved KV rollback and froze target-side POV adaptations for speculative batches.
+- [x] Added streamed SHA-256 preflight for all 22 runtime/spec artifacts, fail-closed evaluator mode/artifact/telemetry checks, and explicit spec-AB generated-text parity evidence.
+- [x] Added `experiments/run270_rust/V8_ENDGAME.md` with the exact Pi smoke, full battery, independent dense baseline, and acceptance contract.
+- [x] Lenovo Tab M8 / Android / aarch64 verification: 94/94 Rust tests, 10/10 evaluator gates, and 22-file artifact corruption/missing-file self-tests pass.
+- [ ] Run the V8.0 Pi 4 smoke and full evaluation; commit the actual logs/report. Do not mark V8.0 Pi-verified until this box has a reproducible receipt.
+- [ ] Generate matching V8.0 teacher `.lgt1` logits before making any V8.0 teacher-KL claim.
+- [ ] Run a separate sequential-vs-speculative token-ID parity test; spec-AB text parity alone is not that proof.
+

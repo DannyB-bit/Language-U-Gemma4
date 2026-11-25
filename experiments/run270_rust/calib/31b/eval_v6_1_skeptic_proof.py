@@ -218,6 +218,71 @@ def _run_cmd(cmd: Sequence[str], log_fp=None) -> str:
     return proc.stdout
 
 
+def _require_file(path: Optional[Path], label: str) -> Path:
+    if path is None or not path.is_file():
+        raise FileNotFoundError(f"required {label} file missing: {path}")
+    return path
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    """Reject incomplete experiment requests before creating a success receipt."""
+    for attr, label in (
+        ("run31b", "run31b binary"),
+        ("t16c", "base T16C model"),
+        ("config", "model config"),
+        ("tokenizer", "tokenizer"),
+    ):
+        _require_file(getattr(args, attr), label)
+    for attr, label in (
+        ("c8d", "C8D bank"),
+        ("so", "native library"),
+        ("router", "CRTR router"),
+        ("lod_shared", "shared LOD"),
+        ("district_router", "district router"),
+        ("assistant_v6", "V6 assistant"),
+        ("assistant_v7_body", "assistant body"),
+        ("byte_head", "byte head"),
+    ):
+        value = getattr(args, attr, None)
+        if value is not None:
+            _require_file(value, label)
+    if args.lod_district_dir is not None and not args.lod_district_dir.is_dir():
+        raise FileNotFoundError(f"required LOD district directory missing: {args.lod_district_dir}")
+    if args.mode in ("vision", "all"):
+        _require_file(args.image, "vision image")
+    elif args.image is not None:
+        _require_file(args.image, "vision image")
+    if args.mode in ("spec-ab", "all"):
+        for attr in ("assistant_v6", "assistant_v7_body", "byte_head"):
+            _require_file(getattr(args, attr), attr)
+    if args.teacher_logits is not None:
+        if args.nll_format == "raw":
+            _require_file(args.teacher_logits, "teacher logits")
+        elif args.nll_format == "chat":
+            if not args.teacher_logits.is_dir():
+                raise FileNotFoundError(f"teacher chat-logit directory missing: {args.teacher_logits}")
+            missing = [name for name, _ in HELDOUT_NLL_PASSAGES if not (args.teacher_logits / f"{name}.lgt1").is_file()]
+            if missing:
+                raise FileNotFoundError(f"teacher chat logits incomplete; missing={missing}")
+
+
+def _require_v8_telemetry(args: argparse.Namespace, rec: dict) -> None:
+    has_lod = any(
+        getattr(args, name, None) is not None
+        for name in ("lod_shared", "lod_district_dir", "district_router")
+    )
+    if has_lod and (rec.get("lod_active_districts", 0) <= 0 or rec.get("pov_layers_eval", 0) <= 0):
+        raise RuntimeError(f"missing V8 GTALOD/POV telemetry: {rec}")
+
+
+def _require_nll_telemetry(args: argparse.Namespace, rec: dict, teacher: bool = False) -> None:
+    if rec.get("eval_pos", 0) <= 0 or "mean_nll" not in rec:
+        raise RuntimeError(f"missing positive NLL telemetry: {rec}")
+    if teacher and "kl_t_to_s" not in rec:
+        raise RuntimeError(f"missing teacher-KL telemetry: {rec}")
+    _require_v8_telemetry(args, rec)
+
+
 def _base_cmd(args: argparse.Namespace) -> List[str]:
     cmd = [
         str(args.run31b),
@@ -232,18 +297,27 @@ def _base_cmd(args: argparse.Namespace) -> List[str]:
         "--kv-quant",
         args.kv_quant,
     ]
-    if args.c8d is not None and args.c8d.is_file():
-        cmd.extend(["--cuneiform-bank", str(args.c8d)])
-    if args.so is not None and args.so.is_file():
-        cmd.extend(["--so", str(args.so)])
+    # Explicit artifacts are contracts, not optional hints. Silently dropping a
+    # missing sidecar would mislabel a degraded run as a complete V8 proof.
+    for flag, path in (("--cuneiform-bank", args.c8d), ("--so", args.so)):
+        if path is not None:
+            if not path.is_file():
+                raise FileNotFoundError(f"explicit {flag} artifact missing: {path}")
+            cmd.extend([flag, str(path)])
     lod_shared = getattr(args, "lod_shared", None)
-    if lod_shared is not None and lod_shared.is_file():
+    if lod_shared is not None:
+        if not lod_shared.is_file():
+            raise FileNotFoundError(f"explicit --lod-shared artifact missing: {lod_shared}")
         cmd.extend(["--lod-shared", str(lod_shared)])
     lod_district_dir = getattr(args, "lod_district_dir", None)
     if lod_district_dir is not None and str(lod_district_dir):
+        if not lod_district_dir.is_dir():
+            raise FileNotFoundError(f"explicit --lod-district-dir missing: {lod_district_dir}")
         cmd.extend(["--lod-district-dir", str(lod_district_dir)])
     district_router = getattr(args, "district_router", None)
-    if district_router is not None and district_router.is_file():
+    if district_router is not None:
+        if not district_router.is_file():
+            raise FileNotFoundError(f"explicit --district-router artifact missing: {district_router}")
         cmd.extend(["--district-router", str(district_router)])
     if getattr(args, "player_pov_6sense", False):
         cmd.append("--player-pov-6sense")
@@ -259,7 +333,13 @@ def run_nll_pareto(args: argparse.Namespace, out_dir: Path) -> List[dict]:
         raise ValueError(f"Unsupported nll_format: {nll_format}")
     top_ps = [float(x) for x in args.top_ps.split(",")]
     mod_ths = [float(x) for x in args.mod_thresholds.split(",")]
-    configs: List[Tuple[str, Optional[float], float]] = [("dense", None, 0.0)]
+    has_lod = any(
+        getattr(args, name, None) is not None
+        for name in ("lod_shared", "lod_district_dir", "district_router")
+    )
+    # With V8 flags, the first lane is V8 base+LOD without CRTR/MoD, not the
+    # original dense V4.3 model. Keep that distinction explicit in the receipt.
+    configs: List[Tuple[str, Optional[float], float]] = [("v8_base_no_crtr_mod" if has_lod else "dense", None, 0.0)]
     if args.router is not None:
         for tp in top_ps:
             for mt in mod_ths:
@@ -277,15 +357,13 @@ def run_nll_pareto(args: argparse.Namespace, out_dir: Path) -> List[dict]:
 
             if nll_format == "raw":
                 cmd = _base_cmd(args) + ["--eval-nll", "--raw-prompt", "--prompt-text", combined_txt] + router_flags
-                if args.teacher_logits is not None and args.teacher_logits.is_file():
+                if args.teacher_logits is not None:
                     cmd.extend(["--eval-teacher-logits", str(args.teacher_logits)])
                 rec = parse_run31b_telemetry(_run_cmd(cmd, lfp))
+                _require_nll_telemetry(args, rec, teacher=args.teacher_logits is not None)
+                rec["ppl"] = math.exp(min(rec["mean_nll"], 80.0))
                 rec["nll_format"] = "raw"
             else:
-                if args.teacher_logits is not None and args.teacher_logits.is_file():
-                    raise ValueError(
-                        "--nll-format chat runs 3 separate turns; pass --teacher-logits as a directory containing <passage_name>.lgt1"
-                    )
                 sub_rows: List[dict] = []
                 tot_pos = 0
                 tot_tok = 0
@@ -308,11 +386,11 @@ def run_nll_pareto(args: argparse.Namespace, out_dir: Path) -> List[dict]:
                         "--prompt-text",
                         chat_prompt,
                     ] + router_flags
-                    if args.teacher_logits is not None and args.teacher_logits.is_dir():
+                    if args.teacher_logits is not None:
                         cand_lgt = args.teacher_logits / f"{p_name}.lgt1"
-                        if cand_lgt.is_file():
-                            cmd.extend(["--eval-teacher-logits", str(cand_lgt)])
+                        cmd.extend(["--eval-teacher-logits", str(cand_lgt)])
                     sr = parse_run31b_telemetry(_run_cmd(cmd, lfp))
+                    _require_nll_telemetry(args, sr, teacher=args.teacher_logits is not None)
                     sr["passage"] = p_name
                     sub_rows.append(sr)
                     ep = int(sr.get("eval_pos", 0))
@@ -349,7 +427,11 @@ def run_nll_pareto(args: argparse.Namespace, out_dir: Path) -> List[dict]:
                     rec["teacher_top5_agree"] = round(w_a5 / kl_pos, 4)
                     rec["teacher_nll"] = round(t_nll_agg, 5)
                     rec["teacher_ppl"] = round(math.exp(min(t_nll_agg, 80.0)), 3)
-                for extra_k in ("gate_saved_pct", "mod_skipped_pct", "vm_hwm_kb", "vm_rss_kb"):
+                for extra_k in (
+                    "gate_saved_pct", "mod_skipped_pct", "vm_hwm_kb", "vm_rss_kb",
+                    "lod_active_districts", "lod_total_districts", "district_dram_saved_pct",
+                    "pov_layers_eval", "pov_mean_consensus", "pov_clean", "pov_caution", "pov_rescue",
+                ):
                     vals = [float(r[extra_k]) for r in sub_rows if extra_k in r]
                     if vals:
                         rec[extra_k] = round(max(vals) if "vm_" in extra_k else sum(vals) / len(vals), 2)
@@ -384,12 +466,30 @@ def run_battery(args: argparse.Namespace, out_dir: Path) -> List[dict]:
                     cmd.extend(["--mod-thresh", f"{args.battery_mod_thresh:.3f}"])
             out = _run_cmd(cmd, lfp)
             rec = parse_run31b_telemetry(out)
+            _require_v8_telemetry(args, rec)
             gtxt = str(rec.get("gen_text", ""))
             rec["tag"] = tag
             rec["prompt"] = prompt
             rec["passed"] = bool(checker(gtxt))
             rows.append(rec)
     return rows
+
+
+def _require_spec_telemetry(args: argparse.Namespace, rec: dict) -> None:
+    _require_v8_telemetry(args, rec)
+    if not isinstance(rec.get("gen_text"), str) or not rec["gen_text"].strip():
+        raise RuntimeError(f"missing non-empty GEN31B text in spec lane: {rec}")
+    if rec.get("spec_generated", 0) <= 0 or "accept_rate" not in rec or rec.get("s_per_tok", 0.0) <= 0.0:
+        raise RuntimeError(f"incomplete SPEC31B telemetry: {rec}")
+
+
+def _generated_text_parity(rows: List[dict]) -> bool:
+    if len(rows) != 2:
+        raise RuntimeError(f"spec parity requires exactly two lanes, got {len(rows)}")
+    texts = [row.get("gen_text") for row in rows]
+    if any(not isinstance(text, str) or not text.strip() for text in texts):
+        raise RuntimeError("spec parity is undefined when either GEN31B text is missing or empty")
+    return texts[0] == texts[1]
 
 
 def run_spec_ab(args: argparse.Namespace, out_dir: Path) -> List[dict]:
@@ -421,13 +521,18 @@ def run_spec_ab(args: argparse.Namespace, out_dir: Path) -> List[dict]:
                 cmd.extend(["--spec-byte-head", str(bh_p)])
             out = _run_cmd(cmd, lfp)
             rec = parse_run31b_telemetry(out)
+            _require_spec_telemetry(args, rec)
             rec["variant"] = label
             rows.append(rec)
+    parity = _generated_text_parity(rows)
+    for row in rows:
+        row["generated_text_parity"] = parity
+    print(f"SPEC_AB_GENERATED_TEXT_PARITY: {'PASS' if parity else 'FAIL'}", flush=True)
     return rows
 
 
 def _run_selftest() -> int:
-    """Mandatory 6-gate fail-closed self-test without requiring large model weights."""
+    """Mandatory 10-gate fail-closed self-test without requiring large model weights."""
     failures = 0
 
     def gate(name: str, ok: bool, detail: str = "") -> None:
@@ -536,7 +641,162 @@ def _run_selftest() -> int:
         reloaded = json.loads(rp.read_text(encoding="utf-8"))
         gate("Gate 6: JSON artifact serialization roundtrip", reloaded["selftest"]["vm_rss_kb"] == 4750000)
 
-    print(f"SKEPTIC_PROOF_SELFTEST: {6 - failures}/6 gates passed", flush=True)
+    # Gate 7: Explicit sidecars must never disappear silently from run31b commands
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        ns = argparse.Namespace(
+            run31b=root / "run31b",
+            t16c=root / "model.t16c",
+            config=root / "config.json",
+            tokenizer=root / "tokenizer.json",
+            threads=4,
+            kv_quant="glyph",
+            c8d=None,
+            so=None,
+            lod_shared=None,
+            lod_district_dir=None,
+            district_router=None,
+            player_pov_6sense=False,
+        )
+        rejected = 0
+        for attr, value in (
+            ("c8d", root / "missing.c8d"),
+            ("so", root / "missing.so"),
+            ("lod_shared", root / "missing_shared.t16c"),
+            ("lod_district_dir", root / "missing_districts"),
+            ("district_router", root / "missing.drtr"),
+        ):
+            setattr(ns, attr, value)
+            try:
+                _base_cmd(ns)
+            except FileNotFoundError:
+                rejected += 1
+            setattr(ns, attr, None)
+        present = root / "present.drtr"
+        present.write_bytes(b"test")
+        ns.district_router = present
+        ns.player_pov_6sense = True
+        cmd = _base_cmd(ns)
+        gate(
+            "Gate 7: Explicit V8 sidecars fail closed and remain visible in commands",
+            rejected == 5 and "--district-router" in cmd and "--player-pov-6sense" in cmd,
+            f"missing_artifacts_rejected={rejected}/5",
+        )
+
+    # Gate 8: Selected modes and teacher inputs are complete before execution
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for name in ("run31b", "model.t16c", "config.json", "tokenizer.json"):
+            (root / name).write_bytes(b"test")
+        ns = argparse.Namespace(
+            run31b=root / "run31b",
+            t16c=root / "model.t16c",
+            config=root / "config.json",
+            tokenizer=root / "tokenizer.json",
+            mode="battery",
+            c8d=None,
+            so=None,
+            router=None,
+            lod_shared=None,
+            lod_district_dir=None,
+            district_router=None,
+            assistant_v6=None,
+            assistant_v7_body=None,
+            byte_head=None,
+            image=None,
+            teacher_logits=None,
+            nll_format="chat",
+        )
+        valid_minimal = False
+        try:
+            validate_args(ns)
+            valid_minimal = True
+        except Exception:
+            pass
+        rejected_all = False
+        ns.mode = "all"
+        try:
+            validate_args(ns)
+        except FileNotFoundError:
+            rejected_all = True
+        ns.mode = "battery"
+        teacher_dir = root / "teacher"
+        teacher_dir.mkdir()
+        (teacher_dir / f"{HELDOUT_NLL_PASSAGES[0][0]}.lgt1").write_bytes(b"test")
+        ns.teacher_logits = teacher_dir
+        rejected_partial_teacher = False
+        try:
+            validate_args(ns)
+        except FileNotFoundError:
+            rejected_partial_teacher = True
+        gate(
+            "Gate 8: Mode and teacher preflight rejects incomplete experiments",
+            valid_minimal and rejected_all and rejected_partial_teacher,
+            f"minimal={valid_minimal} all={rejected_all} partial_teacher={rejected_partial_teacher}",
+        )
+
+        # Gate 9: Missing NLL/KL/V8 telemetry cannot produce a complete report
+        ns.teacher_logits = None
+        ns.lod_shared = None
+        valid_rec = {"eval_pos": 10, "mean_nll": 2.0}
+        checks = 0
+        try:
+            _require_nll_telemetry(ns, valid_rec)
+            checks += 1
+        except RuntimeError:
+            pass
+        for rec, teacher in (({"eval_pos": 10}, False), (valid_rec, True)):
+            try:
+                _require_nll_telemetry(ns, rec, teacher=teacher)
+            except RuntimeError:
+                checks += 1
+        ns.lod_shared = root / "shared.t16c"
+        try:
+            _require_nll_telemetry(ns, valid_rec)
+        except RuntimeError:
+            checks += 1
+        try:
+            _require_nll_telemetry(
+                ns,
+                {**valid_rec, "lod_active_districts": 12, "pov_layers_eval": 60},
+            )
+            checks += 1
+        except RuntimeError:
+            pass
+        gate("Gate 9: NLL, teacher-KL, and V8 telemetry fail closed", checks == 5, f"checks={checks}/5")
+
+        # Gate 10: Empty spec lanes can never compare equal or emit complete evidence
+        ns.lod_shared = None
+        good_spec = {
+            "gen_text": "deterministic answer",
+            "spec_generated": 8,
+            "accept_rate": 0.75,
+            "s_per_tok": 0.5,
+        }
+        spec_checks = 0
+        try:
+            _require_spec_telemetry(ns, good_spec)
+            spec_checks += 1
+        except RuntimeError:
+            pass
+        for bad in (
+            {},
+            {"gen_text": ""},
+            {"gen_text": "answer", "spec_generated": 0, "accept_rate": 0.0, "s_per_tok": 0.5},
+        ):
+            try:
+                _require_spec_telemetry(ns, bad)
+            except RuntimeError:
+                spec_checks += 1
+        try:
+            _generated_text_parity([{}, {}])
+        except RuntimeError:
+            spec_checks += 1
+        spec_checks += int(_generated_text_parity([good_spec, good_spec]))
+        spec_checks += int(not _generated_text_parity([good_spec, {**good_spec, "gen_text": "different"}]))
+        gate("Gate 10: Spec generation and text parity fail closed", spec_checks == 7, f"checks={spec_checks}/7")
+
+    print(f"SKEPTIC_PROOF_SELFTEST: {10 - failures}/10 gates passed", flush=True)
     return 1 if failures else 0
 
 
@@ -576,6 +836,7 @@ def main() -> int:
     args = ap.parse_args()
 
     assert_holdouts_disjoint()
+    validate_args(args)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     report: Dict[str, object] = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mode": args.mode}
 
@@ -585,14 +846,17 @@ def main() -> int:
         bat = run_battery(args, args.out_dir)
         passed = sum(1 for r in bat if r["passed"])
         report["battery"] = {"passed": passed, "total": len(bat), "rows": bat}
-    if args.mode in ("vision", "all") and args.image is not None and args.image.is_file():
+    if args.mode in ("vision", "all"):
         cmd = _base_cmd(args) + ["--image", str(args.image), "--prompt-text", "Describe what you see in this image in one clear sentence.", "--max-tokens", "32", "--lmhead-cs", args.lmhead_cs]
         v_out = _run_cmd(cmd)
         (args.out_dir / "vision.log").write_text(v_out, encoding="utf-8")
-        report["vision"] = parse_run31b_telemetry(v_out)
-    if args.mode in ("spec-ab", "all") and args.assistant_v6 and args.assistant_v7_body and args.byte_head:
+        vision_rec = parse_run31b_telemetry(v_out)
+        _require_v8_telemetry(args, vision_rec)
+        report["vision"] = vision_rec
+    if args.mode in ("spec-ab", "all"):
         report["spec_ab"] = run_spec_ab(args, args.out_dir)
 
+    report["complete"] = True
     out_json = args.out_dir / "skeptic_proof_report.json"
     out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"[DONE] Wrote {out_json}")
