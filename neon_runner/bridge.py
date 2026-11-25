@@ -710,6 +710,8 @@ class NeonRunnerBridgeV2:
         so_path: Optional[str] = None,
         verify_size_law: bool = True,
     ):
+        self._memmap: Optional[np.memmap] = None
+        self._mmap_ptr: int = 0
         self.accelerator = NeonStreamAccelerator(so_path=so_path, auto_build=True)
         if not self.accelerator.self_test():
             raise RuntimeError(f"Native Neon-Runner library failed self-test: {self.accelerator.so_path}")
@@ -718,8 +720,6 @@ class NeonRunnerBridgeV2:
         self.layout_path: Optional[str] = layout_path or os.environ.get("LANGU_LAYOUT_PATH")
         self.layout: Dict[str, Any] = {}
         self.projections_by_key: Dict[str, Dict[str, Any]] = {}
-        self._memmap: Optional[np.memmap] = None
-        self._mmap_ptr: int = 0
         self.header: Optional[StreamHeaderV2] = None
 
         if self.layout_path:

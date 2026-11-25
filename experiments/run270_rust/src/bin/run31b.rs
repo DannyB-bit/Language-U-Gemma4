@@ -790,6 +790,22 @@ fn parse_lmhead_cs_mode(s: &str) -> Result<Option<f32>, String> {
     Err(format!("invalid --lmhead-cs '{s}' (expected off|exact|sieve[:frac])"))
 }
 
+fn effective_pov_mod_thresh(base: f32, adaptive: Option<f32>, dynamic: bool) -> f32 {
+    if dynamic {
+        adaptive.unwrap_or(base).clamp(0.0, base)
+    } else {
+        base
+    }
+}
+
+fn apply_pov_draft_cap(budget: usize, enabled: bool, cap: usize) -> usize {
+    if enabled {
+        budget.min(cap.max(1))
+    } else {
+        budget
+    }
+}
+
 fn parse_mod_thresh(s: &str) -> Result<f32, String> {
     let v: f32 = s.parse().map_err(|_| format!("invalid --mod-thresh '{s}'"))?;
     if !v.is_finite() || !(0.0..1.0).contains(&v) {
@@ -1187,6 +1203,11 @@ struct Runtime31B {
     lod_district_mats: Vec<HashMap<String, run270_rust::t16c::T16CMat>>,
     district_router: Option<DistrictRouterBank>,
     player_pov_6sense: bool,
+    // POV target controls are causal for ordinary decode. Speculative batches
+    // freeze target-side adaptations and only use POV as a draft-length cap.
+    pov_target_dynamic: bool,
+    pov_base_draft_k: usize,
+    pov_draft_cap: usize,
     pov_consensus_sum: f64,
     pov_layers_evaluated: u64,
     pov_clean_layers: u64,
@@ -1623,6 +1644,8 @@ impl Runtime31B {
         let lod_district_mats = &self.lod_district_mats;
         let district_router = &self.district_router;
         let player_pov_6sense = self.player_pov_6sense;
+        let pov_target_dynamic = self.pov_target_dynamic;
+        let pov_base_draft_k = self.pov_base_draft_k;
         let all_pinned = t16c_mats.is_some();
         let native_t16c = &self.native_t16c;
         let hybrid_pinned = &self.hybrid_pinned;
@@ -1667,6 +1690,7 @@ impl Runtime31B {
         let mut pov_clean_step = 0u64;
         let mut pov_caution_step = 0u64;
         let mut pov_rescue_step = 0u64;
+        let mut pov_draft_cap_step = usize::MAX;
         let mut lod_active_d_step = 0u64;
         let mut lod_total_d_step = 0u64;
         let mut prof_attn_step = 0.0f64;
@@ -1955,7 +1979,48 @@ impl Runtime31B {
                 // KV-Safe V7.0 MoD Residual Highway (Option 1): on eligible sliding middle layers, skip
                 // q_proj, attention_decode, o_proj, and 100% of MLP (~90.8% of layer DRAM/compute), while
                 // refreshing k_proj/v_proj so all 60 layers remain KV-contiguous for truncate_kv & spec rollback.
-                let mod_eligible = mod_thresh > 0.0
+                // Compute POV before the MoD branch so adaptive_mod_q is live
+                // even on layers that may be skipped. The same decision is
+                // reused below for CRTR and GTA-LOD; never evaluate it twice.
+                let need_6sense = player_pov_6sense
+                    || district_router.as_ref().is_some_and(|dr| dr.sense_dim > 0);
+                let pov_s32_opt = if need_6sense {
+                    let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
+                    let s32 = extract_6sense_pov_features(&inp, seq_len, d, 64)?;
+                    if let Some(t0) = tr0 {
+                        prof_router_step += t0.elapsed().as_secs_f64();
+                    }
+                    Some(s32)
+                } else {
+                    None
+                };
+                let base_top_k_l = district_router.as_ref().map_or(2usize, |dr| dr.base_top_k.max(1));
+                let pov_decision_opt = pov_s32_opt.as_ref().map(|s32| {
+                    let dec = evaluate_6sense_consensus_gate(
+                        s32,
+                        0.72,
+                        0.48,
+                        base_top_k_l,
+                        if mlp_top_p < 0.9999 { mlp_top_p } else { 0.30 },
+                        mod_thresh,
+                        pov_base_draft_k,
+                    );
+                    pov_layers_step += 1;
+                    pov_consensus_step += dec.consensus_score as f64;
+                    pov_draft_cap_step = pov_draft_cap_step.min(dec.dyn_draft_k.max(1));
+                    match dec.mode {
+                        ConsensusMode::Clean => pov_clean_step += 1,
+                        ConsensusMode::Caution => pov_caution_step += 1,
+                        ConsensusMode::Rescue => pov_rescue_step += 1,
+                    }
+                    dec
+                });
+                let eff_mod_thresh = effective_pov_mod_thresh(
+                    mod_thresh,
+                    pov_decision_opt.as_ref().map(|dec| dec.adaptive_mod_q),
+                    player_pov_6sense && pov_target_dynamic,
+                );
+                let mod_eligible = eff_mod_thresh > 0.0
                     && !is_full
                     && l >= 4
                     && l + 4 < cfg.n_layers
@@ -1973,7 +2038,7 @@ impl Runtime31B {
                     if let Some(t0) = tr0 {
                         prof_router_step += t0.elapsed().as_secs_f64();
                     }
-                    exec_prob < mod_thresh
+                    exec_prob < eff_mod_thresh
                 } else {
                     false
                 };
@@ -2423,39 +2488,7 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let need_6sense = player_pov_6sense
-                    || district_router.as_ref().is_some_and(|dr| dr.sense_dim > 0);
-                let pov_s32_opt = if need_6sense {
-                    let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                    let s32 = extract_6sense_pov_features(&inp, seq_len, d, 64)?;
-                    if let Some(t0) = tr0 {
-                        prof_router_step += t0.elapsed().as_secs_f64();
-                    }
-                    Some(s32)
-                } else {
-                    None
-                };
-                let base_top_k_l = district_router.as_ref().map_or(2usize, |dr| dr.base_top_k.max(1));
-                let pov_decision_opt = pov_s32_opt.as_ref().map(|s32| {
-                    let dec = evaluate_6sense_consensus_gate(
-                        s32,
-                        0.72,
-                        0.48,
-                        base_top_k_l,
-                        if mlp_top_p < 0.9999 { mlp_top_p } else { 0.30 },
-                        mod_thresh,
-                        4,
-                    );
-                    pov_layers_step += 1;
-                    pov_consensus_step += dec.consensus_score as f64;
-                    match dec.mode {
-                        ConsensusMode::Clean => pov_clean_step += 1,
-                        ConsensusMode::Caution => pov_caution_step += 1,
-                        ConsensusMode::Rescue => pov_rescue_step += 1,
-                    }
-                    dec
-                });
-                let eff_mlp_top_p = if player_pov_6sense && mlp_top_p < 0.9999 {
+                let eff_mlp_top_p = if player_pov_6sense && pov_target_dynamic && mlp_top_p < 0.9999 {
                     pov_decision_opt
                         .as_ref()
                         .map_or(mlp_top_p, |dec| dec.adaptive_crtr_top_p)
@@ -2541,10 +2574,14 @@ impl Runtime31B {
                 let down: Vec<f32> = if let Some((sh_gate, sh_up, sh_down)) = gta_lod_shared_l {
                     let ff = cfg.ff;
                     let n_dist_shards = lod_district_mats.len();
-                    let active_top_k = pov_decision_opt
-                        .as_ref()
-                        .map_or(base_top_k_l, |dec| dec.dyn_top_k)
-                        .clamp(1, n_dist_shards.max(1));
+                    let active_top_k = if pov_target_dynamic {
+                        pov_decision_opt
+                            .as_ref()
+                            .map_or(base_top_k_l, |dec| dec.dyn_top_k)
+                    } else {
+                        base_top_k_l
+                    }
+                    .clamp(1, n_dist_shards.max(1));
                     let (sh_slice, active_d_slices): ((usize, usize), Vec<(usize, (usize, usize))>) =
                         if let Some(ref dr) = *district_router {
                             let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
@@ -3177,6 +3214,10 @@ impl Runtime31B {
         self.pov_clean_layers += pov_clean_step;
         self.pov_caution_layers += pov_caution_step;
         self.pov_rescue_layers += pov_rescue_step;
+        if pov_layers_step > 0 {
+            // The most conservative layer sets the next speculative draft cap.
+            self.pov_draft_cap = pov_draft_cap_step.max(1);
+        }
         self.lod_active_districts_sum += lod_active_d_step;
         self.lod_total_districts_sum += lod_total_d_step;
         if profile_components {
@@ -3429,6 +3470,9 @@ fn load_runtime_31b(
             lod_district_mats: Vec::new(),
             district_router: None,
             player_pov_6sense: false,
+            pov_target_dynamic: true,
+            pov_base_draft_k: 4,
+            pov_draft_cap: 4,
             pov_consensus_sum: 0.0,
             pov_layers_evaluated: 0,
             pov_clean_layers: 0,
@@ -3633,6 +3677,9 @@ fn load_runtime_31b_t16c(
             lod_district_mats: Vec::new(),
             district_router: None,
             player_pov_6sense: false,
+            pov_target_dynamic: true,
+            pov_base_draft_k: 4,
+            pov_draft_cap: 4,
             pov_consensus_sum: 0.0,
             pov_layers_evaluated: 0,
             pov_clean_layers: 0,
@@ -4538,6 +4585,15 @@ fn run() -> Result<(), String> {
         eprintln!("[run31b] enabled KV-Safe V7.0 MoD residual highway: thresh={mod_thresh:.3}");
     }
     rt.profile_components = profile_components;
+    rt.pov_base_draft_k = (batch_k - 1).max(1);
+    rt.pov_draft_cap = rt.pov_base_draft_k;
+    rt.pov_target_dynamic = !speculative;
+    if rt.player_pov_6sense && speculative {
+        eprintln!(
+            "[run31b] speculative POV safety: target mod/top-p/top-k adaptations frozen; dyn_draft_k=cap base_k={}",
+            rt.pov_base_draft_k
+        );
+    }
     if let (Some(ab), Some(ref nat)) = (andvcnt_bits, rt.native_t16c.as_ref()) {
         if let Some(active) = nat.set_andvcnt_abits(ab) {
             eprintln!("[run31b] configured Row-Major AND+VCNT activation bits = {active}");
@@ -5189,11 +5245,18 @@ fn run() -> Result<(), String> {
                 }
             }
 
-            let draft_budget = if tri_modal_gate {
+            let mut draft_budget = if tri_modal_gate {
                 ctrl.current_k().min(tri_draft_cap).min(rem.saturating_sub(1))
             } else {
                 ctrl.current_k().min(rem.saturating_sub(1))
             };
+            // POV is only a performance-side cap here. It never changes the
+            // EWMA controller state or the KV rollback boundary.
+            draft_budget = apply_pov_draft_cap(
+                draft_budget,
+                rt.player_pov_6sense,
+                rt.pov_draft_cap,
+            );
             let drafts = if draft_budget > 0 {
                 let seed_first = ngram.propose_sequence(&history, draft_budget);
                 if !seed_first.is_empty() {
@@ -5793,6 +5856,18 @@ mod tests {
         assert!(parse_layer_spec("5-60", 60).is_err());
         assert!(parse_layer_spec("10-5", 60).is_err());
         assert!(parse_layer_spec("6..6", 60).is_err());
+    }
+
+    #[test]
+    fn pov_controls_are_bounded_and_frozen_for_speculative_targets() {
+        assert!((effective_pov_mod_thresh(0.35, Some(0.21), true) - 0.21).abs() < 1e-6);
+        assert!((effective_pov_mod_thresh(0.35, Some(0.21), false) - 0.35).abs() < 1e-6);
+        assert!((effective_pov_mod_thresh(0.35, Some(0.80), true) - 0.35).abs() < 1e-6);
+        assert!((effective_pov_mod_thresh(0.35, Some(-1.0), true)).abs() < 1e-6);
+        assert_eq!(apply_pov_draft_cap(4, true, 2), 2);
+        assert_eq!(apply_pov_draft_cap(4, true, 0), 1);
+        assert_eq!(apply_pov_draft_cap(4, false, 1), 4);
+        assert_eq!(apply_pov_draft_cap(1, true, 4), 1);
     }
 
     #[test]

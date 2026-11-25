@@ -156,7 +156,17 @@ All active source files, Colab/Kaggle calibration runners, reference drafts, and
 - **Git Branches Synced:** All receipts, calibration scripts, and evaluator enhancements merged and pushed to both `v5-qat-dev` and `main` branches on GitHub (`https://github.com/DannyB-bit/Language-U-Gemma4`).
 - **Pi 4 Environment:** Native ARM64 binary `/home/astronautshe/gemma4_verify/experiments/run270_rust/target/release/run31b` compiled and passing `93/93` tests. Evaluation suite `eval_v6_1_skeptic_proof.py` synced and passing `6/6` fail-closed selftest gates on physical Raspberry Pi 4 silicon (`192.168.1.207`).
 
-### Step 12: NEON `COLBLOCK` Strip-Mining & `V9.2-CliffFix-VLM` Zero-Colab Pi 4 Proof (`2026-11-25`) — COMPLETE
-- **NEON `COLBLOCK` Fix ([neon_stream_accelerator_v2.c](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/neon_runner/neon_stream_accelerator_v2.c)):** Added two-regime L1D strip-mining in `gemm_bitserial_tile16_sparse_batch` (`-27.2%` `k=1` / `-41.4%` `k=16` on `21504x5376 2b_gauss`, `-34.2%` `k=1` on `5376x21504 3b`, matching `TileMajor` `0.881x–0.992x`). Passed Pi 4 `neon_test_v2` Gates `A..P` + Windows/Pi 4 `100/100` Rust `--release` tests.
+### Step 12: V8.0 Final Verification Gate — CODE CLOSED, PI EVIDENCE PENDING (`2026-11-24`)
+- [x] Clarified that V8.0 `COMPLETED_AND_SEALED` proves GPU artifact production, not Pi 4 execution.
+- [x] Wired previously dead `adaptive_mod_q` and minimum-layer `dyn_draft_k` controls in `run31b`; preserved KV rollback and froze target-side POV adaptations for speculative batches.
+- [x] Added streamed SHA-256 preflight for all 22 runtime/spec artifacts, fail-closed evaluator mode/artifact/telemetry checks, and explicit spec-AB generated-text parity evidence.
+- [x] Added `experiments/run270_rust/V8_ENDGAME.md` with the exact Pi smoke, full battery, independent dense baseline, and acceptance contract.
+- [x] Lenovo Tab M8 / Android / aarch64 verification: 94/94 Rust tests, 10/10 evaluator gates, and 22-file artifact corruption/missing-file self-tests pass.
+- [ ] Run the V8.0 Pi 4 smoke and full evaluation; commit the actual logs/report. Do not mark V8.0 Pi-verified until this box has a reproducible receipt.
+- [ ] Generate matching V8.0 teacher `.lgt1` logits before making any V8.0 teacher-KL claim.
+- [ ] Run a separate sequential-vs-speculative token-ID parity test; spec-AB text parity alone is not that proof.
+
+### Step 13: NEON `COLBLOCK` Strip-Mining & `V9.2-CliffFix-VLM` Zero-Colab Pi 4 Proof (`2026-11-25`) — COMPLETE
+- **NEON `COLBLOCK` Fix ([neon_stream_accelerator_v2.c](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/neon_runner/neon_stream_accelerator_v2.c)):** Added two-regime L1D strip-mining in `gemm_bitserial_tile16_sparse_batch` (`-27.2%` `k=1` / `-41.4%` `k=16` on `21504x5376 2b_gauss`, `-34.2%` `k=1` on `5376x21504 3b`, matching `TileMajor` `0.881x–0.992x`). Passed Pi 4 `neon_test_v2` Gates `A..P` + Windows/Pi 4 Rust `--release` tests.
 - **`V9.2-CliffFix-VLM` Build & Physical Pi 4 Proof ([V9_2_CLIFF_FIX_VLM_REPORT.md](file:///C:/Gemma-4-LanguageU-EXP/Language-U-Gemma4/experiments/run270_rust/benchmarks/v9_2_final_proof/V9_2_CLIFF_FIX_VLM_REPORT.md)):** Upgraded the empirically pinpointed cliff MLPs (`9, 34, 38, 40, 43, 44, 45, 46, 48, 49, 50, 51` + `L53.down_proj`) to `2b_gauss` (`6,852,147,072 B` = `6.3816 GiB`, `L59 cos_t2=0.92792`, `CRTR` `0.69978` + `HeadRouter` `0.75849` + `C8DB` `9.09 MB`). On physical Pi 4 (`--andvcnt-bits 6 --lmhead-cs exact`, `ssd_read_bytes=0`): **`dense_fp8` `nll=7.68050` (`kl_t2s=4.80107`)**, **`dense_glyph-lod` `nll=7.69618` (`kl_t2s=4.82309`)**, **`8/15`** deterministic battery (`2.768 s/tok` dense / **`2.541 s/tok`** sparse `crtr80_hr85` with `18.12%` gate block skip), COCO Vision **`"A motorcycle is parked on a grassy area.<turn|>"`** (`vm_hwm_kb=6,953,508`, `3.47x` GlyphLod), and bit-exact `Assistant-V7 BHDR` speculative parity (`4/4`). Merged and pushed cleanly to `v5-qat-dev` and `main`.
 

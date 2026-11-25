@@ -6183,9 +6183,15 @@ NEON_API int gemm_bitserial_tile16_sparse_batch(
                         continue;
                     }
                 }
-                const uint8_t* bptr = tptr + (size_t)blk * tile_blk_bytes;
+                const uint8_t* bptr = is_colblock
+                    ? (packed + ((size_t)blk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                    : (tptr + (size_t)blk * tile_blk_bytes);
                 if (ai + 2 < n_active_blks) {
-                    neon_prefetch(tptr + (size_t)active_blks[ai + 2] * tile_blk_bytes);
+                    const int nblk = active_blks[ai + 2];
+                    const uint8_t* nptr = is_colblock
+                        ? (packed + ((size_t)nblk * (size_t)n_tiles + (size_t)t) * tile_blk_bytes)
+                        : (tptr + (size_t)nblk * tile_blk_bytes);
+                    neon_prefetch(nptr);
                 }
                 float sc_arr[16];
                 for (int r = 0; r < 16; r++) sc_arr[r] = fp16_to_fp32(read_u16_le(bptr + (size_t)r * 2));
@@ -7422,9 +7428,12 @@ static int gate_e_test_config(
                 ? (x_needs_dual_plane(x, d_in, k_tokens) ? 12 : 24)
                 : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4));
 #else
+        const int eff_b = n_bits & 0x1F;
         const int kc_exp = ((n_bits & T16C_ROWMAJOR_BIT) != 0)
             ? 24
-            : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4);
+            : ((eff_b == 5)
+                ? 8
+                : ((eff_b == 8) ? 4 : (x_needs_dual_plane(x, d_in, k_tokens) ? 2 : 4)));
 #endif
         int64_t exp_skips = (int64_t)((k_tokens + kc_exp - 1) / kc_exp) * (int64_t)n_tiles * (int64_t)n_blks;
         if (rc_skip != 0 || skipped != exp_skips) ok = 0;

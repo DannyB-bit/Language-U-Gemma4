@@ -179,6 +179,7 @@ Language-U-Gemma4/
 │   │   ├── calib/                    # Parameterized T16C V3/V4/V4.2/V4.3 VLM & GPU calibration scripts (270M + 31B + bench_cs_lmhead.c)
 │   │   ├── evidence/                 # Raw Pi 4, Colab L4 262K/270K V4.3 VLM & Windows logs, /proc IO proofs, 23-config Pareto JSONs
 │   │   ├── RECEIPTS.md               # Exactness & parity ledger (run270 + OPT4 boundary)
+│   │   ├── V8_ENDGAME.md              # Fail-closed V8 artifact preflight + exact Pi 4 final verification contract
 │   │   └── FRONTIER_RECEIPTS.md      # 23-config Pareto, run31b QAT/packed92, T16C V3/V4.2/V4.3 VLM, GlyphKV 128K, Optical DMA & Vision receipts
 │   ├── native_language/              # C++17 closed-grammar compiler, LUJ1 glyph_bridge.cpp, GBF1 BF16 Zstd compiler
 │   ├── gemma270_luj/                 # Q14-norms LUJ storage & HF Transformers parity gate
