@@ -156,7 +156,7 @@ def cmd_pull_to_pi4(folder_id: str, ssh_key: Path, pi4_host: str, pi4_dir: str, 
         dst_local = RECEIPTS_DIR / meta_name
         if dst_local.exists():
             dst_local.unlink()
-        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--destination", str(RECEIPTS_DIR)], check=True)
+        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--out", str(dst_local)], check=True)
         subprocess.run(
             ["scp", "-i", str(ssh_key), "-o", "StrictHostKeyChecking=no", str(dst_local), f"{pi4_host}:{pi4_dir}/{meta_name}"],
             check=True,
@@ -173,7 +173,7 @@ def cmd_pull_to_pi4(folder_id: str, ssh_key: Path, pi4_host: str, pi4_dir: str, 
         if local_f.exists():
             local_f.unlink()
         print(f"[PULL 1/3] Downloading {fname} ({fid}) from Drive...", flush=True)
-        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--destination", str(staging_dir)], check=True)
+        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--out", str(local_f)], check=True)
         got_sha = sha256_file(local_f)
         if fname in expected_sha and got_sha != expected_sha[fname]:
             local_f.unlink(missing_ok=True)
