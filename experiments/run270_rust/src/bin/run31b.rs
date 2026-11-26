@@ -7,6 +7,7 @@
 //!   - Configurable embedding/LM-head residency (`stream` ~44 MB scratch, `bf16` 2.82 GB, or
 //!     `q4`/`q6`/`q8` sub-byte packed via `run270_rust::packed::PackedMatrix`).
 
+use run270_rust::alu::evaluate_alu_annotations;
 use run270_rust::assistant::AssistantRuntime;
 use run270_rust::byte_head::BpePrefixTrie;
 use run270_rust::codec::{bf16_to_f32, f32_to_bf16};
@@ -22,8 +23,8 @@ use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_con
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
 use run270_rust::speculative::{
-    argmax_f32, verify_greedy_draft_batch, verify_greedy_tree_batch, AdaptiveDraftController,
-    FastNGramProposalEngine, SpecTreeBuilder,
+    argmax_f32, prompt_suffix_lookup, verify_greedy_draft_batch, verify_greedy_tree_batch,
+    AdaptiveDraftController, FastNGramProposalEngine, SpecTreeBuilder,
 };
 use run270_rust::t16c::T16CLoadPolicy;
 use run270_rust::tokenizer::Tokenizer;
@@ -3374,6 +3375,70 @@ impl Runtime31B {
         }
         Ok(logits)
     }
+
+    /// Zero-RAM Target-Embed Sharing head for `Assistant-V10` (`has_lm_head == false && byte_head == None`).
+    /// Applies host `final_norm` to `next_backbone_h`, runs fast Cauchy-Schwarz LM-head projection on the
+    /// already-resident 31B `embed_tokens`, applies logit softcapping, masks bans, and returns top-`want_k`.
+    fn score_shared_lm_head_top_k(
+        &self,
+        next_backbone_h: &[f32],
+        want_k: usize,
+        sieve_frac: f32,
+        ban_tokens: &[u32],
+    ) -> Result<(Vec<(u32, f32)>, i64), String> {
+        let d = self.cfg.d;
+        if next_backbone_h.len() != d {
+            return Err(format!("score_shared_lm_head_top_k: hidden len {} != d {d}", next_backbone_h.len()));
+        }
+        let fn_gain = self.norm("model.language_model.norm.weight")?;
+        let hidden = rmsn_raw(next_backbone_h, Some(fn_gain), self.cfg.eps);
+        let k_req = want_k.max(1);
+        let (mut logits, skipped) = match &self.embed {
+            Embed31B::T16C { mat, native } => {
+                if let Some(norms) = self.embed_tile_norms.as_deref() {
+                    let sf = sieve_frac.max(0.02);
+                    mat.project_lmhead_cs(
+                        &hidden,
+                        1,
+                        native.as_deref(),
+                        self.threads,
+                        Some(norms),
+                        k_req.max(16),
+                        sf,
+                    )?
+                } else {
+                    (mat.project_batch(&hidden, 1, native.as_deref(), self.threads)?, 0)
+                }
+            }
+            Embed31B::Packed(pm) => (pm.matvec(&hidden, self.threads)?, 0),
+            Embed31B::ResidentBf16(tbl) => (dot_bf16_rows(tbl, d, self.cfg.vocab, &hidden, self.threads), 0),
+            Embed31B::Streamed => {
+                return Err("Assistant Target-Embed Sharing requires resident --t16c or packed/bf16 embed".into());
+            }
+        };
+        if let Some(cap) = self.cfg.final_softcap {
+            for v in &mut logits {
+                *v = (*v / cap).tanh() * cap;
+            }
+        }
+        for &tid in ban_tokens {
+            let u = tid as usize;
+            if u < logits.len() {
+                logits[u] = -1.0e9;
+            }
+        }
+        let mut best: Vec<(u32, f32)> = Vec::with_capacity(k_req);
+        for (i, &v) in logits.iter().enumerate() {
+            if best.len() < k_req {
+                best.push((i as u32, v));
+                best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            } else if v > best[k_req - 1].1 {
+                best[k_req - 1] = (i as u32, v);
+                best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+            }
+        }
+        Ok((best, skipped))
+    }
 }
 
 fn load_runtime_31b(
@@ -4226,6 +4291,30 @@ fn run() -> Result<(), String> {
     let spec_seed_arg = get("--spec-seed");
     let spec_assistant_arg = get("--spec-assistant");
     let spec_byte_head_arg = get("--spec-byte-head");
+    let cortical_cascade_tau: Option<f32> = match get("--cortical-cascade") {
+        Some(s) => {
+            let v: f32 = s.parse().map_err(|_| format!("invalid --cortical-cascade '{s}'"))?;
+            if !v.is_finite() || v < 0.0 {
+                return Err(format!("--cortical-cascade tau must be >= 0.0, got {v}"));
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    let cascade_mlp_top_p: f32 = match get("--cascade-mlp-top-p") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --cascade-mlp-top-p '{s}'"))?,
+        None => 0.143,
+    };
+    let cascade_head_top_p: f32 = match get("--cascade-head-top-p") {
+        Some(s) => s.parse().map_err(|_| format!("invalid --cascade-head-top-p '{s}'"))?,
+        None => 0.25,
+    };
+    let cascade_mod_thresh: f32 = match get("--cascade-mod-thresh") {
+        Some(s) => parse_mod_thresh(&s)?,
+        None => 0.55,
+    };
+    let cascade_mod_zero_kv = args.iter().any(|a| a == "--cascade-mod-zero-kv") || cortical_cascade_tau.is_some();
+    let general_alu = args.iter().any(|a| a == "--general-alu");
     let spec_tree_nodes: Option<usize> = match get("--spec-tree") {
         Some(s) => {
             let n: usize = s.parse().map_err(|_| format!("invalid --spec-tree '{s}'"))?;
@@ -4234,7 +4323,7 @@ fn run() -> Result<(), String> {
             }
             Some(n)
         }
-        None => None,
+        None => if cortical_cascade_tau.is_some() { Some(16) } else { None },
     };
     let spec_tree_depth: usize = match get("--spec-tree-depth") {
         Some(s) => {
@@ -4244,7 +4333,7 @@ fn run() -> Result<(), String> {
             }
             d
         }
-        None => 5,
+        None => if cortical_cascade_tau.is_some() { 10 } else { 5 },
     };
     let pin_lod_districts: usize = match get("--pin-lod-districts") {
         Some(s) => s.parse().map_err(|_| format!("invalid --pin-lod-districts '{s}'"))?,
@@ -4322,8 +4411,11 @@ fn run() -> Result<(), String> {
         Some(s) => parse_lmhead_cs_mode(&s)?,
         None => Some(0.0),
     };
-    if (spec_seed_arg.is_some() || spec_assistant_arg.is_some() || spec_tree_nodes.is_some()) && !speculative {
-        return Err("--spec-seed, --spec-assistant, and --spec-tree require --speculative".into());
+    if (spec_seed_arg.is_some() || spec_assistant_arg.is_some() || spec_tree_nodes.is_some() || cortical_cascade_tau.is_some()) && !speculative {
+        return Err("--spec-seed, --spec-assistant, --spec-tree, and --cortical-cascade require --speculative".into());
+    }
+    if cortical_cascade_tau.is_some() && cortical_router_arg.is_none() {
+        return Err("--cortical-cascade requires --cortical-router for Tier-2 fast verification".into());
     }
     if spec_byte_head_arg.is_some() && (!speculative || spec_assistant_arg.is_none()) {
         return Err("--spec-byte-head requires --speculative and --spec-assistant".into());
@@ -4638,12 +4730,13 @@ fn run() -> Result<(), String> {
         }
         let (sl_l, fl_l) = rt.assistant_kv_layers()?;
         eprintln!(
-            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} byte_head={} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
+            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} byte_head={} target_shared_head={} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
             ap,
             ast.cfg.n_layers,
             ast.cfg.d,
             ast.resident_bytes() as f64 / (1024.0 * 1024.0),
             ast.has_byte_head(),
+            ast.uses_target_shared_head(),
         );
         Some((ast, sl_l, fl_l))
     } else {
@@ -5070,6 +5163,8 @@ fn run() -> Result<(), String> {
         let mut spec_fallback_k1 = 0usize;
         let mut spec_margin_stopped = 0usize;
         let mut ast_lm_skipped_blocks = 0u64;
+        let mut cascade_tier2_accepted = 0usize;
+        let mut cascade_tier3_rescues = 0usize;
         let vocab = rt.cfg.vocab;
         let d_hidden = rt.cfg.d;
 
@@ -5098,17 +5193,20 @@ fn run() -> Result<(), String> {
                 let tree_opt: Option<SpecTreeBuilder> = if max_depth_step == 0 || eff_tree_cap <= 1 {
                     None
                 } else {
-                    let ngram_hint = ngram.propose_sequence(&history, max_depth_step);
+                    let suffix_hint = prompt_suffix_lookup(&history, 2, max_depth_step);
+                    let ngram_branches = ngram.propose_multi_branches(&history, max_depth_step, 2);
+                    let ngram_hint = ngram_branches.first().map(|v| v.as_slice()).unwrap_or(&[]);
                     if let Some((ref ast, sl_l, fl_l)) = assistant_state {
                         let max_tt = cur_kv_len.saturating_sub(1);
-                        let (tree_b, m_stop, ast_sk) = ast.draft_tree_with_attend(
+                        let (mut tree_b, m_stop, ast_sk) = ast.draft_tree_with_target_head(
                             y0,
                             |tok| rt.embed_token_ro(tok),
                             &last_backbone_h,
                             cur_kv_len,
                             max_depth_step,
                             eff_tree_cap,
-                            &ngram_hint,
+                            ngram_hint,
+                            &suffix_hint,
                             &eos,
                             closed_thought_bans,
                             assistant_min_margin,
@@ -5146,15 +5244,31 @@ fn run() -> Result<(), String> {
                                     ))
                                 }
                             },
+                            |_h_final, next_bh, _prev_tok, want_k, bans| {
+                                rt.score_shared_lm_head_top_k(
+                                    next_bh,
+                                    want_k,
+                                    lmhead_cs_sieve.unwrap_or(0.035),
+                                    bans,
+                                )
+                            },
                         )?;
+                        for alt_seq in ngram_branches.iter().skip(1) {
+                            tree_b.graft_sequence_with_margin(alt_seq, &eos, 4.0);
+                        }
                         spec_margin_stopped += m_stop;
                         if ast_sk > 0 {
                             ast_lm_skipped_blocks += ast_sk as u64;
                         }
                         if tree_b.nodes.len() > 1 { Some(tree_b) } else { None }
-                    } else if !ngram_hint.is_empty() {
+                    } else if !suffix_hint.is_empty() || !ngram_branches.is_empty() {
                         let mut tb = SpecTreeBuilder::new(y0, eff_tree_cap);
-                        tb.graft_sequence(&ngram_hint, &eos);
+                        if !suffix_hint.is_empty() {
+                            tb.graft_sequence_with_margin(&suffix_hint, &eos, 12.0);
+                        }
+                        for br in &ngram_branches {
+                            tb.graft_sequence_with_margin(br, &eos, 5.0);
+                        }
                         if tb.nodes.len() > 1 { Some(tb) } else { None }
                     } else {
                         None
@@ -5169,6 +5283,155 @@ fn run() -> Result<(), String> {
                     let max_d = tree_depths.iter().copied().max().unwrap_or(1).max(1);
                     spec_batches += 1;
                     spec_drafted += max_d;
+
+                    if let Some(tau) = cortical_cascade_tau {
+                        let orig_mlp = rt.mlp_top_p;
+                        let orig_head = rt.attn_head_top_p;
+                        let orig_mod = rt.mod_thresh;
+                        let orig_mod_z = rt.mod_zero_kv;
+                        let orig_sieve = rt.lmhead_cs_sieve;
+
+                        rt.mlp_top_p = cascade_mlp_top_p;
+                        if rt.head_router.is_some() {
+                            rt.attn_head_top_p = cascade_head_top_p;
+                        }
+                        if rt.cortical_router.as_ref().is_some_and(|c| c.has_mod_gate()) {
+                            rt.mod_thresh = cascade_mod_thresh;
+                            rt.mod_zero_kv = cascade_mod_zero_kv;
+                        }
+                        rt.lmhead_cs_sieve = Some(orig_sieve.unwrap_or(0.035).max(0.035));
+
+                        let t2_res = (|| -> Result<(Vec<f32>, Vec<f32>), String> {
+                            let hb = rt.forward_batch_tree(&batch_ids, cur_kv_len, &tree_depths, &ancestor_masks)?;
+                            let mut seed_row_ids = vec![-1i32; n_nodes];
+                            for p_idx in 0..n_nodes {
+                                if let Some(child) = tree_b.nodes.iter().skip(p_idx + 1).find(|c| c.parent == p_idx as i32) {
+                                    seed_row_ids[p_idx] = child.token_id as i32;
+                                }
+                            }
+                            let lb = rt.compute_logits_batch_seeded(&hb, n_nodes, Some(&seed_row_ids))?;
+                            Ok((hb, lb))
+                        })();
+
+                        rt.mlp_top_p = orig_mlp;
+                        rt.attn_head_top_p = orig_head;
+                        rt.mod_thresh = orig_mod;
+                        rt.mod_zero_kv = orig_mod_z;
+                        rt.lmhead_cs_sieve = orig_sieve;
+
+                        let (h_batch, mut l_batch) = t2_res?;
+                        let mut accepted_drafts: Vec<u32> = Vec::with_capacity(max_d);
+                        let mut accepted_slots: Vec<usize> = Vec::with_capacity(1 + max_d);
+                        accepted_slots.push(0);
+                        let mut cur_slot = 0usize;
+                        let mut sim_gen = generated.clone();
+                        let mut hit_stop = false;
+                        let final_tok: u32;
+                        let final_margin: f32;
+
+                        loop {
+                            let sl = &mut l_batch[cur_slot * vocab..(cur_slot + 1) * vocab];
+                            apply_degeneracy_guard(sl, &ids, &sim_gen);
+                            let mut best_i = 0u32;
+                            let mut best_v = f32::NEG_INFINITY;
+                            let mut sec_v = f32::NEG_INFINITY;
+                            for (idx_l, &val_l) in sl.iter().enumerate() {
+                                if val_l > best_v {
+                                    sec_v = best_v;
+                                    best_v = val_l;
+                                    best_i = idx_l as u32;
+                                } else if val_l > sec_v {
+                                    sec_v = val_l;
+                                }
+                            }
+                            let margin = (best_v - sec_v).max(0.0);
+                            let matched_child = tree_b
+                                .nodes
+                                .iter()
+                                .enumerate()
+                                .skip(cur_slot + 1)
+                                .find(|&(_, n)| n.parent == cur_slot as i32 && n.token_id == best_i)
+                                .map(|(idx, _)| idx);
+
+                            if let Some(cslot) = matched_child {
+                                accepted_drafts.push(best_i);
+                                accepted_slots.push(cslot);
+                                sim_gen.push(best_i);
+                                if eos.contains(&best_i) || accepted_drafts.len() >= rem {
+                                    hit_stop = true;
+                                    final_tok = best_i;
+                                    final_margin = margin;
+                                    break;
+                                }
+                                cur_slot = cslot;
+                            } else {
+                                final_tok = best_i;
+                                final_margin = margin;
+                                break;
+                            }
+                        }
+
+                        let acc = accepted_drafts.len();
+                        spec_accepted += acc;
+                        cascade_tier2_accepted += acc;
+                        ctrl.observe(acc, max_d);
+                        rt.commit_tree_slots(cur_kv_len, &accepted_slots)?;
+                        for &tok in &accepted_drafts {
+                            let s_idx = generated.len();
+                            generated.push(tok);
+                            ngram.observe_transition(&history, tok);
+                            history.push(tok);
+                            println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
+                        }
+                        let last_slot = *accepted_slots.last().unwrap_or(&0);
+                        let mut next_pending: Option<u32>;
+                        if hit_stop {
+                            last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
+                            next_pending = None;
+                        } else if final_margin >= tau {
+                            last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
+                            next_pending = Some(final_tok);
+                        } else {
+                            // Tier-3 Exact Dense 60/60 Rescue on uncertain fork node
+                            let rescue_tok = tree_b.nodes[last_slot].token_id;
+                            let rescue_pos = cur_kv_len + accepted_slots.len() - 1;
+                            rt.truncate_kv(rescue_pos)?;
+                            rt.mlp_top_p = 1.0;
+                            rt.attn_head_top_p = 1.0;
+                            rt.mod_thresh = 0.0;
+                            rt.mod_zero_kv = false;
+                            rt.lmhead_cs_sieve = None;
+                            let dense_res = (|| -> Result<(Vec<f32>, Vec<f32>), String> {
+                                let hd = rt.forward_batch(&[rescue_tok], rescue_pos, false)?;
+                                let ld = rt.compute_logits_batch_mode(&hd, 1, false)?;
+                                Ok((hd, ld))
+                            })();
+                            rt.mlp_top_p = orig_mlp;
+                            rt.attn_head_top_p = orig_head;
+                            rt.mod_thresh = orig_mod;
+                            rt.mod_zero_kv = orig_mod_z;
+                            rt.lmhead_cs_sieve = orig_sieve;
+                            let (h_dense, mut l_dense) = dense_res?;
+                            apply_degeneracy_guard(&mut l_dense, &ids, &generated);
+                            last_backbone_h = h_dense;
+                            next_pending = Some(argmax_f32(&l_dense));
+                            cascade_tier3_rescues += 1;
+                        }
+                        pending = next_pending;
+                        eprintln!(
+                            "[run31b] cascade batch={} nodes={} max_d={} accepted={} (+1={}) rescues={} ewma={:.2} in {:.2}s vm={:?}",
+                            spec_batches,
+                            n_nodes,
+                            max_d,
+                            acc,
+                            acc + 1,
+                            cascade_tier3_rescues,
+                            ctrl.acceptance_ewma(),
+                            td.elapsed().as_secs_f64(),
+                            proc_status_kb()
+                        );
+                        continue;
+                    }
 
                     let h_batch = rt.forward_batch_tree(&batch_ids, cur_kv_len, &tree_depths, &ancestor_masks)?;
                     let mut seed_row_ids = vec![-1i32; n_nodes];
@@ -5437,6 +5700,13 @@ fn run() -> Result<(), String> {
             "SPEC31B max_batch_k={batch_k} ngram={spec_ngram} min_count={spec_min_count} seed_entries={seed_entries} assistant_mb={ast_mb:.2} byte_head={ast_bh} step_pos={assistant_step_pos} min_margin={assistant_min_margin:.2} margin_stopped={spec_margin_stopped} ast_lm_skipped={ast_lm_skipped_blocks} drafted={spec_drafted} accepted={spec_accepted} batches={spec_batches} fallback_k1={spec_fallback_k1} accept_rate={accept_rate:.3} generated={} s_per_tok={eff_s_tok:.3}",
             generated.len()
         );
+        if let Some(tau) = cortical_cascade_tau {
+            let tok_s = if eff_s_tok > 0.0 { 1.0 / eff_s_tok } else { 0.0 };
+            println!(
+                "CASCADE31B tau={tau:.2} tier2_accepted={cascade_tier2_accepted} tier3_rescues={cascade_tier3_rescues} tok_per_s={tok_s:.2} ms_per_tok={:.1}",
+                eff_s_tok * 1000.0
+            );
+        }
     } else {
         let mut logits = prefill_logits;
         for step in 0..max_tokens {
@@ -5497,7 +5767,13 @@ fn run() -> Result<(), String> {
         );
     }
     println!("GEN31B ids={generated:?}");
-    println!("GEN31B text={:?}", tk.decode(&generated));
+    let gen_text = tk.decode(&generated);
+    println!("GEN31B text={gen_text:?}");
+    if general_alu {
+        if let Some(alu_ans) = evaluate_alu_annotations(&gen_text) {
+            println!("ALU31B expr_result={alu_ans:?}");
+        }
+    }
     print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, prefill_s, decode_s);
     }
     Ok(())

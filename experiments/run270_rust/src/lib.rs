@@ -1,3 +1,4 @@
+pub mod alu;
 pub mod assistant;
 pub mod byte_head;
 pub mod codec;

@@ -314,9 +314,9 @@ impl AssistantRuntime {
             }
             None => None,
         };
-        if !cfg.has_lm_head && byte_head.is_none() {
+        if !cfg.has_lm_head && byte_head.is_none() && target_vocab == 0 {
             return Err(format!(
-                "assistant {} lacks model.embed_tokens.weight; provide --spec-byte-head <file.bhdr>",
+                "assistant {} lacks model.embed_tokens.weight; provide --spec-byte-head <file.bhdr> or enable target-embed sharing (target_vocab > 0)",
                 path.display()
             ));
         }
@@ -353,6 +353,11 @@ impl AssistantRuntime {
     /// Whether this runtime uses a byte-head micro-decoder instead of the 262K LM head.
     pub fn has_byte_head(&self) -> bool {
         self.byte_head.is_some()
+    }
+
+    /// Whether this runtime shares the host 31B `embed_tokens` table (0 MB extra LM-head RAM).
+    pub fn uses_target_shared_head(&self) -> bool {
+        !self.cfg.has_lm_head && self.byte_head.is_none()
     }
 
     /// Total compressed weight + norm + cached CS norm (+ optional byte head/trie) bytes resident.
@@ -546,17 +551,15 @@ impl AssistantRuntime {
         Ok((h_final, next_backbone))
     }
 
-    /// Draft an EAGLE-3 speculative prefix tree (`SpecTreeBuilder`) of up to `max_nodes` nodes
-    /// using direct zero-copy cross-attention (`attend_fn`), fusing:
-    /// - Primary autoregressive rollout (`depth = 1..max_depth`),
-    /// - Top-K `BHDR` / LM-head beam side-branches at early depths (`depth = 1, 2`), plus 1-step
-    ///   autoregressive continuation on the strongest depth-1 alternate branch,
-    /// - Optional zero-cost `CNGM` / online-suffix sequence grafted into the same prefix tree!
+    /// Draft an EAGLE-3 speculative prefix tree (`SpecTreeBuilder`) supporting ALL THREE heads:
+    /// 1) `BHDR` compact byte-head micro-decoder (`self.byte_head`),
+    /// 2) Assistant's own quantized `model.embed_tokens.weight` (`has_lm_head`), or
+    /// 3) Zero-RAM Target-Embed Sharing via `shared_score_fn(h_final, next_backbone, prev_tok, want_k, bans)`.
     #[allow(clippy::too_many_arguments)]
     pub fn draft_tree_with_attend<F, A>(
         &self,
         first_tok: u32,
-        mut embed_fn: F,
+        embed_fn: F,
         first_backbone_h: &[f32],
         start_q_pos: usize,
         max_depth: usize,
@@ -566,15 +569,62 @@ impl AssistantRuntime {
         ban_tokens: &[u32],
         min_logit_margin: f32,
         lmhead_cs_sieve: Option<f32>,
-        mut attend_fn: A,
+        attend_fn: A,
     ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
     where
         F: FnMut(u32) -> Result<Vec<f32>, String>,
         A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
     {
+        self.draft_tree_with_target_head(
+            first_tok,
+            embed_fn,
+            first_backbone_h,
+            start_q_pos,
+            max_depth,
+            max_nodes,
+            ngram_hint,
+            &[],
+            eos,
+            ban_tokens,
+            min_logit_margin,
+            lmhead_cs_sieve,
+            attend_fn,
+            |_h_final, _next_bh, _prev_tok, _want_k, _bans| {
+                Err("assistant has no byte_head, no embed_tokens, and no shared_score_fn".into())
+            },
+        )
+    }
+
+    /// Unified EAGLE-3 tree drafter supporting Tier-0 suffix hints + Target-Embed Sharing (`0 MB` extra head RAM).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_tree_with_target_head<F, A, S>(
+        &self,
+        first_tok: u32,
+        mut embed_fn: F,
+        first_backbone_h: &[f32],
+        start_q_pos: usize,
+        max_depth: usize,
+        max_nodes: usize,
+        ngram_hint: &[u32],
+        suffix_hint: &[u32],
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+        mut attend_fn: A,
+        mut shared_score_fn: S,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+        S: FnMut(&[f32], &[f32], u32, usize, &[u32]) -> Result<(Vec<(u32, f32)>, i64), String>,
+    {
         let mut tree = crate::speculative::SpecTreeBuilder::new(first_tok, max_nodes);
+        if !suffix_hint.is_empty() {
+            tree.graft_sequence_with_margin(suffix_hint, eos, 12.0);
+        }
         if !ngram_hint.is_empty() {
-            tree.graft_sequence(ngram_hint, eos);
+            tree.graft_sequence_with_margin(ngram_hint, eos, 5.0);
         }
         let mut cur_slot = 0usize;
         let mut cur_tok = first_tok;
@@ -583,10 +633,11 @@ impl AssistantRuntime {
         let mut total_skipped = 0i64;
         let mut alt_branch_root: Option<(usize, u32, Vec<f32>)> = None;
 
-        let predict_top_cands = |h_final: &[f32],
-                                 prev_tok: u32,
-                                 want_k: usize,
-                                 tot_sk: &mut i64|
+        let mut predict_top_cands = |h_final: &[f32],
+                                     next_bh: &[f32],
+                                     prev_tok: u32,
+                                     want_k: usize,
+                                     tot_sk: &mut i64|
          -> Result<Vec<(u32, f32)>, String> {
             let mut effective_bans = ban_tokens.to_vec();
             if !ban_tokens.is_empty() && !(236770..=236820).contains(&prev_tok) && !effective_bans.contains(&prev_tok) {
@@ -594,10 +645,7 @@ impl AssistantRuntime {
             }
             if let Some((ref bh, ref trie)) = self.byte_head {
                 bh.decode_top_k_tokens(h_final, trie, &effective_bans, want_k.max(4), want_k)
-            } else {
-                if !self.cfg.has_lm_head {
-                    return Err("draft_tree_with_attend requires byte_head or assistant embed_tokens".into());
-                }
+            } else if self.cfg.has_lm_head {
                 let native = self.model.native.as_ref();
                 let (mut logits, sk) = if let Some(sf) = lmhead_cs_sieve {
                     self.model.mat("model.embed_tokens.weight")?.project_lmhead_cs(
@@ -633,6 +681,10 @@ impl AssistantRuntime {
                     }
                 }
                 Ok(best)
+            } else {
+                let (cands, sk) = shared_score_fn(h_final, next_bh, prev_tok, want_k, &effective_bans)?;
+                *tot_sk += sk;
+                Ok(cands)
             }
         };
 
@@ -651,19 +703,23 @@ impl AssistantRuntime {
             } else {
                 1
             };
-            let cands = predict_top_cands(&h_final, cur_tok, branch_k, &mut total_skipped)?;
+            let cands = predict_top_cands(&h_final, &next_h, cur_tok, branch_k, &mut total_skipped)?;
             if cands.is_empty() {
                 break;
             }
             let (top1_tok, top1_v) = cands[0];
             let top2_v = cands.get(1).map_or(top1_v - 30.0, |c| c.1);
-            if step >= 2 && min_logit_margin > 0.0 && (top1_v - top2_v) < min_logit_margin {
+            let step_margin = (top1_v - top2_v).max(0.0);
+            if step >= 2 && min_logit_margin > 0.0 && step_margin < min_logit_margin {
                 margin_stopped += 1;
                 break;
             }
             let Some(primary_slot) = tree.insert_child(cur_slot, top1_tok) else {
                 break;
             };
+            if step_margin > tree.slot_margin(primary_slot) {
+                tree.set_slot_margin(primary_slot, step_margin);
+            }
             // Attach high-likelihood sibling branches at early depths (`step <= 2`).
             for (ci, &(alt_tok, alt_lp)) in cands.iter().enumerate().skip(1) {
                 if top1_v - alt_lp <= 3.5 {
@@ -692,15 +748,19 @@ impl AssistantRuntime {
                 let q_pos = start_q_pos + sub_step;
                 let (h_final, next_h) =
                     self.forward_backbone_step_with_attend(&tok_emb, &alt_h, q_pos, &mut attend_fn)?;
-                let cands = predict_top_cands(&h_final, alt_tok, 2, &mut total_skipped)?;
+                let cands = predict_top_cands(&h_final, &next_h, alt_tok, 2, &mut total_skipped)?;
                 if cands.is_empty() {
                     break;
                 }
                 let (pred_tok, lp1) = cands[0];
+                let lp2 = cands.get(1).map_or(lp1 - 30.0, |c| c.1);
                 let Some(ns) = tree.insert_child(alt_slot, pred_tok) else {
                     break;
                 };
-                if let Some(&(alt2, lp2)) = cands.get(1) {
+                if (lp1 - lp2) > tree.slot_margin(ns) {
+                    tree.set_slot_margin(ns, (lp1 - lp2).max(0.0));
+                }
+                if let Some(&(alt2, _)) = cands.get(1) {
                     if sub_step == 1 && lp1 - lp2 <= 2.5 {
                         let _ = tree.insert_child(alt_slot, alt2);
                     }
@@ -1367,6 +1427,50 @@ mod tests {
         assert_eq!(skipped, 0);
         assert_eq!(m_stops, 0);
         assert_eq!(drafts, vec![77, 78]);
+
+        // Verify zero-RAM Target-Embed Sharing (`has_lm_head=false`, `byte_head=None`, `target_vocab > 0`)
+        let rt_shared = AssistantRuntime::load_31b_with_byte_head(
+            &tmp_t16c,
+            None,
+            None,
+            None,
+            true,
+            2,
+            n_kv_slide,
+            n_kv_full,
+            1024,
+            120,
+        )
+        .unwrap();
+        assert!(rt_shared.uses_target_shared_head());
+        let (tree_sh, _, _) = rt_shared
+            .draft_tree_with_target_head(
+                2,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                3,
+                3,
+                8,
+                &[],
+                &[],
+                &[1, 106],
+                &[100, 101],
+                0.0,
+                None,
+                |is_full, q, _qp| {
+                    let out_dim = if is_full { n_heads * hd_full } else { n_heads * hd_slide };
+                    let _ = q;
+                    Ok(vec![0.05f32; out_dim])
+                },
+                |_hf, next_bh, _prev, _wk, _bans| {
+                    assert_eq!(next_bh.len(), bh);
+                    Ok((vec![(42, 9.5), (43, 4.0)], 0))
+                },
+            )
+            .unwrap();
+        assert!(tree_sh.nodes.len() >= 2);
+        assert_eq!(tree_sh.nodes[1].token_id, 42);
+        assert!((tree_sh.slot_margin(1) - 5.5).abs() < 1e-4);
 
         let _ = std::fs::remove_file(&tmp_t16c);
         let _ = std::fs::remove_file(&tmp_bhdr);

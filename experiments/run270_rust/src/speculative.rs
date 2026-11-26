@@ -158,6 +158,45 @@ impl FastNGramProposalEngine {
         result
     }
 
+    /// Propose up to `max_branches` candidate continuation sequences (primary + alternate high-count branches).
+    pub fn propose_multi_branches(&self, prefix: &[u32], draft_len: usize, max_branches: usize) -> Vec<Vec<u32>> {
+        let mut out = Vec::new();
+        if draft_len == 0 || prefix.is_empty() || max_branches == 0 {
+            return out;
+        }
+        let primary = self.propose_sequence(prefix, draft_len);
+        if primary.is_empty() {
+            return out;
+        }
+        out.push(primary.clone());
+        if max_branches == 1 {
+            return out;
+        }
+        let max_ctx = self.max_context_len().min(prefix.len());
+        for ctx_len in (2..=max_ctx).rev() {
+            let key = &prefix[prefix.len() - ctx_len..];
+            if let Some(cands) = self.tables[ctx_len - 1].get(key) {
+                let mut sorted: Vec<(u32, u32, u64)> = cands.iter().copied().filter(|c| c.1 >= self.min_count).collect();
+                sorted.sort_unstable_by(|a, b| (b.1, b.2).cmp(&(a.1, a.2)));
+                for &(tok, _, _) in &sorted {
+                    if tok == primary[0] {
+                        continue;
+                    }
+                    let mut p_ext = prefix.to_vec();
+                    p_ext.push(tok);
+                    let mut seq = Vec::with_capacity(draft_len);
+                    seq.push(tok);
+                    seq.extend(self.propose_sequence(&p_ext, draft_len - 1));
+                    out.push(seq);
+                    if out.len() >= max_branches {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Return total stored `(context -> candidate)` transitions across all orders.
     pub fn entry_count(&self) -> usize {
         self.tables.iter().map(|t| t.values().map(|v| v.len()).sum::<usize>()).sum()
@@ -350,7 +389,10 @@ pub struct SpecTreeNode {
 /// and n-gram / suffix-table candidate sequences into a single batched target verification pass.
 #[derive(Debug, Clone)]
 pub struct SpecTreeBuilder {
+    /// Graft multiple candidate branches and record confidence margins cleanly.
+    /// Parallel vector `draft_margins[slot]` stores `(top1_logit - top2_logit)` from drafter (`100.0` for exact suffix lookup).
     pub nodes: Vec<SpecTreeNode>,
+    pub draft_margins: Vec<f32>,
     pub max_nodes: usize,
 }
 
@@ -358,13 +400,25 @@ impl SpecTreeBuilder {
     pub fn new(root_token: u32, max_nodes: usize) -> Self {
         let cap = max_nodes.clamp(1, 24);
         let mut nodes = Vec::with_capacity(cap);
+        let mut draft_margins = Vec::with_capacity(cap);
         nodes.push(SpecTreeNode {
             token_id: root_token,
             parent: -1,
             depth: 0,
             ancestor_mask: 1u32,
         });
-        Self { nodes, max_nodes: cap }
+        draft_margins.push(0.0);
+        Self { nodes, draft_margins, max_nodes: cap }
+    }
+
+    pub fn set_slot_margin(&mut self, slot: usize, margin: f32) {
+        if slot < self.draft_margins.len() {
+            self.draft_margins[slot] = margin;
+        }
+    }
+
+    pub fn slot_margin(&self, slot: usize) -> f32 {
+        self.draft_margins.get(slot).copied().unwrap_or(0.0)
     }
 
     /// Insert a child `token_id` under `parent_slot`, deduplicating if that exact child already exists.
@@ -389,11 +443,17 @@ impl SpecTreeBuilder {
             depth: p.depth + 1,
             ancestor_mask: p.ancestor_mask | (1u32 << idx),
         });
+        self.draft_margins.push(0.0);
         Some(idx)
     }
 
     /// Graft an entire candidate sequence `[d_1, d_2, ...]` starting under root `0`, stopping at `eos` or `max_nodes`.
     pub fn graft_sequence(&mut self, seq: &[u32], eos: &[u32]) -> usize {
+        self.graft_sequence_with_margin(seq, eos, 0.0)
+    }
+
+    /// Graft candidate sequence and tag inserted nodes with a drafter confidence margin (max-merged).
+    pub fn graft_sequence_with_margin(&mut self, seq: &[u32], eos: &[u32], margin: f32) -> usize {
         let mut cur = 0usize;
         let mut added = 0usize;
         for &tok in seq {
@@ -402,6 +462,9 @@ impl SpecTreeBuilder {
                 Some(next_slot) => {
                     if self.nodes.len() > prev_len {
                         added += 1;
+                    }
+                    if margin > self.slot_margin(next_slot) {
+                        self.set_slot_margin(next_slot, margin);
                     }
                     cur = next_slot;
                     if eos.contains(&tok) {
@@ -417,6 +480,33 @@ impl SpecTreeBuilder {
     pub fn depths_and_masks(&self) -> Vec<(usize, u32)> {
         self.nodes.iter().map(|n| (n.depth, n.ancestor_mask)).collect()
     }
+}
+
+/// Zero-DRAM O(1) longest-suffix matcher (PLD-style) over active token history.
+/// Searches backwards for the longest suffix match of length `2..=6` inside `history[..n-1]`
+/// and returns up to `max_draft` continuation tokens immediately following that match.
+pub fn prompt_suffix_lookup(history: &[u32], min_match: usize, max_draft: usize) -> Vec<u32> {
+    let n = history.len();
+    let min_m = min_match.max(2);
+    if max_draft == 0 || n < min_m + 1 {
+        return Vec::new();
+    }
+    let max_m = 6usize.min(n - 1);
+    for m in (min_m..=max_m).rev() {
+        let needle = &history[n - m..n];
+        // Scan backwards for most recent prior occurrence of `needle` with at least 1 follower token
+        let search_limit = n - m;
+        for pos in (0..search_limit).rev() {
+            if &history[pos..pos + m] == needle && pos + m < n - m {
+                let start = pos + m;
+                let end = (start + max_draft).min(n - m);
+                if end > start {
+                    return history[start..end].to_vec();
+                }
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Outcome of lossless greedy verification over a flat speculative prefix tree.
@@ -760,5 +850,24 @@ mod tests {
             vec![vec![], vec![21], vec![21, 22], vec![21, 22, 23]],
             "guard_fn must execute strictly along the winning ancestor path"
         );
+    }
+
+    #[test]
+    fn prompt_suffix_lookup_and_multi_branches_work() {
+        let hist = vec![10, 20, 30, 40, 50, 99, 20, 30, 40];
+        let hit = prompt_suffix_lookup(&hist, 3, 4);
+        assert_eq!(hit, vec![50, 99]);
+
+        let mut ngram = FastNGramProposalEngine::new(4);
+        ngram.train_tokens(&[1, 2, 3, 10, 11, 1, 2, 3, 10, 11, 1, 2, 3, 20, 21]);
+        let branches = ngram.propose_multi_branches(&[1, 2, 3], 2, 2);
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0], vec![10, 11]);
+        assert_eq!(branches[1], vec![20, 21]);
+
+        let mut tb = SpecTreeBuilder::new(9, 12);
+        tb.graft_sequence_with_margin(&hit, &[1], 88.0);
+        assert_eq!(tb.nodes.len(), 3);
+        assert!((tb.slot_margin(1) - 88.0).abs() < 1e-6);
     }
 }
