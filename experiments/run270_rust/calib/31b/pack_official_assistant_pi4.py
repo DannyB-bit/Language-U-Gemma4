@@ -21,26 +21,24 @@ if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
 import train_assistant_v7_byte_head as bhmod  # noqa: E402
+from pack_t16c_v3 import SafetensorsReader, _write_synthetic_safetensors  # noqa: E402
 
 
 def permute_assistant_safetensors(src_sf: Path, dst_sf: Path, perm_pi: np.ndarray, d_mod: int = 5376) -> None:
-    """Rewrite `pre_projection.weight` and `post_projection.weight` under `perm_pi` into `dst_sf`."""
-    from safetensors import safe_open
-    from safetensors.numpy import save_file
-
+    """Rewrite `pre_projection.weight` and `post_projection.weight` under `perm_pi` into F32 `dst_sf`."""
     p2 = np.concatenate([perm_pi, d_mod + perm_pi])
     tensors: Dict[str, np.ndarray] = {}
-    with safe_open(str(src_sf), framework="numpy") as sf:
-        for k in sf.keys():
-            if k == "model.embed_tokens.weight":
+    with SafetensorsReader(src_sf) as sr:
+        for k in sr.hdr.keys():
+            if k in ("__metadata__", "model.embed_tokens.weight"):
                 continue
-            arr = sf.get_tensor(k)
+            arr = sr.read_f32_tensor(k)
             if k == "pre_projection.weight" and arr.shape[1] == 2 * d_mod:
                 arr = np.ascontiguousarray(arr[:, p2])
             elif k == "post_projection.weight" and arr.shape[0] == d_mod:
                 arr = np.ascontiguousarray(arr[perm_pi, :])
             tensors[k] = arr
-    save_file(tensors, str(dst_sf))
+    _write_synthetic_safetensors(dst_sf, tensors)
 
 
 def run_selftest() -> int:
@@ -87,13 +85,12 @@ def run_selftest() -> int:
         permute_assistant_safetensors(src, perm_sf, perm, d_mod=d_mod)
         gate("Gate 2: Permuted Embed-Free Safetensors Created", perm_sf.is_file())
 
-        from safetensors import safe_open
-        with safe_open(str(perm_sf), framework="numpy") as sf:
-            keys = set(sf.keys())
+        with SafetensorsReader(perm_sf) as sr:
+            keys = {k for k in sr.hdr.keys() if k != "__metadata__"}
             x = rng.normal(0, 1.0, (2 * d_mod,)).astype(np.float32)
             p2 = np.concatenate([perm, d_mod + perm])
             y_orig = sd["post_projection.weight"] @ (sd["pre_projection.weight"] @ x)
-            y_perm = sf.get_tensor("post_projection.weight") @ (sf.get_tensor("pre_projection.weight") @ x[p2])
+            y_perm = sr.read_f32_tensor("post_projection.weight") @ (sr.read_f32_tensor("pre_projection.weight") @ x[p2])
             perm_err = float(np.max(np.abs(y_orig[perm] - y_perm)))
         gate("Gate 3: Perm-Pi Linear Equivariance & Embed Omitted", "model.embed_tokens.weight" not in keys and perm_err < 1e-5, f"err={perm_err:.2e}")
 
@@ -115,7 +112,6 @@ def run_selftest() -> int:
 def recover_perm_pi_from_t16c(target_t16c: Path, orig_safetensors: Path) -> np.ndarray:
     """Recover exact global coordinate permutation `perm_pi` from target `.t16c` norms vs `model.safetensors`."""
     import struct
-    from safetensors import safe_open
 
     need_keys = {f"model.language_model.layers.{l}.input_layernorm.weight" for l in range(60)}
     t16c_norms: Dict[str, np.ndarray] = {}
@@ -131,9 +127,14 @@ def recover_perm_pi_from_t16c(target_t16c: Path, orig_safetensors: Path) -> np.n
                 t16c_norms[name] = np.frombuffer(raw, dtype="<f4").copy()
 
     orig_norms: Dict[str, np.ndarray] = {}
-    with safe_open(str(orig_safetensors), framework="numpy") as sf:
-        for k in ("model.language_model.layers.0.input_layernorm.weight", "model.language_model.layers.1.input_layernorm.weight", "model.language_model.layers.2.input_layernorm.weight", "model.language_model.layers.59.input_layernorm.weight"):
-            orig_norms[k] = sf.get_tensor(k).astype(np.float32)
+    with SafetensorsReader(orig_safetensors) as sr:
+        for k in (
+            "model.language_model.layers.0.input_layernorm.weight",
+            "model.language_model.layers.1.input_layernorm.weight",
+            "model.language_model.layers.2.input_layernorm.weight",
+            "model.language_model.layers.59.input_layernorm.weight",
+        ):
+            orig_norms[k] = sr.read_f32_tensor(k)
 
     # Match 4-layer tuple keys for collision-free exact perm_pi recovery
     sig_orig: Dict[Tuple[int, int, int, int], List[int]] = {}

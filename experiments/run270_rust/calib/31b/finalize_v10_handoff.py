@@ -93,8 +93,16 @@ def _gdrive_bin() -> str:
     found = shutil.which("gdrive")
     if found:
         return found
+    if os.name == "nt":
+        cands = sorted(
+            Path(tempfile.gettempdir()).glob("agy-plugin-cli-*/gdrive.CMD"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if cands:
+            return str(cands[0])
     raise FileNotFoundError(
-        "gdrive not found on PATH; run `& \"C:\\Users\\freed\\.gemini\\config\\plugins\\gdrive\\skills\\gdrive\\scripts\\gdrive.cmd\" --version` once in the session first."
+        "gdrive not found on PATH; run `gdrive --version` once in the session first."
     )
 
 

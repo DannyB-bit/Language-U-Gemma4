@@ -765,7 +765,7 @@ def pack_assistant_body_from_safetensors(
     tmp_path = out_path.with_suffix(".t16c.tmp")
     try:
         with SafetensorsReader(safetensors_path) as sr, open(tmp_path, "wb") as fp:
-            norm_keys, all_mat_keys = pa.collect_assistant_keys(sr.hdr)
+            norm_keys, all_mat_keys = pa.collect_assistant_keys(sr.hdr, require_embed=False)
             mat_keys = [mk for mk in all_mat_keys if mk != "model.embed_tokens.weight"]
             fp.write(struct.pack("<4s5I", T16C_MAGIC, T16C_VERSION, ARCH_FLAGS, len(norm_keys), len(mat_keys), 0))
             pos = 24

@@ -330,7 +330,7 @@ def stream_write_assistant_t16c_mat(
     return pos + written
 
 
-def collect_assistant_keys(hdr: Dict[str, dict]) -> Tuple[List[str], List[str]]:
+def collect_assistant_keys(hdr: Dict[str, dict], require_embed: bool = True) -> Tuple[List[str], List[str]]:
     """Discover and validate all norm and linear matrix keys in `Gemma4AssistantForCausalLM`."""
     layer_indices = set()
     for k in hdr:
@@ -345,7 +345,9 @@ def collect_assistant_keys(hdr: Dict[str, dict]) -> Tuple[List[str], List[str]]:
         raise ValueError(f"Invalid assistant layer indices: {sorted(layer_indices)}")
 
     norm_keys = ["model.norm.weight"]
-    mat_keys = ["pre_projection.weight", "post_projection.weight", "model.embed_tokens.weight"]
+    mat_keys = ["pre_projection.weight", "post_projection.weight"]
+    if require_embed or "model.embed_tokens.weight" in hdr:
+        mat_keys.append("model.embed_tokens.weight")
     for l in range(n_layers):
         p = f"model.layers.{l}."
         norm_keys.extend(
