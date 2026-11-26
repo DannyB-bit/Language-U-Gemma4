@@ -600,6 +600,97 @@ impl AssistantRuntime {
     pub fn draft_tree_with_target_head<F, A, S>(
         &self,
         first_tok: u32,
+        embed_fn: F,
+        first_backbone_h: &[f32],
+        start_q_pos: usize,
+        max_depth: usize,
+        max_nodes: usize,
+        ngram_hint: &[u32],
+        suffix_hint: &[u32],
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+        attend_fn: A,
+        shared_score_fn: S,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+        S: FnMut(&[f32], &[f32], u32, usize, &[u32]) -> Result<(Vec<(u32, f32)>, i64), String>,
+    {
+        self.draft_tree_with_target_head_ext(
+            first_tok,
+            embed_fn,
+            first_backbone_h,
+            start_q_pos,
+            max_depth,
+            max_nodes,
+            ngram_hint,
+            suffix_hint,
+            eos,
+            ban_tokens,
+            min_logit_margin,
+            lmhead_cs_sieve,
+            attend_fn,
+            shared_score_fn,
+            |bh| Ok(bh.to_vec()),
+        )
+    }
+
+    /// Extended EAGLE-3 tree drafter normalizing projected `post_projection` hidden states (`rmsn(..., fn_gain)`)
+    /// at every step so multi-step rollouts match Stage 3B training and Target-Embed Sharing exactly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_tree_with_target_head_ext<F, A, S, N>(
+        &self,
+        first_tok: u32,
+        embed_fn: F,
+        first_backbone_h: &[f32],
+        start_q_pos: usize,
+        max_depth: usize,
+        max_nodes: usize,
+        ngram_hint: &[u32],
+        suffix_hint: &[u32],
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+        attend_fn: A,
+        shared_score_fn: S,
+        norm_bh_fn: N,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+        S: FnMut(&[f32], &[f32], u32, usize, &[u32]) -> Result<(Vec<(u32, f32)>, i64), String>,
+        N: FnMut(&[f32]) -> Result<Vec<f32>, String>,
+    {
+        let (tree, m_stop, skipped, _slot_bhs) = self.draft_tree_with_target_head_full(
+            first_tok,
+            embed_fn,
+            first_backbone_h,
+            start_q_pos,
+            max_depth,
+            max_nodes,
+            ngram_hint,
+            suffix_hint,
+            eos,
+            ban_tokens,
+            min_logit_margin,
+            lmhead_cs_sieve,
+            attend_fn,
+            shared_score_fn,
+            norm_bh_fn,
+        )?;
+        Ok((tree, m_stop, skipped))
+    }
+
+    /// Full EAGLE-3 tree drafter also returning normalized backbone hidden states per drafted slot
+    /// so Tier-1 Cortical Cascade can continue multi-step fast commits without re-running draft steps.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_tree_with_target_head_full<F, A, S, N>(
+        &self,
+        first_tok: u32,
         mut embed_fn: F,
         first_backbone_h: &[f32],
         start_q_pos: usize,
@@ -613,13 +704,16 @@ impl AssistantRuntime {
         lmhead_cs_sieve: Option<f32>,
         mut attend_fn: A,
         mut shared_score_fn: S,
-    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64), String>
+        mut norm_bh_fn: N,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64, Vec<Option<Vec<f32>>>), String>
     where
         F: FnMut(u32) -> Result<Vec<f32>, String>,
         A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
         S: FnMut(&[f32], &[f32], u32, usize, &[u32]) -> Result<(Vec<(u32, f32)>, i64), String>,
+        N: FnMut(&[f32]) -> Result<Vec<f32>, String>,
     {
         let mut tree = crate::speculative::SpecTreeBuilder::new(first_tok, max_nodes);
+        let mut slot_bhs: Vec<Option<Vec<f32>>> = vec![Some(first_backbone_h.to_vec())];
         if !suffix_hint.is_empty() {
             tree.graft_sequence_with_margin(suffix_hint, eos, 12.0);
         }
@@ -694,8 +788,6 @@ impl AssistantRuntime {
             }
             let tok_emb = embed_fn(cur_tok)?;
             let q_pos = start_q_pos + step;
-            let (h_final, next_h) =
-                self.forward_backbone_step_with_attend(&tok_emb, &cur_backbone, q_pos, &mut attend_fn)?;
             let branch_k = if step == 0 {
                 4
             } else if step <= 2 {
@@ -703,6 +795,9 @@ impl AssistantRuntime {
             } else {
                 1
             };
+            let (h_final, raw_next_h) =
+                self.forward_backbone_step_with_attend(&tok_emb, &cur_backbone, q_pos, &mut attend_fn)?;
+            let next_h = norm_bh_fn(&raw_next_h)?;
             let cands = predict_top_cands(&h_final, &next_h, cur_tok, branch_k, &mut total_skipped)?;
             if cands.is_empty() {
                 break;
@@ -717,11 +812,20 @@ impl AssistantRuntime {
             let Some(primary_slot) = tree.insert_child(cur_slot, top1_tok) else {
                 break;
             };
+            if slot_bhs.len() < tree.nodes.len() {
+                slot_bhs.resize_with(tree.nodes.len(), || None);
+            }
+            slot_bhs[primary_slot] = Some(next_h.clone());
             if step_margin > tree.slot_margin(primary_slot) {
                 tree.set_slot_margin(primary_slot, step_margin);
             }
+            // Reserve remaining capacity so depth-0/1 siblings never starve deeper chain drafts.
+            let min_rem_depth = max_depth.saturating_sub(step + 1).min(tree.max_nodes.saturating_sub(tree.nodes.len()));
             // Attach high-likelihood sibling branches at early depths (`step <= 2`).
             for (ci, &(alt_tok, alt_lp)) in cands.iter().enumerate().skip(1) {
+                if tree.max_nodes.saturating_sub(tree.nodes.len()) <= min_rem_depth {
+                    break;
+                }
                 if top1_v - alt_lp <= 3.5 {
                     if let Some(alt_slot) = tree.insert_child(cur_slot, alt_tok) {
                         if step == 0 && ci == 1 && !eos.contains(&alt_tok) {
@@ -746,8 +850,9 @@ impl AssistantRuntime {
                 }
                 let tok_emb = embed_fn(alt_tok)?;
                 let q_pos = start_q_pos + sub_step;
-                let (h_final, next_h) =
+                let (h_final, raw_alt_next_h) =
                     self.forward_backbone_step_with_attend(&tok_emb, &alt_h, q_pos, &mut attend_fn)?;
+                let next_h = norm_bh_fn(&raw_alt_next_h)?;
                 let cands = predict_top_cands(&h_final, &next_h, alt_tok, 2, &mut total_skipped)?;
                 if cands.is_empty() {
                     break;
@@ -773,8 +878,8 @@ impl AssistantRuntime {
                 alt_h = next_h;
             }
         }
-
-        Ok((tree, margin_stopped, total_skipped))
+        slot_bhs.resize_with(tree.nodes.len(), || None);
+        Ok((tree, margin_stopped, total_skipped, slot_bhs))
     }
 
     /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
@@ -1471,6 +1576,42 @@ mod tests {
         assert!(tree_sh.nodes.len() >= 2);
         assert_eq!(tree_sh.nodes[1].token_id, 42);
         assert!((tree_sh.slot_margin(1) - 5.5).abs() < 1e-4);
+
+        // Verify draft_tree_with_target_head_ext applies norm_bh_fn between steps and preserves depth when max_nodes=4
+        let mut norm_calls = 0usize;
+        let (tree_ext, _, _) = rt_shared
+            .draft_tree_with_target_head_ext(
+                2,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                3,
+                3,
+                4,
+                &[],
+                &[],
+                &[1, 106],
+                &[100, 101],
+                0.0,
+                None,
+                |is_full, q, _qp| {
+                    let out_dim = if is_full { n_heads * hd_full } else { n_heads * hd_slide };
+                    let _ = q;
+                    Ok(vec![0.05f32; out_dim])
+                },
+                |_hf, next_bh, _prev, _wk, _bans| {
+                    // norm_bh_fn scales vector by 2.0 before shared scoring
+                    assert_eq!(next_bh.len(), bh);
+                    Ok((vec![(42, 9.5), (43, 8.5), (44, 7.5)], 0))
+                },
+                |raw_bh| {
+                    norm_calls += 1;
+                    Ok(raw_bh.iter().map(|v| v * 0.5).collect())
+                },
+            )
+            .unwrap();
+        let max_ext_d = tree_ext.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
+        assert!(norm_calls >= 2, "expected intermediate norm_bh_fn calls >= 2, got {norm_calls}");
+        assert!(max_ext_d >= 2, "expected depth reservation >= 2 even with max_nodes=4, got {max_ext_d}");
 
         let _ = std::fs::remove_file(&tmp_t16c);
         let _ = std::fs::remove_file(&tmp_bhdr);

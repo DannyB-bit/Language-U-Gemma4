@@ -1257,32 +1257,38 @@ struct Runtime31B {
     kv: Vec<LayerKv>,
     glyph_kv: Vec<Option<GlyphKvLayer>>,
     ephemeral_tree_kv: Vec<(Vec<f32>, Vec<f32>)>,
+    pending_l29_states: Vec<f32>,
     vision: Option<run270_rust::vision::VisionWeights>,
     threads: usize,
     ssd_bytes_read: u64,
 }
 
 impl Runtime31B {
-    fn kv_len(&self) -> usize {
+    fn layer_kv_len(&self, l: usize) -> usize {
         if self.kv_quant.is_glyph() {
             return self
                 .glyph_kv
-                .first()
+                .get(l)
                 .and_then(|o| o.as_ref())
                 .map_or(0, |g| g.total_seen());
         }
-        if self.kv.is_empty() || self.cfg.layer_full.is_empty() {
+        if l >= self.kv.len() || l >= self.cfg.layer_full.len() {
             return 0;
         }
-        let is_full = self.cfg.layer_full[0];
+        let is_full = self.cfg.layer_full[l];
         let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
         let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
         let stride = n_kv * hd;
         if stride == 0 {
             0
         } else {
-            self.kv[0].k.len() / stride
+            self.kv[l].k.len() / stride
         }
+    }
+
+    #[allow(dead_code)]
+    fn kv_len(&self) -> usize {
+        self.layer_kv_len(0)
     }
 
     fn glyph_kv_total_stats(&self) -> GlyphKvMemStats {
@@ -1301,9 +1307,30 @@ impl Runtime31B {
     }
 
     fn truncate_kv(&mut self, keep_tokens: usize) -> Result<(), String> {
+        let split_l = 30.min(self.cfg.n_layers);
+        let upper_len = if split_l < self.cfg.n_layers {
+            self.layer_kv_len(split_l)
+        } else {
+            self.layer_kv_len(0)
+        };
+        if keep_tokens <= upper_len {
+            self.pending_l29_states.clear();
+        } else if !self.pending_l29_states.is_empty() {
+            let keep_pend = (keep_tokens - upper_len) * self.cfg.d;
+            if keep_pend < self.pending_l29_states.len() {
+                self.pending_l29_states.truncate(keep_pend);
+            }
+        }
         if self.kv_quant.is_glyph() {
-            for g in self.glyph_kv.iter_mut().flatten() {
-                g.truncate(keep_tokens)?;
+            for (l, g_opt) in self.glyph_kv.iter_mut().enumerate() {
+                if let Some(g) = g_opt.as_mut() {
+                    let cur = g.total_seen();
+                    if keep_tokens < cur {
+                        g.truncate(keep_tokens)?;
+                    } else if keep_tokens > cur && l < split_l {
+                        return Err(format!("truncate_kv glyph layer {l}: keep_tokens={keep_tokens} > cur={cur}"));
+                    }
+                }
             }
             return Ok(());
         }
@@ -1311,30 +1338,79 @@ impl Runtime31B {
             let is_full = self.cfg.layer_full[l];
             let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
             let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
-            let target = keep_tokens * n_kv * hd;
-            if layer_kv.k.len() < target || layer_kv.v.len() < target {
+            let stride = n_kv * hd;
+            let cur_toks = if stride > 0 { layer_kv.k.len() / stride } else { 0 };
+            let eff_keep = keep_tokens.min(cur_toks);
+            if keep_tokens > cur_toks && l < split_l {
                 return Err(format!(
-                    "truncate_kv layer {l}: keep_tokens={keep_tokens} (elems={target}) exceeds kv len ({}, {})",
+                    "truncate_kv layer {l}: keep_tokens={keep_tokens} (elems={}) exceeds kv len ({}, {})",
+                    keep_tokens * stride,
                     layer_kv.k.len(),
                     layer_kv.v.len()
                 ));
             }
+            let target = eff_keep * stride;
             layer_kv.k.truncate(target);
             layer_kv.v.truncate(target);
         }
         Ok(())
     }
 
+    fn flush_upper_layers(&mut self) -> Result<(), String> {
+        if self.pending_l29_states.is_empty() || self.cfg.n_layers <= 30 {
+            self.pending_l29_states.clear();
+            return Ok(());
+        }
+        let d = self.cfg.d;
+        let k_pend = self.pending_l29_states.len() / d;
+        if k_pend == 0 {
+            self.pending_l29_states.clear();
+            return Ok(());
+        }
+        let upper_pos = self.layer_kv_len(30);
+        let states = std::mem::take(&mut self.pending_l29_states);
+        let _ = self.forward_batch_with_embeds_layers(
+            states,
+            k_pend,
+            upper_pos,
+            false,
+            false,
+            None,
+            None,
+            30,
+            self.cfg.n_layers,
+            None,
+        )?;
+        Ok(())
+    }
+
     fn commit_tree_slots(&mut self, base_kv_len: usize, accepted_slots: &[usize]) -> Result<(), String> {
+        self.commit_tree_slots_upto(base_kv_len, accepted_slots, self.cfg.n_layers, None)
+    }
+
+    fn commit_tree_slots_upto(
+        &mut self,
+        base_kv_len: usize,
+        accepted_slots: &[usize],
+        layers_upto: usize,
+        raw_l29_batch: Option<&[f32]>,
+    ) -> Result<(), String> {
+        let lim = layers_upto.min(self.cfg.n_layers);
+        if lim < self.cfg.n_layers {
+            let d = self.cfg.d;
+            let raw = raw_l29_batch.ok_or("commit_tree_slots_upto < n_layers requires raw_l29_batch")?;
+            for &slot in accepted_slots {
+                self.pending_l29_states.extend_from_slice(&raw[slot * d..(slot + 1) * d]);
+            }
+        }
         if self.kv_quant.is_glyph() {
-            if self.ephemeral_tree_kv.len() != self.cfg.n_layers {
+            if self.ephemeral_tree_kv.len() < lim {
                 return Err(format!(
-                    "commit_tree_slots: ephemeral_tree_kv len {} != n_layers {}",
+                    "commit_tree_slots: ephemeral_tree_kv len {} < layers_upto {lim}",
                     self.ephemeral_tree_kv.len(),
-                    self.cfg.n_layers
                 ));
             }
-            for l in 0..self.cfg.n_layers {
+            for l in 0..lim {
                 let is_full = self.cfg.layer_full[l];
                 let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
                 let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
@@ -1362,7 +1438,7 @@ impl Runtime31B {
             self.ephemeral_tree_kv.clear();
             return Ok(());
         }
-        for (l, layer_kv) in self.kv.iter_mut().enumerate() {
+        for (l, layer_kv) in self.kv.iter_mut().take(lim).enumerate() {
             let is_full = self.cfg.layer_full[l];
             let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
             let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
@@ -1581,6 +1657,24 @@ impl Runtime31B {
         tree_depths: &[usize],
         ancestor_masks: &[u32],
     ) -> Result<Vec<f32>, String> {
+        let (normed, _raw) = self.forward_batch_tree_upto(
+            ids,
+            start_pos,
+            tree_depths,
+            ancestor_masks,
+            self.cfg.n_layers,
+        )?;
+        Ok(normed)
+    }
+
+    fn forward_batch_tree_upto(
+        &mut self,
+        ids: &[u32],
+        start_pos: usize,
+        tree_depths: &[usize],
+        ancestor_masks: &[u32],
+        layer_end: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
         let seq_len = ids.len();
         if seq_len == 0 || seq_len > 32 || tree_depths.len() != seq_len || ancestor_masks.len() != seq_len {
             return Err(format!(
@@ -1591,7 +1685,8 @@ impl Runtime31B {
             ));
         }
         let states = self.embed_batch(ids)?;
-        self.forward_batch_with_embeds_ext(
+        let mut raw_out = Vec::new();
+        let normed = self.forward_batch_with_embeds_layers(
             states,
             seq_len,
             start_pos,
@@ -1599,7 +1694,39 @@ impl Runtime31B {
             true,
             None,
             Some((tree_depths, ancestor_masks)),
-        )
+            0,
+            layer_end.min(self.cfg.n_layers),
+            Some(&mut raw_out),
+        )?;
+        Ok((normed, raw_out))
+    }
+
+    fn forward_batch_upto(&mut self, ids: &[u32], start_pos: usize, layer_end: usize) -> Result<Vec<f32>, String> {
+        let seq_len = ids.len();
+        if seq_len == 0 {
+            return Err("empty token slice".into());
+        }
+        let lim = layer_end.min(self.cfg.n_layers);
+        let states = self.embed_batch(ids)?;
+        let mut raw_out = Vec::new();
+        let _normed = self.forward_batch_with_embeds_layers(
+            states,
+            seq_len,
+            start_pos,
+            false,
+            true,
+            None,
+            None,
+            0,
+            lim,
+            if lim < self.cfg.n_layers { Some(&mut raw_out) } else { None },
+        )?;
+        if lim < self.cfg.n_layers {
+            self.pending_l29_states.extend_from_slice(&raw_out);
+            Ok(raw_out)
+        } else {
+            Ok(_normed)
+        }
     }
 
     fn forward_batch_with_embeds(
@@ -1617,7 +1744,7 @@ impl Runtime31B {
     #[allow(clippy::too_many_arguments)]
     fn forward_batch_with_embeds_ext(
         &mut self,
-        mut states: Vec<f32>,
+        states: Vec<f32>,
         seq_len: usize,
         start_pos: usize,
         verbose_layers: bool,
@@ -1625,8 +1752,41 @@ impl Runtime31B {
         vis_kv_ends: Option<&[usize]>,
         tree_spec: Option<(&[usize], &[u32])>,
     ) -> Result<Vec<f32>, String> {
+        let n_layers = self.cfg.n_layers;
+        self.forward_batch_with_embeds_layers(
+            states,
+            seq_len,
+            start_pos,
+            verbose_layers,
+            all_final,
+            vis_kv_ends,
+            tree_spec,
+            0,
+            n_layers,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_with_embeds_layers(
+        &mut self,
+        mut states: Vec<f32>,
+        seq_len: usize,
+        start_pos: usize,
+        verbose_layers: bool,
+        all_final: bool,
+        vis_kv_ends: Option<&[usize]>,
+        tree_spec: Option<(&[usize], &[u32])>,
+        layer_start: usize,
+        layer_end: usize,
+        raw_states_out: Option<&mut Vec<f32>>,
+    ) -> Result<Vec<f32>, String> {
         if seq_len == 0 {
             return Err("empty token slice".into());
+        }
+        let lim = layer_end.min(self.cfg.n_layers);
+        if layer_start == 0 && lim == self.cfg.n_layers && !self.pending_l29_states.is_empty() {
+            self.flush_upper_layers()?;
         }
         let d = self.cfg.d;
         if states.len() != seq_len * d {
@@ -1953,7 +2113,7 @@ impl Runtime31B {
             let mut inp2 = vec![0.0f32; seq_len * d];
             let mut norm_tmp = vec![0.0f32; d];
 
-            for l in 0..cfg.n_layers {
+            for l in layer_start..lim {
                 let tl = std::time::Instant::now();
                 let pfx = format!("model.language_model.layers.{l}");
                 let is_full = cfg.layer_full[l];
@@ -3233,7 +3393,17 @@ impl Runtime31B {
         self.kv_raw_bytes += kv_raw_step;
         self.kv_compressed_bytes += kv_cmp_step;
 
-        let fn_gain = self.norm("model.language_model.norm.weight")?;
+        if let Some(out_raw) = raw_states_out {
+            *out_raw = states.clone();
+        }
+        let fn_key = if lim < self.cfg.n_layers && self.norms.contains_key("model.language_model.early_exit_l29_norm.weight") {
+            "model.language_model.early_exit_l29_norm.weight"
+        } else if lim < self.cfg.n_layers && self.norms.contains_key("model.early_exit_l29_norm.weight") {
+            "model.early_exit_l29_norm.weight"
+        } else {
+            "model.language_model.norm.weight"
+        };
+        let fn_gain = self.norm(fn_key)?;
         let mut out = if all_final {
             let mut all_out = Vec::with_capacity(seq_len * d);
             for t in 0..seq_len {
@@ -3245,7 +3415,7 @@ impl Runtime31B {
             rmsn_raw(last_state, Some(fn_gain), eps)
         };
         let n_out_tok = out.len() / d;
-        if self.apply_c8d_proj {
+        if lim == self.cfg.n_layers && self.apply_c8d_proj {
             if let Some(ref bank) = self.c8d_bank {
                 if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
                     let x_in = out.clone();
@@ -3376,29 +3546,56 @@ impl Runtime31B {
         Ok(logits)
     }
 
-    /// Zero-RAM Target-Embed Sharing head for `Assistant-V10` (`has_lm_head == false && byte_head == None`).
-    /// Applies host `final_norm` to `next_backbone_h`, runs fast Cauchy-Schwarz LM-head projection on the
-    /// already-resident 31B `embed_tokens`, applies logit softcapping, masks bans, and returns top-`want_k`.
-    fn score_shared_lm_head_top_k(
+    /// Normalize raw backbone hidden state `[k, d]` via host `model.language_model.norm.weight`
+    /// plus optional `post_cell60` C8DB correction so Assistant inputs match Stage 3B training bit-for-bit.
+    fn normalize_backbone_hidden(&self, raw_h: &[f32]) -> Result<Vec<f32>, String> {
+        let d = self.cfg.d;
+        if raw_h.len() % d != 0 {
+            return Err(format!("normalize_backbone_hidden: len {} not multiple of d={d}", raw_h.len()));
+        }
+        let n_tok = raw_h.len() / d;
+        let fn_gain = self.norm("model.language_model.norm.weight")?;
+        let mut hidden = Vec::with_capacity(raw_h.len());
+        for t in 0..n_tok {
+            let h_t = rmsn_raw(&raw_h[t * d..(t + 1) * d], Some(fn_gain), self.cfg.eps);
+            hidden.extend_from_slice(&h_t);
+        }
+        if self.apply_c8d_proj {
+            if let Some(ref bank) = self.c8d_bank {
+                if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
+                    entry.apply_batch_into(&hidden.clone(), n_tok, &mut hidden, bank.native.as_ref(), self.threads, None)?;
+                }
+            }
+        }
+        Ok(hidden)
+    }
+
+    /// Whether loaded T16C/checkpoint contains `early_exit_l29_norm.weight` for 30-layer Tier-2 exit.
+    fn has_early_exit_l29(&self) -> bool {
+        self.norms.contains_key("model.language_model.early_exit_l29_norm.weight")
+            || self.norms.contains_key("model.early_exit_l29_norm.weight")
+    }
+
+    /// Project already-normalized `[d]` hidden state via resident 31B `embed_tokens` and return top-`want_k`
+    /// softcapped `(token_id, logit)` pairs, applying `tanh` softcap ONLY to the winning `want_k` logits.
+    fn score_normalized_lm_head_top_k(
         &self,
-        next_backbone_h: &[f32],
+        hidden: &[f32],
         want_k: usize,
         sieve_frac: f32,
         ban_tokens: &[u32],
     ) -> Result<(Vec<(u32, f32)>, i64), String> {
         let d = self.cfg.d;
-        if next_backbone_h.len() != d {
-            return Err(format!("score_shared_lm_head_top_k: hidden len {} != d {d}", next_backbone_h.len()));
+        if hidden.len() != d {
+            return Err(format!("score_normalized_lm_head_top_k: hidden len {} != d {d}", hidden.len()));
         }
-        let fn_gain = self.norm("model.language_model.norm.weight")?;
-        let hidden = rmsn_raw(next_backbone_h, Some(fn_gain), self.cfg.eps);
         let k_req = want_k.max(1);
         let (mut logits, skipped) = match &self.embed {
             Embed31B::T16C { mat, native } => {
                 if let Some(norms) = self.embed_tile_norms.as_deref() {
                     let sf = sieve_frac.max(0.02);
                     mat.project_lmhead_cs(
-                        &hidden,
+                        hidden,
                         1,
                         native.as_deref(),
                         self.threads,
@@ -3407,28 +3604,28 @@ impl Runtime31B {
                         sf,
                     )?
                 } else {
-                    (mat.project_batch(&hidden, 1, native.as_deref(), self.threads)?, 0)
+                    (mat.project_batch(hidden, 1, native.as_deref(), self.threads)?, 0)
                 }
             }
-            Embed31B::Packed(pm) => (pm.matvec(&hidden, self.threads)?, 0),
-            Embed31B::ResidentBf16(tbl) => (dot_bf16_rows(tbl, d, self.cfg.vocab, &hidden, self.threads), 0),
+            Embed31B::Packed(pm) => (pm.matvec(hidden, self.threads)?, 0),
+            Embed31B::ResidentBf16(tbl) => (dot_bf16_rows(tbl, d, self.cfg.vocab, hidden, self.threads), 0),
             Embed31B::Streamed => {
                 return Err("Assistant Target-Embed Sharing requires resident --t16c or packed/bf16 embed".into());
             }
         };
-        if let Some(cap) = self.cfg.final_softcap {
-            for v in &mut logits {
-                *v = (*v / cap).tanh() * cap;
-            }
-        }
         for &tid in ban_tokens {
             let u = tid as usize;
             if u < logits.len() {
                 logits[u] = -1.0e9;
             }
         }
+        // Softcap x -> cap * tanh(x / cap) is strictly monotonic, so top-K order is invariant;
+        // skipping masked sieve rows (<= -1e8) and softcapping only the top-K eliminates 262K tanh() calls.
         let mut best: Vec<(u32, f32)> = Vec::with_capacity(k_req);
         for (i, &v) in logits.iter().enumerate() {
+            if v <= -1.0e8 {
+                continue;
+            }
             if best.len() < k_req {
                 best.push((i as u32, v));
                 best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
@@ -3437,7 +3634,25 @@ impl Runtime31B {
                 best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
             }
         }
+        if let Some(cap) = self.cfg.final_softcap {
+            for (_, v) in &mut best {
+                *v = (*v / cap).tanh() * cap;
+            }
+        }
         Ok((best, skipped))
+    }
+
+    /// Zero-RAM Target-Embed Sharing head for `Assistant-V10` (`has_lm_head == false && byte_head == None`).
+    #[allow(dead_code)]
+    fn score_shared_lm_head_top_k(
+        &self,
+        next_backbone_h: &[f32],
+        want_k: usize,
+        sieve_frac: f32,
+        ban_tokens: &[u32],
+    ) -> Result<(Vec<(u32, f32)>, i64), String> {
+        let hidden = self.normalize_backbone_hidden(next_backbone_h)?;
+        self.score_normalized_lm_head_top_k(&hidden, want_k, sieve_frac, ban_tokens)
     }
 }
 
@@ -3586,6 +3801,7 @@ fn load_runtime_31b(
             kv,
             glyph_kv,
             ephemeral_tree_kv: Vec::new(),
+            pending_l29_states: Vec::new(),
             vision: None,
             threads,
             ssd_bytes_read: 0,
@@ -3793,6 +4009,7 @@ fn load_runtime_31b_t16c(
             kv,
             glyph_kv,
             ephemeral_tree_kv: Vec::new(),
+            pending_l29_states: Vec::new(),
             vision,
             threads,
             ssd_bytes_read: 0,
@@ -4314,6 +4531,16 @@ fn run() -> Result<(), String> {
         None => 0.55,
     };
     let cascade_mod_zero_kv = args.iter().any(|a| a == "--cascade-mod-zero-kv") || cortical_cascade_tau.is_some();
+    let cascade_tier1_tau_arg: Option<f32> = match get("--cascade-tier1-tau") {
+        Some(s) => {
+            let v: f32 = s.parse().map_err(|_| format!("invalid --cascade-tier1-tau '{s}'"))?;
+            if !v.is_finite() || v < 0.0 {
+                return Err(format!("--cascade-tier1-tau must be >= 0.0, got {v}"));
+            }
+            Some(v)
+        }
+        None => None,
+    };
     let general_alu = args.iter().any(|a| a == "--general-alu");
     let spec_tree_nodes: Option<usize> = match get("--spec-tree") {
         Some(s) => {
@@ -5168,11 +5395,29 @@ fn run() -> Result<(), String> {
         let mut spec_fallback_k1 = 0usize;
         let mut spec_margin_stopped = 0usize;
         let mut ast_lm_skipped_blocks = 0u64;
+        let mut cascade_tier1_fast = 0usize;
         let mut cascade_tier2_accepted = 0usize;
         let mut cascade_tier3_rescues = 0usize;
         let mut cascade_draft_s = 0.0f64;
         let mut cascade_tier2_s = 0.0f64;
         let mut cascade_tier3_s = 0.0f64;
+        let cascade_tier2_layers = if cortical_cascade_tau.is_some() && rt.has_early_exit_l29() {
+            30usize.min(rt.cfg.n_layers)
+        } else {
+            rt.cfg.n_layers
+        };
+        let cascade_tier1_tau: f32 = cascade_tier1_tau_arg.unwrap_or_else(|| {
+            if cortical_cascade_tau.is_some() {
+                if assistant_state.as_ref().is_some_and(|(a, _, _)| a.has_byte_head()) {
+                    0.45
+                } else {
+                    1.8
+                }
+            } else {
+                0.0
+            }
+        });
+        let mut tier1_unverified: Vec<u32> = Vec::new();
         let vocab = rt.cfg.vocab;
         let d_hidden = rt.cfg.d;
 
@@ -5186,10 +5431,14 @@ fn run() -> Result<(), String> {
                 break;
             }
 
-            let cur_kv_len = rt.kv_len();
+            let cur_kv_len = rt.layer_kv_len(0);
+            let eff_kv_with_tier1 = cur_kv_len + tier1_unverified.len();
             let expected_kv_len = ids.len() + generated.len() - 1;
-            if cur_kv_len != expected_kv_len {
-                return Err(format!("KV desync before spec step: kv_len={cur_kv_len} != expected={expected_kv_len}"));
+            if eff_kv_with_tier1 != expected_kv_len {
+                return Err(format!(
+                    "KV desync before spec step: kv_len={cur_kv_len} + tier1_unverified={} != expected={expected_kv_len}",
+                    tier1_unverified.len()
+                ));
             }
 
             let rem = max_tokens - generated.len();
@@ -5198,7 +5447,7 @@ fn run() -> Result<(), String> {
             if let Some(max_tree_nodes) = spec_tree_nodes {
                 let max_depth_step = spec_tree_depth.min(rem.saturating_sub(1));
                 let eff_tree_cap = max_tree_nodes.min(1 + rem.saturating_sub(1).saturating_mul(3)).max(1);
-                let tree_opt: Option<SpecTreeBuilder> = if max_depth_step == 0 || eff_tree_cap <= 1 {
+                let tree_opt: Option<(SpecTreeBuilder, Vec<Option<Vec<f32>>>)> = if max_depth_step == 0 || eff_tree_cap <= 1 {
                     None
                 } else {
                     let t_dr0 = std::time::Instant::now();
@@ -5219,13 +5468,15 @@ fn run() -> Result<(), String> {
                     } else {
                         lmhead_cs_sieve
                     };
-                    let res_tree = if let Some((ref ast, sl_l, fl_l)) = assistant_state {
-                        let max_tt = cur_kv_len.saturating_sub(1);
-                        let (mut tree_b, m_stop, ast_sk) = ast.draft_tree_with_target_head(
+                    let res_tree: Result<Option<(SpecTreeBuilder, Vec<Option<Vec<f32>>>)>, String> = if let Some((ref ast, sl_l, fl_l)) = assistant_state {
+                        let kv_bound_len = rt.layer_kv_len(sl_l).min(rt.layer_kv_len(fl_l));
+                        let max_tt = kv_bound_len.saturating_sub(1);
+                        let draft_q_pos = kv_bound_len + tier1_unverified.len();
+                        let (mut tree_b, m_stop, ast_sk, slot_bhs) = ast.draft_tree_with_target_head_full(
                             y0,
                             |tok| rt.embed_token_ro(tok),
                             &last_backbone_h,
-                            cur_kv_len,
+                            draft_q_pos,
                             ast_depth,
                             eff_tree_cap,
                             ngram_hint,
@@ -5267,14 +5518,15 @@ fn run() -> Result<(), String> {
                                     ))
                                 }
                             },
-                            |_h_final, next_bh, _prev_tok, want_k, bans| {
-                                rt.score_shared_lm_head_top_k(
-                                    next_bh,
+                            |_h_final, normed_next_bh, _prev_tok, want_k, bans| {
+                                rt.score_normalized_lm_head_top_k(
+                                    normed_next_bh,
                                     want_k,
-                                    ast_sieve.unwrap_or(0.02),
+                                    ast_sieve.unwrap_or(0.035),
                                     bans,
                                 )
                             },
+                            |raw_bh| rt.normalize_backbone_hidden(raw_bh),
                         )?;
                         for alt_seq in ngram_branches.iter().skip(1) {
                             tree_b.graft_sequence_with_margin(alt_seq, &eos, 4.0);
@@ -5283,7 +5535,7 @@ fn run() -> Result<(), String> {
                         if ast_sk > 0 {
                             ast_lm_skipped_blocks += ast_sk as u64;
                         }
-                        if tree_b.nodes.len() > 1 { Some(tree_b) } else { None }
+                        Ok(if tree_b.nodes.len() > 1 { Some((tree_b, slot_bhs)) } else { None })
                     } else if !suffix_hint.is_empty() || !ngram_branches.is_empty() {
                         let mut tb = SpecTreeBuilder::new(y0, eff_tree_cap);
                         if !suffix_hint.is_empty() {
@@ -5292,15 +5544,16 @@ fn run() -> Result<(), String> {
                         for br in &ngram_branches {
                             tb.graft_sequence_with_margin(br, &eos, 5.0);
                         }
-                        if tb.nodes.len() > 1 { Some(tb) } else { None }
+                        let empty_bhs = vec![None; tb.nodes.len()];
+                        Ok(if tb.nodes.len() > 1 { Some((tb, empty_bhs)) } else { None })
                     } else {
-                        None
+                        Ok(None)
                     };
                     cascade_draft_s += t_dr0.elapsed().as_secs_f64();
-                    res_tree
+                    res_tree?
                 };
 
-                if let Some(tree_b) = tree_opt {
+                if let Some((tree_b, slot_bhs)) = tree_opt {
                     let n_nodes = tree_b.nodes.len();
                     let batch_ids: Vec<u32> = tree_b.nodes.iter().map(|n| n.token_id).collect();
                     let tree_depths: Vec<usize> = tree_b.nodes.iter().map(|n| n.depth).collect();
@@ -5310,6 +5563,50 @@ fn run() -> Result<(), String> {
                     spec_drafted += max_d;
 
                     if let Some(tau) = cortical_cascade_tau {
+                        if cascade_tier1_tau > 0.0 && rem > 1 {
+                            let mut fast_slots: Vec<usize> = Vec::new();
+                            let mut cur_s = 0usize;
+                            while fast_slots.len() + 1 < rem {
+                                let next_opt = tree_b
+                                    .nodes
+                                    .iter()
+                                    .enumerate()
+                                    .skip(cur_s + 1)
+                                    .find(|&(_, n)| n.parent == cur_s as i32)
+                                    .map(|(idx, _)| idx);
+                                let Some(cs) = next_opt else { break; };
+                                if tree_b.slot_margin(cs) >= cascade_tier1_tau && slot_bhs.get(cs).and_then(|o| o.as_ref()).is_some() {
+                                    fast_slots.push(cs);
+                                    cur_s = cs;
+                                    if eos.contains(&tree_b.nodes[cs].token_id) {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            if !fast_slots.is_empty() {
+                                tier1_unverified.push(y0);
+                                for &cs in &fast_slots[..fast_slots.len() - 1] {
+                                    let tok = tree_b.nodes[cs].token_id;
+                                    let s_idx = generated.len();
+                                    generated.push(tok);
+                                    ngram.observe_transition(&history, tok);
+                                    history.push(tok);
+                                    tier1_unverified.push(tok);
+                                    cascade_tier1_fast += 1;
+                                    println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
+                                }
+                                let last_fast_slot = *fast_slots.last().unwrap();
+                                cascade_tier1_fast += 1;
+                                if let Some(ref bh_next) = slot_bhs[last_fast_slot] {
+                                    last_backbone_h = bh_next.clone();
+                                }
+                                pending = Some(tree_b.nodes[last_fast_slot].token_id);
+                                continue;
+                            }
+                        }
+
                         let orig_mlp = rt.mlp_top_p;
                         let orig_head = rt.attn_head_top_p;
                         let orig_mod = rt.mod_thresh;
@@ -5327,8 +5624,20 @@ fn run() -> Result<(), String> {
                         rt.lmhead_cs_sieve = Some(orig_sieve.unwrap_or(0.035).max(0.035));
 
                         let t_t2 = std::time::Instant::now();
-                        let t2_res = (|| -> Result<(Vec<f32>, Vec<f32>), String> {
-                            let hb = rt.forward_batch_tree(&batch_ids, cur_kv_len, &tree_depths, &ancestor_masks)?;
+                        let (verify_kv_len, h_batch, raw_l29_batch, mut l_batch) = (|| -> Result<(usize, Vec<f32>, Vec<f32>, Vec<f32>), String> {
+                            if !tier1_unverified.is_empty() {
+                                let flush_ids = std::mem::take(&mut tier1_unverified);
+                                let f_pos = rt.layer_kv_len(0);
+                                rt.forward_batch_upto(&flush_ids, f_pos, cascade_tier2_layers)?;
+                            }
+                            let base_pos = rt.layer_kv_len(0);
+                            let (hb, raw_b) = rt.forward_batch_tree_upto(
+                                &batch_ids,
+                                base_pos,
+                                &tree_depths,
+                                &ancestor_masks,
+                                cascade_tier2_layers,
+                            )?;
                             let mut seed_row_ids = vec![-1i32; n_nodes];
                             for p_idx in 0..n_nodes {
                                 if let Some(child) = tree_b.nodes.iter().skip(p_idx + 1).find(|c| c.parent == p_idx as i32) {
@@ -5336,8 +5645,8 @@ fn run() -> Result<(), String> {
                                 }
                             }
                             let lb = rt.compute_logits_batch_seeded(&hb, n_nodes, Some(&seed_row_ids))?;
-                            Ok((hb, lb))
-                        })();
+                            Ok((base_pos, hb, raw_b, lb))
+                        })()?;
                         cascade_tier2_s += t_t2.elapsed().as_secs_f64();
 
                         rt.mlp_top_p = orig_mlp;
@@ -5346,7 +5655,6 @@ fn run() -> Result<(), String> {
                         rt.mod_zero_kv = orig_mod_z;
                         rt.lmhead_cs_sieve = orig_sieve;
 
-                        let (h_batch, mut l_batch) = t2_res?;
                         let mut accepted_drafts: Vec<u32> = Vec::with_capacity(max_d);
                         let mut accepted_slots: Vec<usize> = Vec::with_capacity(1 + max_d);
                         accepted_slots.push(0);
@@ -5402,7 +5710,12 @@ fn run() -> Result<(), String> {
                         spec_accepted += acc;
                         cascade_tier2_accepted += acc;
                         ctrl.observe(acc, max_d);
-                        rt.commit_tree_slots(cur_kv_len, &accepted_slots)?;
+                        rt.commit_tree_slots_upto(
+                            verify_kv_len,
+                            &accepted_slots,
+                            cascade_tier2_layers,
+                            if cascade_tier2_layers < rt.cfg.n_layers { Some(&raw_l29_batch) } else { None },
+                        )?;
                         for &tok in &accepted_drafts {
                             let s_idx = generated.len();
                             generated.push(tok);
@@ -5422,7 +5735,7 @@ fn run() -> Result<(), String> {
                             // Tier-3 Exact Dense 60/60 Rescue on uncertain fork node
                             let t_t3 = std::time::Instant::now();
                             let rescue_tok = tree_b.nodes[last_slot].token_id;
-                            let rescue_pos = cur_kv_len + accepted_slots.len() - 1;
+                            let rescue_pos = verify_kv_len + accepted_slots.len() - 1;
                             rt.truncate_kv(rescue_pos)?;
                             rt.mlp_top_p = 1.0;
                             rt.attn_head_top_p = 1.0;
@@ -5448,12 +5761,14 @@ fn run() -> Result<(), String> {
                         }
                         pending = next_pending;
                         eprintln!(
-                            "[run31b] cascade batch={} nodes={} max_d={} accepted={} (+1={}) rescues={} ewma={:.2} in {:.2}s vm={:?}",
+                            "[run31b] cascade batch={} l_exit={} nodes={} max_d={} accepted={} (+1={}) fast={} rescues={} ewma={:.2} in {:.2}s vm={:?}",
                             spec_batches,
+                            cascade_tier2_layers,
                             n_nodes,
                             max_d,
                             acc,
                             acc + 1,
+                            cascade_tier1_fast,
                             cascade_tier3_rescues,
                             ctrl.acceptance_ewma(),
                             td.elapsed().as_secs_f64(),
@@ -5615,7 +5930,12 @@ fn run() -> Result<(), String> {
             };
             if drafts.is_empty() {
                 spec_fallback_k1 += 1;
-                let h = rt.forward_batch(&[y0], cur_kv_len, false)?;
+                if !tier1_unverified.is_empty() {
+                    let flush_ids = std::mem::take(&mut tier1_unverified);
+                    let f_pos = rt.layer_kv_len(0);
+                    rt.forward_batch_upto(&flush_ids, f_pos, rt.cfg.n_layers)?;
+                }
+                let h = rt.forward_batch(&[y0], rt.layer_kv_len(0), false)?;
                 let mut l = rt.compute_logits(&h)?;
                 if let Some(ref mut gate) = tri_gate {
                     let (cap, _dec) = evaluate_tri_modal_step(
@@ -5647,10 +5967,16 @@ fn run() -> Result<(), String> {
             } else {
                 spec_batches += 1;
                 spec_drafted += drafts.len();
+                if !tier1_unverified.is_empty() {
+                    let flush_ids = std::mem::take(&mut tier1_unverified);
+                    let f_pos = rt.layer_kv_len(0);
+                    rt.forward_batch_upto(&flush_ids, f_pos, rt.cfg.n_layers)?;
+                }
+                let eff_kv_len = rt.layer_kv_len(0);
                 let mut batch = Vec::with_capacity(1 + drafts.len());
                 batch.push(y0);
                 batch.extend_from_slice(&drafts);
-                let h_batch = rt.forward_batch_mode(&batch, cur_kv_len, false, true)?;
+                let h_batch = rt.forward_batch_mode(&batch, eff_kv_len, false, true)?;
                 let mut l_batch = rt.compute_logits_batch(&h_batch, batch.len())?;
                 // Apply the identical degeneracy guard sequentially across verification slots
                 // so greedy speculative verification stays 100% bit-exact with k=1.
@@ -5669,7 +5995,7 @@ fn run() -> Result<(), String> {
                 let acc = outcome.accepted_drafts.len();
                 spec_accepted += acc;
                 ctrl.observe(acc, drafts.len());
-                rt.truncate_kv(cur_kv_len + 1 + acc)?;
+                rt.truncate_kv(eff_kv_len + 1 + acc)?;
                 last_backbone_h = h_batch[acc * d_hidden..(acc + 1) * d_hidden].to_vec();
                 for &tok in &outcome.accepted_drafts {
                     let s_idx = generated.len();
@@ -5732,11 +6058,11 @@ fn run() -> Result<(), String> {
         if let Some(tau) = cortical_cascade_tau {
             let tok_s = if eff_s_tok > 0.0 { 1.0 / eff_s_tok } else { 0.0 };
             println!(
-                "CASCADE31B tau={tau:.2} tier2_accepted={cascade_tier2_accepted} tier3_rescues={cascade_tier3_rescues} draft_ms={:.1} tier2_ms={:.1} tier3_ms={:.1} tok_per_s={tok_s:.2} ms_per_tok={:.1}",
+                "CASCADE31B tau={tau:.2} tier2_accepted={cascade_tier2_accepted} tier3_rescues={cascade_tier3_rescues} tok_per_s={tok_s:.2} ms_per_tok={:.1} tier1_fast={cascade_tier1_fast} l_exit={cascade_tier2_layers} draft_ms={:.1} tier2_ms={:.1} tier3_ms={:.1}",
+                eff_s_tok * 1000.0,
                 cascade_draft_s * 1000.0,
                 cascade_tier2_s * 1000.0,
                 cascade_tier3_s * 1000.0,
-                eff_s_tok * 1000.0
             );
         }
     } else {

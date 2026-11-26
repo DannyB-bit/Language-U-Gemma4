@@ -237,8 +237,9 @@ def run_stage2_5_v10_dual_e2e_kl(
     h_mat_c = H256_GPU.to(device=device, dtype=dt)
     emb_gpu = emb_eff.to(device=device, dtype=dt)
 
-    # 22.5 GB L4 keeps all bitplanes + emb_gpu in VRAM; 53 GB host caches activations pinned
-    pin_on_gpu = (device.type == "cuda") and (gpu_vram_gb >= 20.0)
+    # Only pin all 60 bitplane layers directly in VRAM when >= 32 GiB (e.g. A100/H100).
+    # On 22.5 GiB L4 with 53 GB High-RAM, pin_memory() host streaming avoids 98%-VRAM UVM thrashing.
+    pin_on_gpu = (device.type == "cuda") and (gpu_vram_gb >= 32.0)
     if device.type == "cuda":
         X_stud_0 = X_stud_0.pin_memory()
         X_teach_l59 = X_teach_l59.pin_memory()
@@ -453,19 +454,25 @@ def run_stage2_5_v10_dual_e2e_kl(
                         p["bi"].clamp_(min=-65000.0, max=65000.0)
                 lyr["layer_scalar"].clamp_(min=-65000.0, max=65000.0)
 
-        if (step + 1) % 25 == 0 or (step + 1) == n_steps:
-            v_kl, v_sp, v_e, v_cos, v_t1 = _eval_val(min(4, cur_mbs))
-            obj = 0.75 * v_kl + 0.25 * v_sp
-            improved = ""
-            if obj < best_obj:
-                best_obj = obj
-                best_snap = _snapshot_best()
-                improved = " [BEST]"
-            print(
-                f"  [V10 E2E step {step+1:03d}/{n_steps}] tr_kl={step_kl:.4f} dense_kl={v_kl:.4f} "
-                f"sp12_kl={v_sp:.4f} l29_kl={v_e:.4f} top1={v_t1*100:.2f}% dt={time.perf_counter()-t0_e2e:.1f}s{improved}",
-                flush=True,
-            )
+        if step == 0 or (step + 1) % 10 == 0 or (step + 1) == n_steps:
+            if (step + 1) % 25 == 0 or (step + 1) == n_steps:
+                v_kl, v_sp, v_e, v_cos, v_t1 = _eval_val(min(4, cur_mbs))
+                obj = 0.75 * v_kl + 0.25 * v_sp
+                improved = ""
+                if obj < best_obj:
+                    best_obj = obj
+                    best_snap = _snapshot_best()
+                    improved = " [BEST]"
+                print(
+                    f"  [V10 E2E step {step+1:03d}/{n_steps}] tr_kl={step_kl:.4f} dense_kl={v_kl:.4f} "
+                    f"sp12_kl={v_sp:.4f} l29_kl={v_e:.4f} top1={v_t1*100:.2f}% dt={time.perf_counter()-t0_e2e:.1f}s{improved}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  [V10 E2E step {step+1:03d}/{n_steps}] tr_kl={step_kl:.4f} mbs={cur_mbs}x{cur_acc} dt={time.perf_counter()-t0_e2e:.1f}s",
+                    flush=True,
+                )
 
     _restore_best(best_snap)
     kl_after, kl_sp_after, kl_e_after, cos_after, top1_after = _eval_val(min(4, cur_mbs))
