@@ -12,7 +12,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -112,24 +112,87 @@ def run_selftest() -> int:
     return failures
 
 
+def recover_perm_pi_from_t16c(target_t16c: Path, orig_safetensors: Path) -> np.ndarray:
+    """Recover exact global coordinate permutation `perm_pi` from target `.t16c` norms vs `model.safetensors`."""
+    import struct
+    from safetensors import safe_open
+
+    need_keys = {f"model.language_model.layers.{l}.input_layernorm.weight" for l in range(60)}
+    t16c_norms: Dict[str, np.ndarray] = {}
+    with open(target_t16c, "rb") as fp:
+        magic, _, _, n_norms, _, _ = struct.unpack("<4s5I", fp.read(24))
+        assert magic == b"T16C", f"Bad T16C magic {magic!r}"
+        for _ in range(n_norms):
+            nlen = struct.unpack("<H", fp.read(2))[0]
+            name = fp.read(nlen).decode("utf-8")
+            nval = struct.unpack("<I", fp.read(4))[0]
+            raw = fp.read(nval * 4)
+            if name in need_keys:
+                t16c_norms[name] = np.frombuffer(raw, dtype="<f4").copy()
+
+    orig_norms: Dict[str, np.ndarray] = {}
+    with safe_open(str(orig_safetensors), framework="numpy") as sf:
+        for k in ("model.language_model.layers.0.input_layernorm.weight", "model.language_model.layers.1.input_layernorm.weight", "model.language_model.layers.2.input_layernorm.weight", "model.language_model.layers.59.input_layernorm.weight"):
+            orig_norms[k] = sf.get_tensor(k).astype(np.float32)
+
+    # Match 4-layer tuple keys for collision-free exact perm_pi recovery
+    sig_orig: Dict[Tuple[int, int, int, int], List[int]] = {}
+    keys4 = (
+        "model.language_model.layers.0.input_layernorm.weight",
+        "model.language_model.layers.1.input_layernorm.weight",
+        "model.language_model.layers.2.input_layernorm.weight",
+        "model.language_model.layers.59.input_layernorm.weight",
+    )
+    o0, o1, o2, o59 = [orig_norms[k] for k in keys4]
+    t0, t1, t2, t59 = [t16c_norms[k] for k in keys4]
+    for i in range(len(o0)):
+        key = (int(round(float(o0[i]) * 1e5)), int(round(float(o1[i]) * 1e5)), int(round(float(o2[i]) * 1e5)), int(round(float(o59[i]) * 1e5)))
+        sig_orig.setdefault(key, []).append(i)
+
+    perm = np.empty((len(t0),), dtype=np.int64)
+    for j in range(len(t0)):
+        key = (int(round(float(t0[j]) * 1e5)), int(round(float(t1[j]) * 1e5)), int(round(float(t2[j]) * 1e5)), int(round(float(t59[j]) * 1e5)))
+        cands = sig_orig.get(key)
+        if not cands:
+            raise KeyError(f"Channel {j} signature mismatch while recovering perm_pi")
+        perm[j] = cands.pop(0)
+    max_diff = float(np.max(np.abs(o0[perm] - t0)))
+    assert max_diff < 1e-6, f"perm_pi verification failed: max_diff={max_diff:.2e}"
+    print(f"[perm_pi] Recovered exact 5376-ch permutation from {target_t16c.name} (max_diff={max_diff:.2e})", flush=True)
+    return perm
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Pack official Gemma 4 31B Assistant body (embed-free Target-Embed Sharing)")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--src", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31B-it-assistant/model.safetensors"))
     ap.add_argument("--out", type=Path, default=Path("/mnt/SHE-VAULT/gemma4_v9_2/gemma4_31b_official_ast_q2_body.t16c"))
+    ap.add_argument("--target-t16c", type=Path, default=None)
+    ap.add_argument("--orig-safetensors", type=Path, default=Path("/mnt/SHE-VAULT/gemma-4-31b-it-qat-w4a16-ct/model.safetensors"))
     ap.add_argument("--body-bits", type=int, default=2)
     args = ap.parse_args()
     if args.selftest:
         return run_selftest()
     if not args.src.is_file():
         raise FileNotFoundError(f"Missing official assistant safetensors: {args.src}")
-    bhmod.pack_assistant_body_from_safetensors(
-        args.src,
-        args.out,
-        body_bits=args.body_bits,
-        block_size=64,
-        has_fwht=(args.body_bits == 4),
-    )
+    src_pack = args.src
+    tmp_dir_obj = None
+    try:
+        if args.target_t16c is not None:
+            perm_pi = recover_perm_pi_from_t16c(args.target_t16c, args.orig_safetensors)
+            tmp_dir_obj = tempfile.TemporaryDirectory()
+            src_pack = Path(tmp_dir_obj.name) / "permuted_ast.safetensors"
+            permute_assistant_safetensors(args.src, src_pack, perm_pi, d_mod=len(perm_pi))
+        bhmod.pack_assistant_body_from_safetensors(
+            src_pack,
+            args.out,
+            body_bits=args.body_bits,
+            block_size=64,
+            has_fwht=(args.body_bits == 4),
+        )
+    finally:
+        if tmp_dir_obj is not None:
+            tmp_dir_obj.cleanup()
     return 0
 
 

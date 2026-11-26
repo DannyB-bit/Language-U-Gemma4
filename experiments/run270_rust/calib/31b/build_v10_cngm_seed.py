@@ -8,22 +8,55 @@ and 3 held-out NLL/chat prompts) before writing compact binary `CNGM` v1 transit
 from __future__ import annotations
 
 import argparse
+import re
 import struct
 import sys
 import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
 
-import run_v9_0_sparse_spinquant_qat_gpu as v90  # noqa: E402
+import eval_v6_1_skeptic_proof as spmod  # noqa: E402
 import v4_corpus as vc  # noqa: E402
 
 CNGM_MAGIC = b"CNGM"
 CNGM_VERSION = 1
+
+
+def _normalize_words(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def collect_holdout_4grams() -> set[Tuple[str, str, str, str]]:
+    """Collect normalized 4-grams across all held-out NLL passages, chat questions, and 15 battery prompts."""
+    texts: List[str] = [p for _, p in spmod.HELDOUT_NLL_PASSAGES]
+    texts.extend(x for x in getattr(spmod, "HELDOUT_CHAT_QUESTIONS", ()) if isinstance(x, str))
+    texts.extend(prompt for _, prompt, _, _ in spmod.BATTERY_PROMPTS)
+    grams: set[Tuple[str, str, str, str]] = set()
+    for txt in texts:
+        ws = _normalize_words(txt)
+        for i in range(max(0, len(ws) - 3)):
+            grams.add((ws[i], ws[i + 1], ws[i + 2], ws[i + 3]))
+    return grams
+
+
+def verify_corpus_decontaminated(samples: Sequence[str], holdout_4grams: set[Tuple[str, str, str, str]]) -> None:
+    """Fail closed if any seed string hits a blacklist substring or 4-gram overlap."""
+    bl_hits = 0
+    ng_hits = 0
+    for s in samples:
+        low = s.lower()
+        if any(b in low for b in vc.BLACKLIST_SUBSTRINGS):
+            bl_hits += 1
+        ws = _normalize_words(s)
+        if any((ws[i], ws[i + 1], ws[i + 2], ws[i + 3]) in holdout_4grams for i in range(max(0, len(ws) - 3))):
+            ng_hits += 1
+    if bl_hits > 0 or ng_hits > 0:
+        raise ValueError(f"Rule 2 decontamination breach: blacklist_hits={bl_hits}, 4gram_hits={ng_hits}")
 
 # General non-contaminated technical/code/prose idioms for Tier-0 cold phrase hits (never eval topics)
 GENERAL_PROSE_SEEDS: Tuple[str, ...] = (
@@ -74,15 +107,15 @@ def encode_cngm_v1(sequences: Sequence[Sequence[int]], max_n: int = 6, min_count
 
 def build_clean_seed_texts() -> List[str]:
     """Assemble and decontaminate all non-overlapping response & general prose seed strings."""
-    hold_4g = v90.collect_holdout_4grams()
+    hold_4g = collect_holdout_4grams()
     texts: List[str] = []
     # Use clean V4 responses + non-overlapping turns only (never include any overlapping prompt prefix)
     for _, _, resp in vc.V4_CAL_PAIRS:
-        ws = v90._normalize_words(resp)
+        ws = _normalize_words(resp)
         if not any((ws[i], ws[i + 1], ws[i + 2], ws[i + 3]) in hold_4g for i in range(max(0, len(ws) - 3))):
             texts.append(resp)
     texts.extend(GENERAL_PROSE_SEEDS)
-    v90.verify_corpus_decontaminated(texts, hold_4g)
+    verify_corpus_decontaminated(texts, hold_4g)
     return texts
 
 
@@ -114,14 +147,14 @@ def run_selftest() -> int:
         print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""), flush=True)
 
     # Gate 1: Zero holdout 4-gram overlap on build_clean_seed_texts()
-    hold_4g = v90.collect_holdout_4grams()
+    hold_4g = collect_holdout_4grams()
     texts = build_clean_seed_texts()
     gate("Gate 1: Strict Zero-Overlap 4-Gram Clean Corpus", len(texts) >= 30, f"texts={len(texts)}, hold={len(hold_4g)}")
 
     # Gate 2: Synthetic contamination fails closed
     dirty_caught = False
     try:
-        v90.verify_corpus_decontaminated(["Compute 12 * 8 - 27 cleanly."], hold_4g)
+        verify_corpus_decontaminated(["Compute 12 * 8 - 27 cleanly."], hold_4g)
     except ValueError:
         dirty_caught = True
     gate("Gate 2: Contamination Trap Fails Closed", dirty_caught)

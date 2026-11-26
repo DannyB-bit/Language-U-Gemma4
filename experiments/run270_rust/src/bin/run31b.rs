@@ -4695,6 +4695,11 @@ fn run() -> Result<(), String> {
         eprintln!("[run31b] enabled Gate-Guided Block-Sparse GeGLU MLP: top_p={mlp_top_p:.3}");
     }
     let lmhead_cs_bytes = rt.enable_lmhead_cs(lmhead_cs_sieve)?;
+    if rt.embed_tile_norms.is_none() && (cortical_cascade_tau.is_some() || spec_assistant_arg.is_some()) {
+        if let Embed31B::T16C { ref mat, .. } = rt.embed {
+            rt.embed_tile_norms = Some(mat.compute_tile_norms_fp16());
+        }
+    }
     if let Some(sf_cs) = rt.lmhead_cs_sieve {
         eprintln!(
             "[run31b] enabled LM-head CS pruning: sieve_frac={sf_cs:.3} norms_bytes={lmhead_cs_bytes}"
@@ -5165,6 +5170,9 @@ fn run() -> Result<(), String> {
         let mut ast_lm_skipped_blocks = 0u64;
         let mut cascade_tier2_accepted = 0usize;
         let mut cascade_tier3_rescues = 0usize;
+        let mut cascade_draft_s = 0.0f64;
+        let mut cascade_tier2_s = 0.0f64;
+        let mut cascade_tier3_s = 0.0f64;
         let vocab = rt.cfg.vocab;
         let d_hidden = rt.cfg.d;
 
@@ -5193,24 +5201,39 @@ fn run() -> Result<(), String> {
                 let tree_opt: Option<SpecTreeBuilder> = if max_depth_step == 0 || eff_tree_cap <= 1 {
                     None
                 } else {
+                    let t_dr0 = std::time::Instant::now();
                     let suffix_hint = prompt_suffix_lookup(&history, 2, max_depth_step);
                     let ngram_branches = ngram.propose_multi_branches(&history, max_depth_step, 2);
                     let ngram_hint = ngram_branches.first().map(|v| v.as_slice()).unwrap_or(&[]);
-                    if let Some((ref ast, sl_l, fl_l)) = assistant_state {
+                    let ast_depth = if cortical_cascade_tau.is_some() {
+                        if suffix_hint.len() >= 4 || ngram_hint.len() >= 4 {
+                            2usize.min(max_depth_step)
+                        } else {
+                            max_depth_step.min(5)
+                        }
+                    } else {
+                        max_depth_step
+                    };
+                    let ast_sieve = if cortical_cascade_tau.is_some() {
+                        Some(lmhead_cs_sieve.unwrap_or(0.02).min(0.02))
+                    } else {
+                        lmhead_cs_sieve
+                    };
+                    let res_tree = if let Some((ref ast, sl_l, fl_l)) = assistant_state {
                         let max_tt = cur_kv_len.saturating_sub(1);
                         let (mut tree_b, m_stop, ast_sk) = ast.draft_tree_with_target_head(
                             y0,
                             |tok| rt.embed_token_ro(tok),
                             &last_backbone_h,
                             cur_kv_len,
-                            max_depth_step,
+                            ast_depth,
                             eff_tree_cap,
                             ngram_hint,
                             &suffix_hint,
                             &eos,
                             closed_thought_bans,
                             assistant_min_margin,
-                            lmhead_cs_sieve,
+                            ast_sieve,
                             |is_full, q, q_pos| {
                                 let l_idx = if is_full { fl_l } else { sl_l };
                                 if rt.kv_quant.is_glyph() {
@@ -5248,7 +5271,7 @@ fn run() -> Result<(), String> {
                                 rt.score_shared_lm_head_top_k(
                                     next_bh,
                                     want_k,
-                                    lmhead_cs_sieve.unwrap_or(0.035),
+                                    ast_sieve.unwrap_or(0.02),
                                     bans,
                                 )
                             },
@@ -5272,7 +5295,9 @@ fn run() -> Result<(), String> {
                         if tb.nodes.len() > 1 { Some(tb) } else { None }
                     } else {
                         None
-                    }
+                    };
+                    cascade_draft_s += t_dr0.elapsed().as_secs_f64();
+                    res_tree
                 };
 
                 if let Some(tree_b) = tree_opt {
@@ -5301,6 +5326,7 @@ fn run() -> Result<(), String> {
                         }
                         rt.lmhead_cs_sieve = Some(orig_sieve.unwrap_or(0.035).max(0.035));
 
+                        let t_t2 = std::time::Instant::now();
                         let t2_res = (|| -> Result<(Vec<f32>, Vec<f32>), String> {
                             let hb = rt.forward_batch_tree(&batch_ids, cur_kv_len, &tree_depths, &ancestor_masks)?;
                             let mut seed_row_ids = vec![-1i32; n_nodes];
@@ -5312,6 +5338,7 @@ fn run() -> Result<(), String> {
                             let lb = rt.compute_logits_batch_seeded(&hb, n_nodes, Some(&seed_row_ids))?;
                             Ok((hb, lb))
                         })();
+                        cascade_tier2_s += t_t2.elapsed().as_secs_f64();
 
                         rt.mlp_top_p = orig_mlp;
                         rt.attn_head_top_p = orig_head;
@@ -5384,7 +5411,7 @@ fn run() -> Result<(), String> {
                             println!("[STEP {s_idx}] id={tok} text={:?}", tk.decode(&[tok]));
                         }
                         let last_slot = *accepted_slots.last().unwrap_or(&0);
-                        let mut next_pending: Option<u32>;
+                        let next_pending: Option<u32>;
                         if hit_stop {
                             last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
                             next_pending = None;
@@ -5393,6 +5420,7 @@ fn run() -> Result<(), String> {
                             next_pending = Some(final_tok);
                         } else {
                             // Tier-3 Exact Dense 60/60 Rescue on uncertain fork node
+                            let t_t3 = std::time::Instant::now();
                             let rescue_tok = tree_b.nodes[last_slot].token_id;
                             let rescue_pos = cur_kv_len + accepted_slots.len() - 1;
                             rt.truncate_kv(rescue_pos)?;
@@ -5416,6 +5444,7 @@ fn run() -> Result<(), String> {
                             last_backbone_h = h_dense;
                             next_pending = Some(argmax_f32(&l_dense));
                             cascade_tier3_rescues += 1;
+                            cascade_tier3_s += t_t3.elapsed().as_secs_f64();
                         }
                         pending = next_pending;
                         eprintln!(
@@ -5703,7 +5732,10 @@ fn run() -> Result<(), String> {
         if let Some(tau) = cortical_cascade_tau {
             let tok_s = if eff_s_tok > 0.0 { 1.0 / eff_s_tok } else { 0.0 };
             println!(
-                "CASCADE31B tau={tau:.2} tier2_accepted={cascade_tier2_accepted} tier3_rescues={cascade_tier3_rescues} tok_per_s={tok_s:.2} ms_per_tok={:.1}",
+                "CASCADE31B tau={tau:.2} tier2_accepted={cascade_tier2_accepted} tier3_rescues={cascade_tier3_rescues} draft_ms={:.1} tier2_ms={:.1} tier3_ms={:.1} tok_per_s={tok_s:.2} ms_per_tok={:.1}",
+                cascade_draft_s * 1000.0,
+                cascade_tier2_s * 1000.0,
+                cascade_tier3_s * 1000.0,
                 eff_s_tok * 1000.0
             );
         }

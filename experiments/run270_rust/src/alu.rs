@@ -41,7 +41,11 @@ fn tokenize(s: &str) -> Result<Vec<Tok>, String> {
         }
         if c.is_ascii_digit() || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()) {
             let start = i;
-            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == ',') {
+            while i < chars.len()
+                && (chars[i].is_ascii_digit()
+                    || chars[i] == '.'
+                    || (chars[i] == ',' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit()))
+            {
                 i += 1;
             }
             let cleaned: String = chars[start..i].iter().filter(|&&ch| ch != ',').collect();
