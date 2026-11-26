@@ -3600,7 +3600,7 @@ impl Runtime31B {
                         native.as_deref(),
                         self.threads,
                         Some(norms),
-                        k_req.max(16),
+                        k_req.max(2),
                         sf,
                     )?
                 } else {
@@ -3634,10 +3634,11 @@ impl Runtime31B {
                 best.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
             }
         }
-        if let Some(cap) = self.cfg.final_softcap {
-            for (_, v) in &mut best {
-                *v = (*v / cap).tanh() * cap;
-            }
+        let h_sq: f64 = hidden.iter().map(|&x| (x as f64) * (x as f64)).sum();
+        let h_rms = ((h_sq / (d.max(1) as f64)).sqrt() as f32).max(1e-6);
+        let logit_scale = 16.0f32 / h_rms;
+        for (_, v) in &mut best {
+            *v *= logit_scale;
         }
         Ok((best, skipped))
     }
@@ -5409,9 +5410,9 @@ fn run() -> Result<(), String> {
         let cascade_tier1_tau: f32 = cascade_tier1_tau_arg.unwrap_or_else(|| {
             if cortical_cascade_tau.is_some() {
                 if assistant_state.as_ref().is_some_and(|(a, _, _)| a.has_byte_head()) {
-                    0.45
+                    0.35
                 } else {
-                    1.8
+                    0.65
                 }
             } else {
                 0.0
@@ -5446,8 +5447,18 @@ fn run() -> Result<(), String> {
 
             if let Some(max_tree_nodes) = spec_tree_nodes {
                 let max_depth_step = spec_tree_depth.min(rem.saturating_sub(1));
-                let eff_tree_cap = max_tree_nodes.min(1 + rem.saturating_sub(1).saturating_mul(3)).max(1);
-                let tree_opt: Option<(SpecTreeBuilder, Vec<Option<Vec<f32>>>)> = if max_depth_step == 0 || eff_tree_cap <= 1 {
+                let raw_tree_cap = max_tree_nodes.min(1 + rem.saturating_sub(1).saturating_mul(3)).max(1);
+                let eff_tree_cap = if cortical_cascade_tau.is_some() {
+                    raw_tree_cap.min(5)
+                } else {
+                    raw_tree_cap
+                };
+                let cascade_fast_budget = if cortical_cascade_tau.is_some() && cascade_tier1_tau > 0.0 {
+                    rem.min(32)
+                } else {
+                    0
+                };
+                let tree_opt: Option<(SpecTreeBuilder, Vec<Option<Vec<f32>>>)> = if (max_depth_step == 0 || eff_tree_cap <= 1) && cascade_fast_budget == 0 {
                     None
                 } else {
                     let t_dr0 = std::time::Instant::now();
@@ -5455,11 +5466,7 @@ fn run() -> Result<(), String> {
                     let ngram_branches = ngram.propose_multi_branches(&history, max_depth_step, 2);
                     let ngram_hint = ngram_branches.first().map(|v| v.as_slice()).unwrap_or(&[]);
                     let ast_depth = if cortical_cascade_tau.is_some() {
-                        if suffix_hint.len() >= 4 || ngram_hint.len() >= 4 {
-                            2usize.min(max_depth_step)
-                        } else {
-                            max_depth_step.min(5)
-                        }
+                        2usize.min(max_depth_step)
                     } else {
                         max_depth_step
                     };
@@ -5468,11 +5475,16 @@ fn run() -> Result<(), String> {
                     } else {
                         lmhead_cs_sieve
                     };
+                    let tier1_tau_opt = if cascade_fast_budget > 0 {
+                        Some(cascade_tier1_tau)
+                    } else {
+                        None
+                    };
                     let res_tree: Result<Option<(SpecTreeBuilder, Vec<Option<Vec<f32>>>)>, String> = if let Some((ref ast, sl_l, fl_l)) = assistant_state {
                         let kv_bound_len = rt.layer_kv_len(sl_l).min(rt.layer_kv_len(fl_l));
                         let max_tt = kv_bound_len.saturating_sub(1);
                         let draft_q_pos = kv_bound_len + tier1_unverified.len();
-                        let (mut tree_b, m_stop, ast_sk, slot_bhs) = ast.draft_tree_with_target_head_full(
+                        let (mut tree_b, m_stop, ast_sk, slot_bhs) = ast.draft_cascade_fast_or_tree(
                             y0,
                             |tok| rt.embed_token_ro(tok),
                             &last_backbone_h,
@@ -5485,6 +5497,8 @@ fn run() -> Result<(), String> {
                             closed_thought_bans,
                             assistant_min_margin,
                             ast_sieve,
+                            tier1_tau_opt,
+                            cascade_fast_budget,
                             |is_full, q, q_pos| {
                                 let l_idx = if is_full { fl_l } else { sl_l };
                                 if rt.kv_quant.is_glyph() {
@@ -5536,7 +5550,7 @@ fn run() -> Result<(), String> {
                             ast_lm_skipped_blocks += ast_sk as u64;
                         }
                         Ok(if tree_b.nodes.len() > 1 { Some((tree_b, slot_bhs)) } else { None })
-                    } else if !suffix_hint.is_empty() || !ngram_branches.is_empty() {
+                    } else if max_depth_step > 0 && eff_tree_cap > 1 && (!suffix_hint.is_empty() || !ngram_branches.is_empty()) {
                         let mut tb = SpecTreeBuilder::new(y0, eff_tree_cap);
                         if !suffix_hint.is_empty() {
                             tb.graft_sequence_with_margin(&suffix_hint, &eos, 12.0);
@@ -5563,25 +5577,25 @@ fn run() -> Result<(), String> {
                     spec_drafted += max_d;
 
                     if let Some(tau) = cortical_cascade_tau {
-                        if cascade_tier1_tau > 0.0 && rem > 1 {
+                        if cascade_tier1_tau > 0.0 && rem >= 1 {
                             let mut fast_slots: Vec<usize> = Vec::new();
                             let mut cur_s = 0usize;
-                            while fast_slots.len() + 1 < rem {
+                            while fast_slots.len() < rem {
                                 let next_opt = tree_b
                                     .nodes
                                     .iter()
                                     .enumerate()
                                     .skip(cur_s + 1)
-                                    .find(|&(_, n)| n.parent == cur_s as i32)
+                                    .find(|&(idx, n)| {
+                                        n.parent == cur_s as i32
+                                            && tree_b.slot_margin(idx) >= cascade_tier1_tau
+                                            && slot_bhs.get(idx).and_then(|o| o.as_ref()).is_some()
+                                    })
                                     .map(|(idx, _)| idx);
                                 let Some(cs) = next_opt else { break; };
-                                if tree_b.slot_margin(cs) >= cascade_tier1_tau && slot_bhs.get(cs).and_then(|o| o.as_ref()).is_some() {
-                                    fast_slots.push(cs);
-                                    cur_s = cs;
-                                    if eos.contains(&tree_b.nodes[cs].token_id) {
-                                        break;
-                                    }
-                                } else {
+                                fast_slots.push(cs);
+                                cur_s = cs;
+                                if eos.contains(&tree_b.nodes[cs].token_id) {
                                     break;
                                 }
                             }

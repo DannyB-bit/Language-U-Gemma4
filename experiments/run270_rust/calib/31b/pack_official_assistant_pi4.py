@@ -189,7 +189,7 @@ def main() -> int:
             args.out,
             body_bits=args.body_bits,
             block_size=64,
-            has_fwht=(args.body_bits == 4),
+            has_fwht=(args.body_bits in (2, 4)),
         )
     finally:
         if tmp_dir_obj is not None:

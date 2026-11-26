@@ -738,7 +738,15 @@ impl AssistantRuntime {
                 effective_bans.push(prev_tok);
             }
             if let Some((ref bh, ref trie)) = self.byte_head {
-                bh.decode_top_k_tokens(h_final, trie, &effective_bans, want_k.max(4), want_k)
+                bh.decode_top_k_tokens_native(
+                    h_final,
+                    trie,
+                    &effective_bans,
+                    want_k.max(4),
+                    want_k,
+                    self.model.native.as_ref(),
+                    self.threads,
+                )
             } else if self.cfg.has_lm_head {
                 let native = self.model.native.as_ref();
                 let (mut logits, sk) = if let Some(sf) = lmhead_cs_sieve {
@@ -882,6 +890,158 @@ impl AssistantRuntime {
         Ok((tree, margin_stopped, total_skipped, slot_bhs))
     }
 
+    /// Zero-waste Tier-1 fast-cascade drafter for `--cortical-cascade`:
+    /// runs single-path greedy Assistant steps (`branch_k=2`, ZERO sibling or lookahead expansion)
+    /// while `top1 - top2 >= tier1_fast_tau` and `!eos.contains(&tok)`. If step 0 falls below
+    /// `tier1_fast_tau` (or predicts EOS), delegates seamlessly to `draft_tree_with_target_head_full`
+    /// for full multi-branch Tier-2 / Tier-3 verification.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draft_cascade_fast_or_tree<F, A, S, N>(
+        &self,
+        first_tok: u32,
+        mut embed_fn: F,
+        first_backbone_h: &[f32],
+        start_q_pos: usize,
+        max_depth: usize,
+        max_nodes: usize,
+        ngram_hint: &[u32],
+        suffix_hint: &[u32],
+        eos: &[u32],
+        ban_tokens: &[u32],
+        min_logit_margin: f32,
+        lmhead_cs_sieve: Option<f32>,
+        tier1_fast_tau: Option<f32>,
+        max_fast_streak: usize,
+        mut attend_fn: A,
+        mut shared_score_fn: S,
+        mut norm_bh_fn: N,
+    ) -> Result<(crate::speculative::SpecTreeBuilder, usize, i64, Vec<Option<Vec<f32>>>), String>
+    where
+        F: FnMut(u32) -> Result<Vec<f32>, String>,
+        A: FnMut(bool, &[f32], usize) -> Result<Vec<f32>, String>,
+        S: FnMut(&[f32], &[f32], u32, usize, &[u32]) -> Result<(Vec<(u32, f32)>, i64), String>,
+        N: FnMut(&[f32]) -> Result<Vec<f32>, String>,
+    {
+        if let Some(fast_tau) = tier1_fast_tau {
+            if fast_tau > 0.0 && max_fast_streak >= 1 {
+                let mut total_skipped = 0i64;
+                let mut score_two = |h_final: &[f32], next_bh: &[f32], prev_tok: u32, tot_sk: &mut i64|
+                 -> Result<Vec<(u32, f32)>, String> {
+                    let mut effective_bans = ban_tokens.to_vec();
+                    if !ban_tokens.is_empty() && !(236770..=236820).contains(&prev_tok) && !effective_bans.contains(&prev_tok) {
+                        effective_bans.push(prev_tok);
+                    }
+                    if let Some((ref bh, ref trie)) = self.byte_head {
+                        bh.decode_top_k_tokens_native(
+                            h_final,
+                            trie,
+                            &effective_bans,
+                            4,
+                            2,
+                            self.model.native.as_ref(),
+                            self.threads,
+                        )
+                    } else if self.cfg.has_lm_head {
+                        let native = self.model.native.as_ref();
+                        let (mut logits, sk) = if let Some(sf) = lmhead_cs_sieve {
+                            self.model.mat("model.embed_tokens.weight")?.project_lmhead_cs(
+                                h_final,
+                                1,
+                                native,
+                                self.threads,
+                                Some(&self.embed_tile_norms_fp16),
+                                16,
+                                sf,
+                            )?
+                        } else {
+                            (
+                                self.model.mat("model.embed_tokens.weight")?.project_batch(h_final, 1, native, self.threads)?,
+                                0,
+                            )
+                        };
+                        *tot_sk += sk;
+                        for &tid in &effective_bans {
+                            let u = tid as usize;
+                            if u < logits.len() {
+                                logits[u] = -1.0e9;
+                            }
+                        }
+                        let (t1, v1, v2) = argmax_with_top2(&logits);
+                        Ok(vec![(t1, v1), (u32::MAX, v2)])
+                    } else {
+                        let (cands, sk) = shared_score_fn(h_final, next_bh, prev_tok, 2, &effective_bans)?;
+                        *tot_sk += sk;
+                        Ok(cands)
+                    }
+                };
+
+                let emb0 = embed_fn(first_tok)?;
+                let (hf0, raw_nh0) =
+                    self.forward_backbone_step_with_attend(&emb0, first_backbone_h, start_q_pos, &mut attend_fn)?;
+                let nh0 = norm_bh_fn(&raw_nh0)?;
+                let c0 = score_two(&hf0, &nh0, first_tok, &mut total_skipped)?;
+                if let Some(&(tok0, v0)) = c0.first() {
+                    let v0_2 = c0.get(1).map_or(v0 - 30.0, |c| c.1);
+                    let m0 = (v0 - v0_2).max(0.0);
+                    if m0 >= fast_tau && !eos.contains(&tok0) {
+                        let cap = 1 + max_fast_streak;
+                        let mut tree = crate::speculative::SpecTreeBuilder::new(first_tok, cap);
+                        let mut slot_bhs: Vec<Option<Vec<f32>>> = Vec::with_capacity(cap);
+                        slot_bhs.push(Some(first_backbone_h.to_vec()));
+                        if let Some(s1) = tree.insert_child(0, tok0) {
+                            tree.set_slot_margin(s1, m0);
+                            slot_bhs.push(Some(nh0.clone()));
+                            let mut cur_slot = s1;
+                            let mut cur_tok = tok0;
+                            let mut cur_bh = nh0;
+                            for step in 1..max_fast_streak {
+                                let emb = embed_fn(cur_tok)?;
+                                let (hf, raw_nh) = self.forward_backbone_step_with_attend(
+                                    &emb,
+                                    &cur_bh,
+                                    start_q_pos + step,
+                                    &mut attend_fn,
+                                )?;
+                                let nh = norm_bh_fn(&raw_nh)?;
+                                let cs = score_two(&hf, &nh, cur_tok, &mut total_skipped)?;
+                                let Some(&(tk_i, vi)) = cs.first() else { break; };
+                                let vi_2 = cs.get(1).map_or(vi - 30.0, |c| c.1);
+                                let mi = (vi - vi_2).max(0.0);
+                                if mi < fast_tau || eos.contains(&tk_i) {
+                                    break;
+                                }
+                                let Some(ns) = tree.insert_child(cur_slot, tk_i) else { break; };
+                                tree.set_slot_margin(ns, mi);
+                                slot_bhs.push(Some(nh.clone()));
+                                cur_slot = ns;
+                                cur_tok = tk_i;
+                                cur_bh = nh;
+                            }
+                        }
+                        return Ok((tree, 0, total_skipped, slot_bhs));
+                    }
+                }
+            }
+        }
+        self.draft_tree_with_target_head_full(
+            first_tok,
+            embed_fn,
+            first_backbone_h,
+            start_q_pos,
+            max_depth,
+            max_nodes,
+            ngram_hint,
+            suffix_hint,
+            eos,
+            ban_tokens,
+            min_logit_margin,
+            lmhead_cs_sieve,
+            attend_fn,
+            shared_score_fn,
+            norm_bh_fn,
+        )
+    }
+
     /// Execute one autoregressive speculative draft step reusing target `L58`/`L59` KV states.
     ///
     /// Returns `(predicted_next_token, next_backbone_hidden_state, logits)`.
@@ -991,7 +1151,14 @@ impl AssistantRuntime {
                 if !ban_tokens.is_empty() && !(236770..=236820).contains(&cur_tok) && !effective_bans.contains(&cur_tok) {
                     effective_bans.push(cur_tok);
                 }
-                let (tok, lp1, lp2, _) = bh.decode_token_beam(&h_final, trie, &effective_bans, 2)?;
+                let (tok, lp1, lp2, _) = bh.decode_token_beam_native(
+                    &h_final,
+                    trie,
+                    &effective_bans,
+                    2,
+                    self.model.native.as_ref(),
+                    self.threads,
+                )?;
                 (tok, next_h, lp1, lp2)
             } else {
                 let (raw_tok, next_h, mut logits, sk) = self.forward_step_logits_cs(
@@ -1612,6 +1779,73 @@ mod tests {
         let max_ext_d = tree_ext.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
         assert!(norm_calls >= 2, "expected intermediate norm_bh_fn calls >= 2, got {norm_calls}");
         assert!(max_ext_d >= 2, "expected depth reservation >= 2 even with max_nodes=4, got {max_ext_d}");
+
+        // Verify V10 fast-cascade streak skips sibling/lookahead calls when margin >= tau,
+        // and falls back to multi-branch tree when step-0 margin < tau.
+        let mut fast_score_calls = 0usize;
+        let (tree_fast, _, _, bhs_fast) = rt_shared
+            .draft_cascade_fast_or_tree(
+                2,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                3,
+                4,
+                8,
+                &[],
+                &[],
+                &[1, 106],
+                &[100, 101],
+                0.0,
+                None,
+                Some(1.0),
+                3,
+                |is_full, q, _qp| {
+                    let out_dim = if is_full { n_heads * hd_full } else { n_heads * hd_slide };
+                    let _ = q;
+                    Ok(vec![0.05f32; out_dim])
+                },
+                |_hf, _nb, _prev, want_k, _bans| {
+                    fast_score_calls += 1;
+                    assert!(want_k <= 2, "fast cascade should request branch_k<=2, got {want_k}");
+                    Ok((vec![(42, 10.0), (43, 8.0)], 0))
+                },
+                |raw_bh| Ok(raw_bh.iter().map(|v| v * 0.5).collect()),
+            )
+            .unwrap();
+        assert_eq!(tree_fast.nodes.len(), 4); // root + 3 fast streak tokens (zero siblings!)
+        assert_eq!(fast_score_calls, 3);
+        assert_eq!(bhs_fast.len(), 4);
+        assert!(bhs_fast.iter().all(|o| o.is_some()));
+
+        let (tree_fork, _, _, _) = rt_shared
+            .draft_cascade_fast_or_tree(
+                2,
+                |_| Ok(tok_emb.clone()),
+                &back_h,
+                3,
+                3,
+                8,
+                &[],
+                &[],
+                &[1, 106],
+                &[100, 101],
+                0.0,
+                None,
+                Some(2.0),
+                3,
+                |is_full, q, _qp| {
+                    let out_dim = if is_full { n_heads * hd_full } else { n_heads * hd_slide };
+                    let _ = q;
+                    Ok(vec![0.05f32; out_dim])
+                },
+                |_hf, _nb, _prev, want_k, _bans| {
+                    let _ = want_k;
+                    Ok((vec![(42, 9.0), (43, 8.6), (44, 7.8)], 0))
+                },
+                |raw_bh| Ok(raw_bh.iter().map(|v| v * 0.5).collect()),
+            )
+            .unwrap();
+        assert!(tree_fork.nodes.len() > 4, "expected low-margin step0 to fall back to multi-branch tree, got {}", tree_fork.nodes.len());
 
         let _ = std::fs::remove_file(&tmp_t16c);
         let _ = std::fs::remove_file(&tmp_bhdr);

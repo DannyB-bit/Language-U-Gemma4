@@ -689,9 +689,9 @@ impl ByteHeadDecoder {
         completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         let (top1_logp, best_tok, best_depth) = completed[0];
         let top2_logp = if let Some(&(s2, _, _)) = completed.get(1) {
-            s2.max(pruned_alt_logp)
+            s2
         } else if pruned_alt_logp.is_finite() {
-            pruned_alt_logp
+            pruned_alt_logp.min(top1_logp)
         } else {
             top1_logp - 30.0
         };
@@ -788,6 +788,270 @@ impl ByteHeadDecoder {
 
         if completed.is_empty() {
             return Err("ByteHeadDecoder::decode_top_k_tokens: no valid unbanned token reached <eot>".into());
+        }
+        completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let mut out = Vec::with_capacity(k_req.min(completed.len()));
+        for (lp, tid) in completed {
+            if !out.iter().any(|&(t, _)| t == tid) {
+                out.push((tid, lp));
+                if out.len() >= k_req {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Accelerated initial projection `s_0 = tanh(W_init h + b_init)`, `ctx = W_ctx h`
+    /// using multi-threaded NEON/AVX2 `neon_gemv_i8_scale_bias_c` when available.
+    pub fn init_state_and_ctx_native(
+        &self,
+        h_final: &[f32],
+        native: Option<&crate::t16c::NativeTile16Kernel>,
+        threads: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        if let Some(gemv_fn) = native.and_then(|nk| nk.gemv_i8_scale_bias_fn) {
+            if h_final.len() != self.d_in {
+                return Err(format!(
+                    "BHDR h_final dim mismatch: {} != {}",
+                    h_final.len(),
+                    self.d_in
+                ));
+            }
+            let db = self.d_byte;
+            let mut s0 = vec![0.0f32; db];
+            let mut ctx = vec![0.0f32; 3 * db];
+            let nt = threads.max(1) as i32;
+            let rc1 = unsafe {
+                gemv_fn(
+                    self.w_init.as_ptr(),
+                    self.s_init.as_ptr(),
+                    self.b_init.as_ptr(),
+                    h_final.as_ptr(),
+                    s0.as_mut_ptr(),
+                    db as i32,
+                    self.d_in as i32,
+                    1,
+                    nt,
+                )
+            };
+            let rc2 = unsafe {
+                gemv_fn(
+                    self.w_ctx.as_ptr(),
+                    self.s_ctx.as_ptr(),
+                    std::ptr::null(),
+                    h_final.as_ptr(),
+                    ctx.as_mut_ptr(),
+                    (3 * db) as i32,
+                    self.d_in as i32,
+                    0,
+                    nt,
+                )
+            };
+            if rc1 == 0 && rc2 == 0 {
+                return Ok((s0, ctx));
+            }
+        }
+        self.init_state_and_ctx(h_final)
+    }
+
+    /// Exact trie-constrained single-token beam search with optional native NEON/AVX2 `init_state_and_ctx`.
+    pub fn decode_token_beam_native(
+        &self,
+        h_final: &[f32],
+        trie: &BpePrefixTrie,
+        ban_tokens: &[u32],
+        beam_width: usize,
+        native: Option<&crate::t16c::NativeTile16Kernel>,
+        threads: usize,
+    ) -> Result<(u32, f32, f32, usize), String> {
+        let bw = beam_width.max(1);
+        let (s0, ctx) = self.init_state_and_ctx_native(h_final, native, threads)?;
+
+        struct Beam {
+            cum_logp: f32,
+            node: u32,
+            depth: usize,
+            state: Vec<f32>,
+        }
+        struct NextCand {
+            cum_logp: f32,
+            child: u32,
+            depth: usize,
+            parent_idx: usize,
+            sym: u16,
+        }
+
+        let mut beams = vec![Beam {
+            cum_logp: 0.0f32,
+            node: 0u32,
+            depth: 0usize,
+            state: s0,
+        }];
+        let mut completed: Vec<(f32, u32, usize)> = Vec::new();
+        let mut pruned_alt = f32::NEG_INFINITY;
+
+        for step_idx in 0..=self.max_bytes {
+            let allow_expand = step_idx < self.max_bytes;
+            let mut next_cands: Vec<NextCand> = Vec::new();
+
+            for (bi, bm) in beams.iter().enumerate() {
+                let lps = self.node_log_probs(&bm.state, trie, bm.node, ban_tokens);
+                for (sym, lp) in lps {
+                    let tot = bm.cum_logp + lp;
+                    if sym == SYM_EOT {
+                        if let Some(tid) = trie.terminal_token(bm.node) {
+                            completed.push((tot, tid, bm.depth));
+                        }
+                    } else if allow_expand {
+                        if let Some(child) = trie.step(bm.node, sym) {
+                            next_cands.push(NextCand {
+                                cum_logp: tot,
+                                child,
+                                depth: bm.depth + 1,
+                                parent_idx: bi,
+                                sym,
+                            });
+                        }
+                    } else {
+                        pruned_alt = pruned_alt.max(tot);
+                    }
+                }
+            }
+
+            if !allow_expand || next_cands.is_empty() {
+                break;
+            }
+            next_cands.sort_unstable_by(|a, b| b.cum_logp.total_cmp(&a.cum_logp));
+            if next_cands.len() > bw {
+                pruned_alt = pruned_alt.max(next_cands[bw].cum_logp);
+                next_cands.truncate(bw);
+            }
+
+            completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            if completed.len() >= 2 && next_cands[0].cum_logp <= completed[1].0 {
+                break;
+            }
+
+            let mut next_beams = Vec::with_capacity(next_cands.len());
+            for c in next_cands {
+                let nstate = self.gru_step(&beams[c.parent_idx].state, c.sym, &ctx);
+                next_beams.push(Beam {
+                    cum_logp: c.cum_logp,
+                    node: c.child,
+                    depth: c.depth,
+                    state: nstate,
+                });
+            }
+            beams = next_beams;
+        }
+
+        if completed.is_empty() {
+            return Err("ByteHeadDecoder::decode_token_beam_native: no valid unbanned token reached <eot>".into());
+        }
+        completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let (top1_logp, best_tok, best_depth) = completed[0];
+        let top2_logp = if completed.len() >= 2 {
+            completed[1].0
+        } else if pruned_alt.is_finite() {
+            pruned_alt.min(top1_logp)
+        } else {
+            top1_logp - 30.0
+        };
+        Ok((best_tok, top1_logp, top2_logp, best_depth))
+    }
+
+    /// Exact trie-constrained top-k beam search with optional native NEON/AVX2 `init_state_and_ctx`.
+    pub fn decode_top_k_tokens_native(
+        &self,
+        h_final: &[f32],
+        trie: &BpePrefixTrie,
+        ban_tokens: &[u32],
+        beam_width: usize,
+        top_k: usize,
+        native: Option<&crate::t16c::NativeTile16Kernel>,
+        threads: usize,
+    ) -> Result<Vec<(u32, f32)>, String> {
+        let k_req = top_k.max(1);
+        let bw = beam_width.max(k_req).max(2);
+        let (s0, ctx) = self.init_state_and_ctx_native(h_final, native, threads)?;
+
+        struct Beam {
+            cum_logp: f32,
+            node: u32,
+            depth: usize,
+            state: Vec<f32>,
+        }
+        struct NextCand {
+            cum_logp: f32,
+            child: u32,
+            depth: usize,
+            parent_idx: usize,
+            sym: u16,
+        }
+
+        let mut beams = vec![Beam {
+            cum_logp: 0.0f32,
+            node: 0u32,
+            depth: 0usize,
+            state: s0,
+        }];
+        let mut completed: Vec<(f32, u32)> = Vec::new();
+
+        for step_idx in 0..=self.max_bytes {
+            let allow_expand = step_idx < self.max_bytes;
+            let mut next_cands: Vec<NextCand> = Vec::new();
+
+            for (bi, bm) in beams.iter().enumerate() {
+                let lps = self.node_log_probs(&bm.state, trie, bm.node, ban_tokens);
+                for (sym, lp) in lps {
+                    let tot = bm.cum_logp + lp;
+                    if sym == SYM_EOT {
+                        if let Some(tid) = trie.terminal_token(bm.node) {
+                            completed.push((tot, tid));
+                        }
+                    } else if allow_expand {
+                        if let Some(child) = trie.step(bm.node, sym) {
+                            next_cands.push(NextCand {
+                                cum_logp: tot,
+                                child,
+                                depth: bm.depth + 1,
+                                parent_idx: bi,
+                                sym,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !allow_expand || next_cands.is_empty() {
+                break;
+            }
+            next_cands.sort_unstable_by(|a, b| b.cum_logp.total_cmp(&a.cum_logp));
+            if next_cands.len() > bw {
+                next_cands.truncate(bw);
+            }
+
+            completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+            if completed.len() >= k_req && next_cands[0].cum_logp <= completed[k_req - 1].0 {
+                break;
+            }
+
+            let mut next_beams = Vec::with_capacity(next_cands.len());
+            for c in next_cands {
+                let nstate = self.gru_step(&beams[c.parent_idx].state, c.sym, &ctx);
+                next_beams.push(Beam {
+                    cum_logp: c.cum_logp,
+                    node: c.child,
+                    depth: c.depth,
+                    state: nstate,
+                });
+            }
+            beams = next_beams;
+        }
+
+        if completed.is_empty() {
+            return Err("ByteHeadDecoder::decode_top_k_tokens_native: no valid unbanned token reached <eot>".into());
         }
         completed.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::with_capacity(k_req.min(completed.len()));
@@ -1013,5 +1277,20 @@ mod tests {
         assert_eq!(tok, 11); // "▁ok" unrolled via [SYM_SP, 'o', 'k'] -> SYM_EOT!
         assert_eq!(depth, 3);
         assert!(top1_lp > top2_lp);
+
+        let nk = crate::t16c::NativeTile16Kernel::discover(None);
+        let (s0_ref, ctx_ref) = dec.init_state_and_ctx(&h0).unwrap();
+        let (s0_nat, ctx_nat) = dec.init_state_and_ctx_native(&h0, nk.as_ref(), 2).unwrap();
+        for (a, b) in s0_ref.iter().zip(s0_nat.iter()) {
+            assert!((a - b).abs() < 1e-4, "s0 mismatch {a} != {b}");
+        }
+        for (a, b) in ctx_ref.iter().zip(ctx_nat.iter()) {
+            assert!((a - b).abs() < 1e-4, "ctx mismatch {a} != {b}");
+        }
+        let (tok_nat, lp1_nat, _, depth_nat) =
+            dec.decode_token_beam_native(&h0, &trie, &[10], 2, nk.as_ref(), 2).unwrap();
+        assert_eq!(tok_nat, tok);
+        assert_eq!(depth_nat, depth);
+        assert!((lp1_nat - top1_lp).abs() < 1e-4);
     }
 }

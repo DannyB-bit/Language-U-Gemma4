@@ -67,8 +67,10 @@ V10_HEAD_ROUTED = 8        # 8/32 = 25.0% Tier-2 active attention heads
 V10_EARLY_LAYER = 29       # Global full-attention midpoint layer for early-exit confidence gating
 GLOBAL_ATTN_LAYERS = set(v90.GLOBAL_ATTN_LAYERS)
 
-# Sub-6.30 GiB layout: entry L0..1 + cliff L48..57 in 2b_gauss COLBLOCK; L58..59 in 3b; L2..47 in 1b_rm COLBLOCK
+# Sub-6.30 GiB layout: entry L0..1 + cliff L48..57 in 2b_gauss COLBLOCK; L58..59 in 3b; empirical cliff down_proj in 2b_gauss
+V10_PIPELINE_REVISION = "v10.2_fix_embed_cliff_0xa2_bhdr256"
 V10_2B_MLP_LAYERS = {0, 1} | set(range(48, 58))
+V10_2B_DOWN_LAYERS = {9, 34, 38, 40, 43, 44, 45, 46, 47}
 MAX_V10_T16C_BYTES = int(6.30 * (1024**3))
 
 OUT_DIR = Path(os.environ.get("V10_OUT_DIR", "/content/v10_outputs"))
@@ -86,17 +88,84 @@ OUT_BHDR = OUT_DIR / "gemma4_31b_v10_assistant.bhdr"
 OUT_REPORT = OUT_DIR / "v10_report.json"
 
 
+def fit_v10_als_lr_int8(
+    w_target: torch.Tensor,
+    w_base: torch.Tensor,
+    xv: torch.Tensor,
+    lr_rank: int,
+) -> Tuple[Optional[tuple], Optional[torch.Tensor]]:
+    """
+    Activation-weighted 2-step Alternating Least Squares INT8 low-rank residual fit.
+    Gates on actual output activation error reduction (`y_err_after <= 0.96 * y_err_base`)
+    and out-of-distribution norm stability (`lr_norm <= 0.65 * residual_norm`) rather than
+    unweighted Frobenius norm.
+    """
+    if lr_rank <= 0:
+        return None, None
+    do, di = int(w_target.shape[0]), int(w_target.shape[1])
+    x_f = xv[: min(4096, xv.shape[0])].float()
+    w_res = w_target.float() - w_base.float()
+    y_err = x_f @ w_res.T
+    base_y_norm = float(y_err.norm().item())
+    res_w_norm = float(w_res.norm().item())
+    if base_y_norm < 1e-8 or res_w_norm < 1e-8:
+        return None, None
+
+    use_dual = x_f.shape[0] < di
+    gram = (x_f @ x_f.T) if use_dual else (x_f.T @ x_f)
+    reg = max(1e-2 * float(gram.diagonal().mean().item()), 1e-4)
+    gram.diagonal().add_(reg)
+    if x_f.shape[0] <= do:
+        _, evs = torch.linalg.eigh(y_err @ y_err.T)
+        u_f = y_err.T @ evs[:, -lr_rank:].flip(1).contiguous()
+    else:
+        _, evs = torch.linalg.eigh(y_err.T @ y_err)
+        u_f = evs[:, -lr_rank:].flip(1).contiguous()
+
+    v_f = torch.zeros((lr_rank, di), dtype=torch.float32, device=w_target.device)
+    for _ in range(2):
+        u_f = u_f / u_f.norm(dim=0, keepdim=True).clamp(min=1e-6)
+        rhs_v = y_err @ u_f
+        v_f = (
+            (x_f.T @ torch.linalg.solve(gram, rhs_v))
+            if use_dual
+            else torch.linalg.solve(gram, x_f.T @ rhs_v)
+        ).T.contiguous()
+        xv_t = x_f @ v_f.T
+        vv = xv_t.T @ xv_t
+        vv.diagonal().add_(1e-4 * float(vv.diagonal().mean().item()) + 1e-6)
+        u_f = torch.linalg.solve(vv, xv_t.T @ y_err).T.contiguous()
+
+    su = (u_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
+    sv = (v_f.abs().amax(dim=1) / 127.0).clamp(min=1e-8)
+    u_i8 = torch.clamp(torch.round(u_f / su.unsqueeze(1)), -127, 127).to(torch.int8)
+    v_i8 = torch.clamp(torch.round(v_f / sv.unsqueeze(1)), -127, 127).to(torch.int8)
+    lr_dense = (u_i8.float() * su.unsqueeze(1)) @ (v_i8.float() * sv.unsqueeze(1))
+    after_y_norm = float((y_err - x_f @ lr_dense.T).norm().item())
+    if after_y_norm >= 0.96 * base_y_norm or float(lr_dense.norm().item()) > 1.25 * res_w_norm + 1e-6:
+        return None, None
+    lr_t = (
+        su.cpu().numpy().astype("<f4"),
+        sv.cpu().numpy().astype("<f4"),
+        u_i8.cpu().numpy().astype(np.int8),
+        v_i8.cpu().numpy().astype(np.int8),
+    )
+    return lr_t, lr_dense
+
+
 def get_v10_proj_spec(l_idx: int, pname: str, is_full: Optional[bool] = None) -> Tuple[int, int, int, bool, bool]:
     """Return `(mode_i, block_size, lr_rank, is_rowmajor, is_colblock)` for V10 sub-6.30 GiB Cascade."""
     if l_idx >= 58:
         lr_rk = 24 if ("k_proj" in pname or "v_proj" in pname) else 16
         return (4, V10_BLOCK_SIZE, lr_rk, False, ("o_proj" in pname or "down_proj" in pname))
     if pname.startswith("self_attn."):
-        lr_rk = 16 if ("q_proj" in pname or "o_proj" in pname) else 8
-        return (5, V10_BLOCK_SIZE, lr_rk, False, True)
+        return (5, V10_BLOCK_SIZE, 0, False, True)
     if l_idx in V10_2B_MLP_LAYERS:
-        return (5, V10_BLOCK_SIZE, 16, False, True)
-    return (0, V10_BLOCK_SIZE, 16, True, True)
+        return (5, V10_BLOCK_SIZE, 0, False, True)
+    if pname == "mlp.down_proj" and l_idx in V10_2B_DOWN_LAYERS:
+        return (5, V10_BLOCK_SIZE, 0, False, True)
+    lr_rk = 8 if pname == "mlp.down_proj" else 0
+    return (0, V10_BLOCK_SIZE, lr_rk, True, True)
 
 
 def compute_v10_budget_bytes(
@@ -559,7 +628,7 @@ def run_selftest() -> int:
         max_diff = max(max_diff, float((u_ref.reshape(do, n_blks, V10_BLOCK_SIZE) - u_got).abs().max().item()))
     gate("Gate 2: Bitplane Unpack Parity (1b/2b_gauss/3b)", max_diff < 1e-6, f"max_diff={max_diff:.2e}")
 
-    # Gate 3: STE INT8 Low-Rank exact export parity
+    # Gate 3: STE INT8 Low-Rank exact export parity + activation-weighted ALS fit check
     u_lr = torch.from_numpy((rng.standard_normal((32, 8)) * 0.04).astype(np.float32))
     v_lr = torch.from_numpy((rng.standard_normal((8, 64)) * 0.04).astype(np.float32))
     u_ste, v_ste = v93.ste_int8_lr(u_lr, v_lr)
@@ -569,7 +638,11 @@ def run_selftest() -> int:
         torch.from_numpy(vi8.astype(np.float32)) * torch.from_numpy(sv).unsqueeze(1)
     )
     lr_diff = float((w_ste - w_exp).abs().max().item())
-    gate("Gate 3: STE INT8 Low-Rank Export Parity", lr_diff < 1e-6, f"max_diff={lr_diff:.2e}")
+    x_als = torch.randn(48, 64)
+    w_als_tgt = (u_lr * 2.5) @ (v_lr * 2.5) + torch.randn(32, 64) * 0.002
+    als_t, als_d = fit_v10_als_lr_int8(w_als_tgt, torch.zeros_like(w_als_tgt), x_als, 8)
+    als_ok = (als_t is not None and als_d is not None and float(((w_als_tgt - als_d) @ x_als.T).norm().item()) < 0.25 * float((w_als_tgt @ x_als.T).norm().item()))
+    gate("Gate 3: STE INT8 Low-Rank Export Parity & ALS Activation Fit", lr_diff < 1e-6 and als_ok, f"max_diff={lr_diff:.2e} als={als_ok}")
 
     # Gate 4: Authentic Dual-Regime E2E BitSerial KL convergence (dense + sparse mask)
     do, di, bsz = 64, 64, 64
@@ -639,11 +712,15 @@ def run_selftest() -> int:
     return failures
 
 
-def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int = 2) -> Dict[str, object]:
+def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int = 2, fresh: bool = False) -> Dict[str, object]:
     """Execute complete V10 Sub-6.30 GiB build + High-RAM/L4 E2E Dual KL + Target-Shared EAGLE-3 Assistant."""
     from huggingface_hub import snapshot_download
     from safetensors import safe_open
     from safetensors.torch import save_file as st_save_file
+
+    if fresh and CKPT_DIR.exists():
+        print(f"[V10 Fresh] Wiping stale checkpoint dir {CKPT_DIR}", flush=True)
+        shutil.rmtree(CKPT_DIR, ignore_errors=True)
 
     t0_all = time.perf_counter()
     assert torch.cuda.is_available(), "CUDA GPU required for V10 training!"
@@ -718,7 +795,15 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
                 tp = torch.zeros((do_v, die_v), dtype=torch.float32)
                 tp[:, :di_v] = t
                 t = tp
-            pb_v = v90._c_quant_and_pack_t16c(lib_fq, (t.to(device).reshape(-1, 64) @ H64_GPU).cpu(), 64, 6)
+            w_rot_v = (t.to(device).reshape(-1, 64) @ H64_GPU).reshape(do_v, die_v).contiguous().cpu()
+            assert w_rot_v.shape == (do_v, die_v), f"Vision shape mismatch {w_rot_v.shape} != {(do_v, die_v)}"
+            pb_v = v90._c_quant_and_pack_t16c(lib_fq, w_rot_v, 64, 6)
+            if not vision_mat_recs and do_v >= 16:
+                r_chk = (do_v // 16) * 16
+                uv_c, scv_c, _ = v90.unpack_tile16_headers_and_units(pb_v, do_v, die_v, 64, 6, H64_GPU)
+                wv_dec = v90.reconstruct_from_headers(uv_c[:r_chk], scv_c[:r_chk], None, None, H64_GPU).cpu()
+                vis_cos = float(F.cosine_similarity(wv_dec.reshape(-1), t[:r_chk].reshape(-1), dim=0).item())
+                assert vis_cos >= 0.975, f"Stage 1 Vision pack parity failure on {name}: cos={vis_cos:.5f}"
             vision_mat_recs.append((name, do_v, die_v, 64, 3 | p3.T16C_GAUSS_BIT, False, True, pb_v, None, None))
 
         for sk_v in ("model.vision_tower.std_bias", "model.vision_tower.std_scale"):
@@ -749,11 +834,19 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     for r0 in range(0, vocab_sz, 16384):
         r1 = min(r0 + 16384, vocab_sz)
         w_c = emb_perm_teach[r0:r1].to(device, dtype=torch.float32)
-        w_rot = (w_c.reshape(-1, V10_BLOCK_SIZE) @ H256_GPU).contiguous()
+        w_rot = (w_c.reshape(-1, V10_BLOCK_SIZE) @ H256_GPU).reshape(r1 - r0, D_MOD).contiguous()
+        assert w_rot.shape == (r1 - r0, D_MOD), f"Embed shape mismatch {w_rot.shape} != {(r1 - r0, D_MOD)}"
         pb_c = v90._c_quant_and_pack_t16c(lib_fq, w_rot, V10_BLOCK_SIZE, 6)
         emb_pb[(r0 // 16) * tblk_emb : (r0 // 16) * tblk_emb + pb_c.size] = pb_c
         u_c, sc_c, _ = v90.unpack_tile16_headers_and_units(pb_c, r1 - r0, D_MOD, V10_BLOCK_SIZE, 6, H256_GPU)
         emb_eff[r0:r1] = v90.reconstruct_from_headers(u_c, sc_c, None, None, H256_GPU).to(torch.float16).cpu()
+        if r0 == 0:
+            cos_t0 = float(F.cosine_similarity(emb_eff[0:16].float().reshape(-1), w_c[0:16].cpu().reshape(-1), dim=0).item())
+            cos_t500 = float(F.cosine_similarity(emb_eff[8000:8016].float().reshape(-1), w_c[8000:8016].cpu().reshape(-1), dim=0).item())
+            assert cos_t0 >= 0.975 and cos_t500 >= 0.975, (
+                f"Stage 1 embed_tokens decode sanity FAILED: tile0={cos_t0:.5f} tile500={cos_t500:.5f}"
+            )
+            print(f"  [V10 Stage 1 Embed Check] tile0_cos={cos_t0:.5f} tile500_cos={cos_t500:.5f} (PASS >= 0.975)", flush=True)
         del w_c, w_rot, pb_c, u_c, sc_c
     torch.cuda.empty_cache()
 
@@ -789,16 +882,22 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     s2_done_ckpt = CKPT_DIR / "stage2_meta.pt"
     if s2_done_ckpt.is_file():
         meta2 = torch.load(s2_done_ckpt, map_location="cpu", weights_only=False)
-        start_l = int(meta2.get("next_layer", 0))
-        if start_l > 0:
-            X_teach_perm = torch.load(CKPT_DIR / "stage2_xt.pt", map_location="cpu", weights_only=True)
-            X_stud_perm = torch.load(CKPT_DIR / "stage2_xs.pt", map_location="cpu", weights_only=True)
-            pi_l_list = meta2["pi_l_list"]
-            wo_head_norms = meta2["wo_head_norms"]
-            teach_mod_sal_list = meta2["teach_mod_sal_list"]
-            for li_r in range(start_l):
-                e2e_layers.append(torch.load(CKPT_DIR / f"e2e_L{li_r:02d}.pt", map_location="cpu", weights_only=False))
-            print(f"[V10 Stage 2 Resume] Resumed from layer {start_l}/{N_LAYERS}", flush=True)
+        ckpt_rev = meta2.get("revision")
+        if ckpt_rev != V10_PIPELINE_REVISION:
+            print(f"[V10 Stage 2 Reset] Ignoring stale checkpoint revision {ckpt_rev!r} != {V10_PIPELINE_REVISION!r}", flush=True)
+            shutil.rmtree(CKPT_DIR, ignore_errors=True)
+            CKPT_DIR.mkdir(parents=True, exist_ok=True)
+        else:
+            start_l = int(meta2.get("next_layer", 0))
+            if start_l > 0:
+                X_teach_perm = torch.load(CKPT_DIR / "stage2_xt.pt", map_location="cpu", weights_only=True)
+                X_stud_perm = torch.load(CKPT_DIR / "stage2_xs.pt", map_location="cpu", weights_only=True)
+                pi_l_list = meta2["pi_l_list"]
+                wo_head_norms = meta2["wo_head_norms"]
+                teach_mod_sal_list = meta2["teach_mod_sal_list"]
+                for li_r in range(start_l):
+                    e2e_layers.append(torch.load(CKPT_DIR / f"e2e_L{li_r:02d}.pt", map_location="cpu", weights_only=False))
+                print(f"[V10 Stage 2 Resume] Resumed from layer {start_l}/{N_LAYERS} (rev={ckpt_rev})", flush=True)
 
     with safe_open(sf_path, framework="pt", device="cpu") as sf:
         for l_idx in range(start_l, N_LAYERS):
@@ -928,7 +1027,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
                 u_lr = v_lr = w_lr_d = None
                 if lrr > 0 and x_ev is not None:
                     w_b0 = v90.reconstruct_from_headers(u_g, sc_g, bi_g, inv_s, H256_GPU)
-                    lr_t, lr_d = v90._fit_als_lr_int8(w_f32, w_b0, x_ev, lrr)
+                    lr_t, lr_d = fit_v10_als_lr_int8(w_f32, w_b0, x_ev, lrr)
                     if lr_t is not None and lr_d is not None:
                         su, sv, ui8, vi8 = lr_t
                         u_lr = (torch.from_numpy(ui8.astype(np.float32)).to(device) * torch.from_numpy(su).to(device).unsqueeze(1)).cpu()
@@ -1037,6 +1136,10 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
             X_teach_perm = X_teach_next
             cos_l = float(F.cosine_similarity(X_stud_perm[-32:].reshape(-1, D_MOD).float(), X_teach_perm[-32:].reshape(-1, D_MOD).float(), dim=-1).mean().item())
             print(f"  [V10 Stage2 L{l_idx:02d}/59] cos={cos_l:.5f} e_10of84={pi_stats['perm_12of84_energy_pct']}% dt={time.perf_counter()-tl0:.1f}s", flush=True)
+            if l_idx == 0:
+                assert cos_l >= 0.96, f"Stage 2 L00 cos regression {cos_l:.5f} < 0.96 (embed/attn mismatch!)"
+            elif l_idx == N_LAYERS - 1:
+                assert cos_l >= 0.72, f"Stage 2 L59 cos regression {cos_l:.5f} < 0.72"
 
             del wq_t, wk_t, wv_t, wo_t, wg_t, wu_t, wd_t, wq_s, wk_s, wv_s, wo_s, wg_s, wu_s, wd_s, X_teach_attn_out, xm_stud_cpu
             gc.collect()
@@ -1046,7 +1149,13 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
                 torch.save(X_teach_perm.cpu(), CKPT_DIR / "stage2_xt.pt")
                 torch.save(X_stud_perm.cpu(), CKPT_DIR / "stage2_xs.pt")
                 torch.save(
-                    {"next_layer": l_idx + 1, "pi_l_list": pi_l_list, "wo_head_norms": wo_head_norms, "teach_mod_sal_list": teach_mod_sal_list},
+                    {
+                        "revision": V10_PIPELINE_REVISION,
+                        "next_layer": l_idx + 1,
+                        "pi_l_list": pi_l_list,
+                        "wo_head_norms": wo_head_norms,
+                        "teach_mod_sal_list": teach_mod_sal_list,
+                    },
                     s2_done_ckpt,
                 )
 
@@ -1097,6 +1206,9 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
         n_steps=e2e_steps,
         micro_bs=micro_bs,
         grad_accum=grad_accum,
+    )
+    assert e2e_metrics["val_kl_after"] < 5.0 and e2e_metrics["l59_cos_after"] >= 0.75, (
+        f"Stage 2.5 E2E KL failed fail-closed gate: {e2e_metrics}"
     )
     del top_ids_cpu, top_probs_cpu
 
@@ -1243,6 +1355,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     assert vm_c == total_mats and ve_c == OUT_T16C.stat().st_size, f"Bad V10 T16C {vm_c}/{total_mats}"
     cb_cnt = sdc.verify_t16c_file(OUT_T16C)["colblock_mats"]
     l59_cos_final = float(F.cosine_similarity(X_replay[-32:].reshape(-1, D_MOD).float(), X_teach_perm[-32:].reshape(-1, D_MOD).float(), dim=-1).mean().item())
+    assert l59_cos_final >= 0.72, f"Stage 3 Replay final L59 cosine failed gate: {l59_cos_final:.5f} < 0.72"
 
     # Train Target-Embed-Shared 3-step Self-Feeding EAGLE-3 Assistant (and post_cell60 C8DB + BHDR-512)
     crtr.export_crtr(crtr_layers, OUT_CRTR)
@@ -1435,7 +1548,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
         ast_sd[pa_k + "layer_scalar"] = m.lsc.detach().to(torch.bfloat16).cpu().reshape(ast_sd[pa_k + "layer_scalar"].shape)
     ast_sf = OUT_DIR / "assistant_v10_permuted.safetensors"
     st_save_file(ast_sd, str(ast_sf))
-    bhmod.pack_assistant_body_from_safetensors(ast_sf, OUT_AST_Q2, body_bits=2, block_size=64, has_fwht=False)
+    bhmod.pack_assistant_body_from_safetensors(ast_sf, OUT_AST_Q2, body_bits=2, block_size=64, has_fwht=True)
     bhmod.pack_assistant_body_from_safetensors(ast_sf, OUT_AST_Q4, body_bits=4, block_size=64, has_fwht=True)
     ast_sf.unlink(missing_ok=True)
     del opt_a, sch_a, ast_sd, best_asd, W_cand_g
@@ -1454,6 +1567,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
             k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
             v59_s = torch.stack([cap_kv59["v_norm"][gi].to(device) for gi in gis])
             h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s).cpu())
+    ast_post_g = ast_mod.post.detach().to(device=device, dtype=compute_dtype)
     del ast_mod, cap_kv58, cap_kv59
     torch.cuda.empty_cache()
 
@@ -1464,19 +1578,22 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     with torch.no_grad():
         for i0 in range(0, H_stud_tgt.shape[0], 512):
             i1 = min(i0 + 512, H_stud_tgt.shape[0])
-            lg_b = SOFTCAP * torch.tanh((H_stud_tgt[i0:i1].to(device, dtype=compute_dtype) @ emb_g.T).float() / SOFTCAP)
+            hp_b = rmsn_gpu(F.linear(H_ast_all[i0:i1].to(device, dtype=compute_dtype), ast_post_g).float(), fn_eff_g).to(compute_dtype)
+            h_blend = (0.60 * hp_b + 0.40 * H_stud_tgt[i0:i1].to(device, dtype=compute_dtype)).to(compute_dtype)
+            lg_b = SOFTCAP * torch.tanh((h_blend @ emb_g.T).float() / SOFTCAP)
             tv, ti = torch.topk(lg_b, k=64, dim=-1)
-            top_probs_t[i0:i1] = F.softmax(tv, dim=-1).cpu()
+            top_probs_t[i0:i1] = F.softmax(tv / 0.5, dim=-1).cpu()
             top_ids_t[i0:i1] = ti.to(torch.int32).cpu()
-    del emb_g, H_stud_tgt, ast_h_final
+    del emb_g, ast_post_g, H_stud_tgt, ast_h_final
     student_argmax_ids = torch.tensor(v70.select_first_valid_trie_ids(top_ids_t, trie), dtype=torch.long)
     act_bundle = OUT_DIR / "v10_bhdr_acts.pt"
     torch.save({"h_final": H_ast_all.half(), "gold_ids": student_argmax_ids, "top_ids": top_ids_t, "top_probs": top_probs_t}, act_bundle)
-    bh_rpt = bhmod.train_from_activations(act_bundle, tok_path, OUT_BHDR, d_byte=512, max_bytes=48, steps=2600, batch_size=256, lr=3e-3, device=str(device))
+    bh_rpt = bhmod.train_from_activations(act_bundle, tok_path, OUT_BHDR, d_byte=256, max_bytes=48, steps=3000, batch_size=256, lr=3e-3, device=str(device))
     act_bundle.unlink(missing_ok=True)
     bh_loaded = bhmod.load_bhdr_v1(OUT_BHDR)
     beam_hits = sum(1 for hv, gv in zip(H_ast_all[-256:].numpy().astype(np.float32), student_argmax_ids[-256:].tolist()) if bhmod.decode_bhdr_np_beam(bh_loaded, trie, hv, beam_width=2)[0] == gv)
     bh_metrics = {**bh_rpt["metrics"], "heldout_beam_top1_acc": round(beam_hits / 256.0, 4)}
+    assert bh_metrics["heldout_beam_top1_acc"] >= 0.20, f"BHDR-256 heldout_beam_top1_acc failed gate: {bh_metrics['heldout_beam_top1_acc']} < 0.20"
     del H_ast_all, student_argmax_ids, top_ids_t, top_probs_t
 
     all_artifact_paths = (OUT_T16C, OUT_CRTR, OUT_HEAD_CRTR, OUT_C8D, OUT_AST_Q2, OUT_AST_Q4, OUT_BHDR)
@@ -1490,6 +1607,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
 
     rpt = {
         "version": "V10-CORTICAL-CASCADE-DUAL-E2E-KL",
+        "revision": V10_PIPELINE_REVISION,
         "gpu": gpu_name,
         "elapsed_s": round(time.perf_counter() - t0_all, 2),
         "t16c_bytes": OUT_T16C.stat().st_size,
@@ -1501,7 +1619,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
         "crtr_mean_recall": round(float(np.mean([r["crtr_recall"] for r in layer_logs])), 5),
         "head_crtr_mean_recall": round(float(np.mean([r["head_crtr_recall"] for r in layer_logs])), 5),
         "assistant_target_shared": {"kl_before": round(akl0, 4), "kl_after": round(akl1, 4), "top1_before": round(aagr0, 4), "top1_after": round(aagr1, 4)},
-        "bhdr512": bh_metrics,
+        "bhdr256": bh_metrics,
         "artifacts": artifacts,
     }
     OUT_REPORT.write_text(json.dumps(rpt, indent=2), encoding="utf-8")
@@ -1534,10 +1652,11 @@ def main() -> int:
     ap.add_argument("--e2e-steps", type=int, default=200)
     ap.add_argument("--micro-bs", type=int, default=8)
     ap.add_argument("--grad-accum", type=int, default=2)
+    ap.add_argument("--fresh", action="store_true", help="Ignore and wipe cached Stage 2 checkpoints before running")
     args = ap.parse_args()
     if args.selftest or (not args.run and not torch.cuda.is_available()):
         return run_selftest()
-    run_v10_pipeline(e2e_steps=args.e2e_steps, micro_bs=args.micro_bs, grad_accum=args.grad_accum)
+    run_v10_pipeline(e2e_steps=args.e2e_steps, micro_bs=args.micro_bs, grad_accum=args.grad_accum, fresh=args.fresh)
     return 0
 
 

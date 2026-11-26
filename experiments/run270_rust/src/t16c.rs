@@ -2262,6 +2262,18 @@ pub type FlashGlyphAttentionGqaFn = unsafe extern "C" fn(
 
 pub type SetAndVcntAbitsFn = unsafe extern "C" fn(a_bits: i32) -> i32;
 
+pub type NeonGemvI8ScaleBiasFn = unsafe extern "C" fn(
+    w_i8: *const i8,
+    scales: *const f32,
+    biases: *const f32,
+    x_f32: *const f32,
+    y_out: *mut f32,
+    d_out: i32,
+    d_in: i32,
+    do_tanh: i32,
+    num_threads: i32,
+) -> i32;
+
 pub struct NativeTile16Kernel {
     handle: usize,
     pub path: String,
@@ -2274,6 +2286,7 @@ pub struct NativeTile16Kernel {
     pub encode_kv_glyph_fn: Option<EncodeKvGlyphFastFn>,
     pub flash_glyph_attn_fn: Option<FlashGlyphAttentionGqaFn>,
     pub set_andvcnt_abits_fn: Option<SetAndVcntAbitsFn>,
+    pub gemv_i8_scale_bias_fn: Option<NeonGemvI8ScaleBiasFn>,
 }
 
 unsafe impl Send for NativeTile16Kernel {}
@@ -2387,6 +2400,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, SetAndVcntAbitsFn>(av_sym))
             };
+            let gb_sym = sys::dlsym(h, b"neon_gemv_i8_scale_bias_c\0".as_ptr() as *const std::ffi::c_char);
+            let gemv_i8_scale_bias_fn: Option<NeonGemvI8ScaleBiasFn> = if gb_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, NeonGemvI8ScaleBiasFn>(gb_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: s.to_string(),
@@ -2399,6 +2418,7 @@ impl NativeTile16Kernel {
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
                 set_andvcnt_abits_fn,
+                gemv_i8_scale_bias_fn,
             })
         }
         #[cfg(windows)]
@@ -2464,6 +2484,12 @@ impl NativeTile16Kernel {
             } else {
                 Some(std::mem::transmute::<*mut std::ffi::c_void, SetAndVcntAbitsFn>(av_sym))
             };
+            let gb_sym = sys::GetProcAddress(h, b"neon_gemv_i8_scale_bias_c\0".as_ptr() as *const i8);
+            let gemv_i8_scale_bias_fn: Option<NeonGemvI8ScaleBiasFn> = if gb_sym.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<*mut std::ffi::c_void, NeonGemvI8ScaleBiasFn>(gb_sym))
+            };
             Ok(Self {
                 handle: h as usize,
                 path: path.display().to_string(),
@@ -2476,6 +2502,7 @@ impl NativeTile16Kernel {
                 encode_kv_glyph_fn,
                 flash_glyph_attn_fn,
                 set_andvcnt_abits_fn,
+                gemv_i8_scale_bias_fn,
             })
         }
         #[cfg(not(any(unix, windows)))]

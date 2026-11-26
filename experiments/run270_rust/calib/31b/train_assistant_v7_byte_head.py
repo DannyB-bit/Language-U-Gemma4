@@ -46,6 +46,7 @@ import pack_assistant_t16c as pa  # noqa: E402
 
 T16C_GAUSS_BIT = 0x80
 T16C_ROWMAJOR_BIT = 0x40
+T16C_COLBLOCK_BIT = 0x20
 _GAUSS2_LV = np.array([-1.510417, -0.452780, 0.452780, 1.510417], dtype=np.float32)
 _GAUSS2_MID = np.array([-0.981599, 0.0, 0.981599], dtype=np.float32)
 
@@ -474,7 +475,7 @@ def decode_bhdr_np_beam(
         raise RuntimeError("No valid token reached <eot>")
     completed.sort(key=lambda x: x[0], reverse=True)
     top1_lp, best_tok, depth = completed[0]
-    top2_lp = max(completed[1][0], pruned_alt) if len(completed) >= 2 else (pruned_alt if math.isfinite(pruned_alt) else top1_lp - 30.0)
+    top2_lp = completed[1][0] if len(completed) >= 2 else (min(pruned_alt, top1_lp) if math.isfinite(pruned_alt) else top1_lp - 30.0)
     return int(best_tok), float(top1_lp), float(top2_lp), int(depth)
 
 
@@ -744,6 +745,66 @@ def pack_chunk_rowmajor_2b_gaus(w_chunk: np.ndarray, block_size: int = 64) -> by
     return out.tobytes()
 
 
+def pack_chunk_colblock_2b_gaus(
+    w_chunk: np.ndarray,
+    block_size: int = 64,
+    has_fwht: bool = True,
+) -> bytes:
+    """
+    Pack `(rows, d_in)` float32 chunk into NEON-fast Column-Blocked 2-bit non-uniform Gaussian T16C
+    (`n_bits = 2 | T16C_GAUSS_BIT | T16C_COLBLOCK_BIT = 0xa2`, `[blk][tile]` strip-mined order,
+    `[col/8][row=0..15]` bitplane layout) with optional orthonormal `H_{block_size}` FWHT smoothing.
+    Note: COLBLOCK `[blk][tile]` requires writing the entire `(d_out, d_in)` matrix at once so all tiles per blk are contiguous.
+    """
+    rows, d_in = w_chunk.shape
+    if d_in % block_size != 0 or block_size % 8 != 0:
+        raise ValueError(f"Invalid dims ({rows}, {d_in}) for block_size={block_size}")
+    pad_rows = (16 - (rows % 16)) % 16
+    if pad_rows > 0:
+        w_work = np.zeros((rows + pad_rows, d_in), dtype=np.float32)
+        w_work[:rows, :] = w_chunk
+    else:
+        w_work = np.ascontiguousarray(w_chunk, dtype=np.float32)
+
+    n_tiles = w_work.shape[0] // 16
+    n_blks = d_in // block_size
+    blk = w_work.reshape(n_tiles, 16, n_blks, block_size)
+    if has_fwht:
+        H = pa.make_sylvester_hadamard(block_size)
+        blk = np.matmul(blk, H)
+
+    sc = np.maximum(0.470 * np.sqrt(np.mean(blk * blk, axis=-1)), 1e-6).astype(np.float32)
+    idx = np.zeros_like(blk, dtype=np.uint8)
+    for _ in range(3):
+        inv_s = np.where(sc > 1e-12, 1.0 / np.maximum(sc, 1e-12), 0.0)[..., None]
+        idx = np.digitize(blk * inv_s, _GAUSS2_MID).astype(np.uint8)
+        lv = _GAUSS2_LV[idx]
+        den = np.sum(lv * lv, axis=-1)
+        sc = np.where(den > 0.0, np.sum(lv * blk, axis=-1) / np.maximum(den, 1e-12), sc).astype(np.float32)
+    sc_f16 = np.maximum(sc.astype(np.float16).astype(np.float32), 1e-6).astype("<f2")
+
+    bpr = block_size // 8
+    plane_b = 16 * bpr
+    tblk_b = 32 + 2 * plane_b
+    out = np.zeros((n_tiles, n_blks, tblk_b), dtype=np.uint8)
+    sc_t = np.ascontiguousarray(sc_f16.transpose(0, 2, 1), dtype="<f2")
+    out[:, :, 0:32] = sc_t.view(np.uint8).reshape(n_tiles, n_blks, 32)
+
+    # Non-rowmajor `[col_byte][row=0..15]` layout matching `neon_stream_accelerator_v2.c` COLBLOCK k=1 fast path
+    q_bits = idx.reshape(n_tiles, 16, n_blks, bpr, 8)
+    for p in range(2):
+        bp = ((q_bits >> p) & 1).astype(np.uint8)
+        packed_p = np.packbits(bp, axis=-1, bitorder="big")[..., 0]
+        p_off = 32 + p * plane_b
+        out[:, :, p_off : p_off + plane_b] = np.ascontiguousarray(packed_p.transpose(0, 2, 3, 1), dtype=np.uint8).reshape(
+            n_tiles, n_blks, plane_b
+        )
+
+    # COLBLOCK outer order: [n_blks, n_tiles, tblk_b]
+    out_cb = np.ascontiguousarray(out.transpose(1, 0, 2), dtype=np.uint8)
+    return out_cb.tobytes()
+
+
 def pack_assistant_body_from_safetensors(
     safetensors_path: Path,
     out_path: Path,
@@ -756,6 +817,8 @@ def pack_assistant_body_from_safetensors(
     """
     Pack an embed-free `Gemma4AssistantForCausalLM` body `.t16c` directly from safetensors
     (`body_bits` in {2, 4, 8}), omitting `model.embed_tokens.weight`.
+    For `body_bits == 2` and `has_fwht=True`, emits `0xa2` (`2 | T16C_GAUSS_BIT | T16C_COLBLOCK_BIT`)
+    for the `1.76x` faster Cortex-A72 strip-mined NEON kernel + Hadamard outlier smoothing.
     """
     if body_bits not in (2, 4, 8):
         raise ValueError(f"body_bits must be 2, 4, or 8, got {body_bits}")
@@ -790,6 +853,27 @@ def pack_assistant_body_from_safetensors(
                         has_fwht=has_fwht and (body_bits == 4),
                         chunk_rows=chunk_rows,
                     )
+                elif has_fwht:
+                    info = sr.hdr[mk]
+                    d_out, d_in = int(info["shape"][0]), int(info["shape"][1])
+                    n_bits_cb = 2 | T16C_GAUSS_BIT | T16C_COLBLOCK_BIT
+                    exp_p = expected_tile16_bytes(d_out, d_in, block_size, n_bits_cb, False)
+                    nb_b = mk.encode("utf-8")
+                    fp.write(struct.pack("<HIIHBBBBHQQ", len(nb_b), d_out, d_in, block_size, n_bits_cb, 0, 1, 0, 0, exp_p, 0))
+                    fp.write(nb_b)
+                    pos += 34 + len(nb_b)
+                    pad = (64 - (pos % 64)) % 64
+                    if pad:
+                        fp.write(b"\x00" * pad)
+                        pos += pad
+                    w_full = pa._read_f32_rows(sr, mk, 0, d_out)
+                    chk = pack_chunk_colblock_2b_gaus(w_full, block_size=block_size, has_fwht=True)
+                    del w_full
+                    if len(chk) != exp_p:
+                        raise AssertionError(f"{mk}: colblock 0xa2 packed {len(chk)} != {exp_p}")
+                    fp.write(chk)
+                    del chk
+                    pos += exp_p
                 else:
                     info = sr.hdr[mk]
                     d_out, d_in = int(info["shape"][0]), int(info["shape"][1])
@@ -866,13 +950,17 @@ def train_from_activations(
     gold_ids = [gold_ids[i] for i in keep]
     sids = [sids[i] for i in keep]
     sps = [sps[i] for i in keep]
-    # Guarantee gold token mass inclusion for clean Appendix F.1 denominator stability
+    # Guarantee gold token mass inclusion and dominant prefix-mode anchoring (>=0.80)
+    # so summed multi-byte UTF-8 sibling tails in top-64 cannot flip byte-level beam search off the gold path.
     for i, gid in enumerate(gold_ids):
         if gid not in sids[i]:
             sids[i].append(gid)
             sps[i].append(1e-4)
-            tot = sum(sps[i])
-            sps[i] = [v / tot for v in sps[i]]
+        tot = max(sum(float(v) for v in sps[i]), 1e-12)
+        sps[i] = [
+            (0.80 + 0.20 * (float(v) / tot)) if int(wid) == gid else (0.20 * (float(v) / tot))
+            for wid, v in zip(sids[i], sps[i])
+        ]
 
     n_val = max(32, len(gold_ids) // 10)
     model, metrics = train_byte_head_eot_distill(
@@ -1096,14 +1184,17 @@ def _run_selftest() -> int:
         w2_rm = np.random.default_rng(9).normal(0.0, 0.05, size=(16, 128)).astype(np.float32)
         p2_rm = pack_chunk_rowmajor_2b_gaus(w2_rm, block_size=64)
         exp2 = expected_tile16_bytes(16, 128, 64, 2 | T16C_GAUSS_BIT | T16C_ROWMAJOR_BIT, False)
+        p2_cb = pack_chunk_colblock_2b_gaus(w2_rm, block_size=64, has_fwht=True)
+        exp2_cb = expected_tile16_bytes(16, 128, 64, 2 | T16C_GAUSS_BIT | T16C_COLBLOCK_BIT, False)
         gate(
-            "Gate 5: Trie 0 collisions + T16C embed-strip & Q2 RowMajor align",
+            "Gate 5: Trie 0 collisions + T16C embed-strip & Q2 RowMajor/FWHT-COLBLOCK align",
             trie.collision_count == 0
             and trie.covered_tokens == len(active_ids)
             and kept == 1
             and 0 < out_sz < synth_src.stat().st_size
-            and len(p2_rm) == exp2,
-            f"covered={trie.covered_tokens}/{len(active_ids)} stripped_bytes={synth_src.stat().st_size}->{out_sz} q2_bytes={len(p2_rm)}",
+            and len(p2_rm) == exp2
+            and len(p2_cb) == exp2_cb,
+            f"covered={trie.covered_tokens}/{len(active_ids)} stripped_bytes={synth_src.stat().st_size}->{out_sz} q2_rm={len(p2_rm)} q2_cb={len(p2_cb)}",
         )
 
         # Gate 6: End-to-end FP32 vs exported BHDR INT8 step-0 logit cosine > 0.995

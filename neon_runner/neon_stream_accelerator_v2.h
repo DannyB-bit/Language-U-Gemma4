@@ -518,6 +518,24 @@ NEON_API int cuneiform_bank_apply_batch_c(
     uint8_t* out_active_tags
 );
 
+/**
+ * Multi-threaded NEON/AVX2 INT8 matrix-vector multiply with per-row scale, optional bias,
+ * and optional elementwise tanh activation:
+ *   y[r] = op(scales[r] * dot(w_i8[r, :], x_f32[:]) + (biases ? biases[r] : 0.0f))
+ * Returns 0 on success, -1 on invalid arguments.
+ */
+NEON_API int neon_gemv_i8_scale_bias_c(
+    const int8_t* NEON_RESTRICT w_i8,
+    const float* NEON_RESTRICT scales,
+    const float* NEON_RESTRICT biases,
+    const float* NEON_RESTRICT x_f32,
+    float* NEON_RESTRICT y_out,
+    int d_out,
+    int d_in,
+    int do_tanh,
+    int num_threads
+);
+
 #ifdef __cplusplus
 }
 #endif
