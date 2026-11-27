@@ -50,6 +50,8 @@ class TestReceiptParity(unittest.TestCase):
                 "experiments/run270_rust/run270_glyph_gen.log",
                 "experiments/run270_rust/ref_gemma3_native_arith.json",
                 "experiments/run270_rust/calib/31b/bench_cs_lmhead.c",
+                "experiments/run270_rust/calib/31b/receipts",
+                "experiments/run270_rust/benchmarks",
                 "experiments/run270_rust/src/t16c.rs",
                 "experiments/run270_rust/evidence",
             ):

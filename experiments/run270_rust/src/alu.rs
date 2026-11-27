@@ -369,6 +369,79 @@ pub fn format_alu_number(v: f64) -> String {
     }
 }
 
+/// Extract general mathematical expressions/equations from text without any hardcoded keywords or lookup tables.
+fn extract_math_clauses(text: &str) -> Vec<String> {
+    let mut clauses = Vec::new();
+    for seg in text.split(['\n', ';', '?', ':', ',']) {
+        let mut cur = String::new();
+        for ch in seg.chars() {
+            let ok = ch.is_ascii_alphanumeric()
+                || matches!(ch, '.' | '+' | '-' | '*' | '/' | '%' | '^' | '!' | '(' | ')' | '=' | ' ' | '−' | '×' | '÷');
+            if ok {
+                cur.push(ch);
+            } else {
+                if cur.chars().any(|c| c.is_ascii_digit()) {
+                    clauses.push(cur.trim().to_string());
+                }
+                cur.clear();
+            }
+        }
+        if cur.chars().any(|c| c.is_ascii_digit()) {
+            clauses.push(cur.trim().to_string());
+        }
+    }
+    clauses
+}
+
+/// Strip leading/trailing natural-language words around an algebraic or arithmetic core so general AST parsing succeeds.
+fn trim_non_math_words(clause: &str) -> String {
+    let words: Vec<&str> = clause.split_whitespace().collect();
+    let is_math_token = |w: &str| -> bool {
+        let clean = w.trim_matches(|c: char| matches!(c, '(' | ')' | '.' | '!' | '%'));
+        if clean.is_empty() {
+            return w.chars().any(|c| matches!(c, '(' | ')' | '+' | '-' | '*' | '/' | '^' | '='));
+        }
+        if matches!(clean, "+" | "-" | "*" | "/" | "%" | "^" | "=" | "−" | "×" | "÷" | "of") {
+            return true;
+        }
+        if clean.starts_with("gcd(") || clean.starts_with("lcm(") || clean.starts_with("sqrt(") || clean.starts_with("abs(") {
+            return true;
+        }
+        if clean.chars().any(|c| c.is_ascii_digit()) {
+            return true;
+        }
+        clean.len() == 1 && clean.chars().all(|c| c.is_ascii_alphabetic())
+    };
+    let is_leading_or_trailing_binop = |w: &str| -> bool {
+        matches!(w, "+" | "*" | "/" | "%" | "^" | "=" | "×" | "÷" | "of")
+    };
+    let mut start = match words.iter().position(|w| is_math_token(w)) {
+        Some(idx) => idx,
+        None => return String::new(),
+    };
+    let mut end = match words.iter().rposition(|w| is_math_token(w)) {
+        Some(idx) => idx,
+        None => return String::new(),
+    };
+    while start <= end && is_leading_or_trailing_binop(words[start]) {
+        start += 1;
+    }
+    while end >= start && is_leading_or_trailing_binop(words[end]) {
+        if end == 0 {
+            return String::new();
+        }
+        end -= 1;
+    }
+    if start > end {
+        return String::new();
+    }
+    words[start..=end]
+        .join(" ")
+        .trim_end_matches('.')
+        .trim()
+        .to_string()
+}
+
 /// Evaluate `[CALC: ...]` tags inside text OR verify explicit arithmetic/linear equation blocks
 /// returned by `--general-alu` post-verification (pure general AST evaluation, zero lookup tables).
 pub fn evaluate_alu_annotations(text: &str) -> Option<String> {
@@ -389,6 +462,50 @@ pub fn evaluate_alu_annotations(text: &str) -> Option<String> {
                 }
             } else if let Ok(res) = eval_math_expr(body) {
                 return Some(format_alu_number(res));
+            }
+        }
+    }
+    None
+}
+
+/// General AST mathematical verifier for `--general-alu`: checks `[CALC: ...]` first, then parses general
+/// 1-variable linear equations (`ax + b = c` + optional target `f(x)`) or multi-term scalar arithmetic expressions.
+pub fn evaluate_alu_context(prompt: &str, gen_text: &str) -> Option<String> {
+    if let Some(ans) = evaluate_alu_annotations(gen_text) {
+        return Some(ans);
+    }
+    let clauses: Vec<String> = extract_math_clauses(prompt)
+        .into_iter()
+        .map(|c| trim_non_math_words(&c))
+        .filter(|c| !c.is_empty())
+        .collect();
+
+    // 1. General 1-variable linear equation + optional target algebraic expression in `var`
+    for (idx, cl) in clauses.iter().enumerate() {
+        if cl.contains('=') {
+            if let Ok((vname, xval)) = solve_linear_eq_1var(cl) {
+                for follow in clauses.iter().skip(idx + 1) {
+                    if !follow.contains('=') && follow.contains(vname) {
+                        let subst = follow.replace(vname, &format!("({xval})"));
+                        if let Ok(res) = eval_math_expr(&subst) {
+                            return Some(format_alu_number(res));
+                        }
+                    }
+                }
+                return Some(format_alu_number(xval));
+            }
+        }
+    }
+
+    // 2. General multi-operator scalar arithmetic expression (must contain an explicit arithmetic operator)
+    for cl in &clauses {
+        if !cl.contains('=') && cl.chars().any(|c| matches!(c, '+' | '-' | '*' | '/' | '^' | '!' | '−' | '×' | '÷')) {
+            if let Ok(toks) = tokenize(cl) {
+                if toks.len() >= 2 {
+                    if let Ok(res) = eval_math_expr(cl) {
+                        return Some(format_alu_number(res));
+                    }
+                }
             }
         }
     }
@@ -428,9 +545,13 @@ mod tests {
     }
 
     #[test]
-    fn alu_annotation_evaluates_cleanly() {
+    fn alu_annotation_and_general_context_evaluate_cleanly() {
         assert_eq!(evaluate_alu_annotations("Answer: [CALC: 5x + 3 = 38; 2x - 1]").as_deref(), Some("13"));
         assert_eq!(evaluate_alu_annotations("Result [CALC: 18 * 1000 * 40 / 60]").as_deref(), Some("12000"));
+        assert_eq!(evaluate_alu_context("If 7y - 4 = 31, evaluate 3y + 2.", "").as_deref(), Some("17"));
+        assert_eq!(evaluate_alu_context("If 9k - 2 = 25, what is the value of 4k + 5?", "").as_deref(), Some("17"));
+        assert_eq!(evaluate_alu_context("Evaluate 19 * 6 - 14.", "").as_deref(), Some("100"));
+        assert_eq!(evaluate_alu_context("Who wrote Hamlet?", "William Shakespeare"), None);
         assert!(eval_math_expr("1 / 0").is_err());
     }
 }

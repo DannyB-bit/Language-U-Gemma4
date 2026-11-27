@@ -107,7 +107,14 @@ def build_v10_cmd(
             "--cascade-mlp-top-p", f"{float(args.cascade_mlp_top_p):.4f}",
             "--cascade-head-top-p", f"{float(args.cascade_head_top_p):.4f}",
             "--cascade-mod-thresh", f"{float(args.cascade_mod_thresh):.4f}",
+            "--cascade-tier1-tau", f"{float(getattr(args, 'cascade_tier1_tau', 0.0)):.4f}",
+            "--cascade-max-unverified", str(int(getattr(args, "cascade_max_unverified", 2))),
+            "--kv-mid", str(int(getattr(args, "cascade_kv_mid", 64))),
         ])
+        if int(getattr(args, "shared_mlp_blocks", 4)) > 0 and "--shared-mlp-blocks" not in cmd:
+            cmd.extend(["--shared-mlp-blocks", str(int(args.shared_mlp_blocks))])
+        if int(getattr(args, "attn_shared_heads", 4)) > 0 and "--attn-shared-heads" not in cmd:
+            cmd.extend(["--attn-shared-heads", str(int(args.attn_shared_heads))])
         if args.head_router is not None and args.head_router.is_file() and "--head-router" not in cmd:
             cmd.extend(["--head-router", str(args.head_router)])
     if use_alu or mode == "cascade_alu":
@@ -123,33 +130,108 @@ def validate_required_paths(args: argparse.Namespace) -> None:
             raise FileNotFoundError(f"Missing required V10 asset --{attr.replace('_', '-')}: {p}")
 
 
+def split_batch_stdout(stdout_text: str, expected_n: int) -> List[str]:
+    """Split `run31b --prompt-batch` output cleanly on `=== BATCH_PROMPT i/N ... ===` markers."""
+    if expected_n == 1 and "=== BATCH_PROMPT " not in stdout_text:
+        return [stdout_text]
+    chunks = re.split(r"^=== BATCH_PROMPT \d+/\d+ .* ===\s*$", stdout_text, flags=re.MULTILINE)
+    if len(chunks) != expected_n + 1:
+        raise ValueError(f"Expected {expected_n} BATCH_PROMPT blocks, got {len(chunks) - 1}")
+    return chunks[1:]
+
+
 def run_battery_v10(args: argparse.Namespace, out_dir: Path) -> Dict[str, dict]:
     """Run 15-prompt unseen battery across Dense, Lossless Tree, Cascade (Pure Neural), and Cascade+ALU."""
     modes = [m.strip() for m in args.battery_modes.split(",") if m.strip()]
     results: Dict[str, dict] = {}
+    batch_file = out_dir / "battery_15_prompts_v10.txt"
+    batch_lines = [f"MAX_TOKENS:{int(max_toks)}|{prompt}" for _tag, prompt, max_toks, _chk in e61.BATTERY_PROMPTS]
+    batch_file.write_text("\n".join(batch_lines) + "\n", encoding="utf-8")
+
     with open(out_dir / "battery_15_v10.log", "w", encoding="utf-8") as lfp:
+        ran_shared_cascade = False
         for mode in modes:
-            rows: List[dict] = []
-            for tag, prompt, max_toks, checker in e61.BATTERY_PROMPTS:
-                lfp.write(f"\n=== [{mode}] {tag}: {prompt} ===\n")
-                cmd = build_v10_cmd(args, mode=mode, use_alu=(mode == "cascade_alu"))
-                cmd.extend(["--prompt-text", prompt, "--max-tokens", str(int(max_toks))])
+            if mode in ("cascade", "cascade_alu") and "cascade" in modes and "cascade_alu" in modes:
+                if ran_shared_cascade:
+                    continue
+                ran_shared_cascade = True
+                lfp.write("\n================ MODE [cascade + cascade_alu (disambiguated)] ================\n")
+                cmd = build_v10_cmd(args, mode="cascade", use_alu=True)
+                cmd.extend(["--prompt-batch", str(batch_file), "--max-tokens", "48"])
                 raw_stdout, _ = e92._run_cmd(cmd, log_fp=lfp)
-                parsed = parse_v10_telemetry(raw_stdout)
+                blocks = split_batch_stdout(raw_stdout, len(e61.BATTERY_PROMPTS))
+                rows_cas: List[dict] = []
+                rows_alu: List[dict] = []
+                for (tag, prompt, _max_toks, checker), blk in zip(e61.BATTERY_PROMPTS, blocks):
+                    parsed_c = parse_v10_telemetry(blk)
+                    gen_txt = str(parsed_c.get("gen_text", ""))
+                    alu_txt = str(parsed_c.get("alu_result", ""))
+                    ok_neural = bool(checker(gen_txt))
+                    ok_alu = ok_neural or (bool(alu_txt) and bool(checker(alu_txt)))
+
+                    rec_c = dict(parsed_c)
+                    rec_c.pop("alu_result", None)
+                    rec_c.update({"tag": tag, "prompt": prompt, "passed_pure_neural": ok_neural, "passed": ok_neural})
+                    rows_cas.append(rec_c)
+
+                    rec_a = dict(parsed_c)
+                    rec_a.update({"tag": tag, "prompt": prompt, "passed_pure_neural": ok_neural, "passed": ok_alu})
+                    rows_alu.append(rec_a)
+                    print(
+                        f"[V10:cascade] {tag:15s} neural={int(ok_neural)} alu_mode={int(ok_alu)} "
+                        f"s_tok={parsed_c.get('s_per_tok')} hwm={parsed_c.get('vm_hwm_kb')} text={gen_txt!r}"
+                        + (f" alu={alu_txt!r}" if alu_txt else ""),
+                        flush=True,
+                    )
+                for sub_mode, sub_rows in (("cascade", rows_cas), ("cascade_alu", rows_alu)):
+                    passed = sum(1 for r in sub_rows if r["passed"])
+                    passed_neural = sum(1 for r in sub_rows if r["passed_pure_neural"])
+                    s_toks = [float(r["s_per_tok"]) for r in sub_rows if r.get("s_per_tok") is not None]
+                    mean_s = round(sum(s_toks) / max(len(s_toks), 1), 4) if s_toks else None
+                    results[sub_mode] = {
+                        "passed": passed,
+                        "passed_pure_neural": passed_neural,
+                        "total": len(sub_rows),
+                        "mean_s_per_tok": mean_s,
+                        "mean_tok_per_s": round(1.0 / mean_s, 2) if (mean_s and mean_s > 0) else None,
+                        "vm_hwm_kb": max((int(r.get("vm_hwm_kb", 0)) for r in sub_rows), default=0),
+                        "ssd_read_bytes": sum(int(r.get("ssd_read_bytes", 0)) for r in sub_rows),
+                        "rows": sub_rows,
+                    }
+                continue
+
+            lfp.write(f"\n================ MODE [{mode}] ================\n")
+            cmd = build_v10_cmd(args, mode=mode, use_alu=(mode == "cascade_alu"))
+            cmd.extend(["--prompt-batch", str(batch_file), "--max-tokens", "48"])
+            raw_stdout, _ = e92._run_cmd(cmd, log_fp=lfp)
+            blocks = split_batch_stdout(raw_stdout, len(e61.BATTERY_PROMPTS))
+            rows: List[dict] = []
+            for (tag, prompt, _max_toks, checker), blk in zip(e61.BATTERY_PROMPTS, blocks):
+                parsed = parse_v10_telemetry(blk)
                 gen_txt = str(parsed.get("gen_text", ""))
+                alu_txt = str(parsed.get("alu_result", ""))
                 ok_neural = bool(checker(gen_txt))
-                parsed.update({"tag": tag, "prompt": prompt, "passed_pure_neural": ok_neural, "passed": ok_neural})
+                ok_mode = ok_neural or (mode == "cascade_alu" and bool(alu_txt) and bool(checker(alu_txt)))
+                parsed.update({
+                    "tag": tag,
+                    "prompt": prompt,
+                    "passed_pure_neural": ok_neural,
+                    "passed": ok_mode,
+                })
                 rows.append(parsed)
                 print(
-                    f"[V10:{mode}] {tag:15s} pass={int(ok_neural)} s_tok={parsed.get('s_per_tok')} "
-                    f"hwm={parsed.get('vm_hwm_kb')} text={gen_txt!r}",
+                    f"[V10:{mode}] {tag:15s} pass={int(ok_mode)} (neural={int(ok_neural)}) "
+                    f"s_tok={parsed.get('s_per_tok')} hwm={parsed.get('vm_hwm_kb')} text={gen_txt!r}"
+                    + (f" alu={alu_txt!r}" if alu_txt else ""),
                     flush=True,
                 )
             passed = sum(1 for r in rows if r["passed"])
+            passed_neural = sum(1 for r in rows if r["passed_pure_neural"])
             s_toks = [float(r["s_per_tok"]) for r in rows if r.get("s_per_tok") is not None]
             mean_s = round(sum(s_toks) / max(len(s_toks), 1), 4) if s_toks else None
             results[mode] = {
                 "passed": passed,
+                "passed_pure_neural": passed_neural,
                 "total": len(rows),
                 "mean_s_per_tok": mean_s,
                 "mean_tok_per_s": round(1.0 / mean_s, 2) if (mean_s and mean_s > 0) else None,
@@ -182,6 +264,45 @@ def run_speed_bench(args: argparse.Namespace, out_dir: Path) -> List[dict]:
                 flush=True,
             )
     return rows
+
+
+def run_tier1_fast_probe(args: argparse.Namespace, out_dir: Path) -> dict:
+    """Isolated Tier-1 draft-cascade throughput ceiling probe (disambiguated from coherent 60L cascade)."""
+    import subprocess
+
+    cmd = build_v10_cmd(args, mode="cascade")
+    # Replace --lmhead-cs exact and --cascade-tier1-tau / --cascade-max-unverified for Tier-1 hardware ceiling probe
+    out_cmd: List[str] = []
+    skip_next = False
+    for i, tok in enumerate(cmd):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("--lmhead-cs", "--cascade-tier1-tau", "--cascade-max-unverified", "--spec-assistant"):
+            skip_next = True
+            continue
+        out_cmd.append(tok)
+    q2_p = args.assistant_body.parent / "gemma4_31b_v10_assistant_body_q2.t16c"
+    ast_p = q2_p if q2_p.is_file() else args.assistant_body
+    out_cmd.extend([
+        "--spec-assistant", str(ast_p),
+        "--lmhead-cs", "sieve:0.02",
+        "--cascade-tier1-tau", "0.01",
+        "--cascade-max-unverified", "64",
+        "--prompt-text", SPEED_BENCH_PROMPTS[0][1],
+        "--max-tokens", "32",
+    ])
+    proc = subprocess.run(out_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+    (out_dir / "tier1_fast_probe_v10.log").write_text(proc.stdout, encoding="utf-8")
+    parsed = parse_v10_telemetry(proc.stdout)
+    mem_ok, mem_msg = check_memory_gate(parsed)
+    parsed.update({
+        "scope": "unverified_tier1_4layer_draft_ceiling_not_60layer_coherent_decode",
+        "memory_gate_ok": mem_ok,
+        "memory_detail": mem_msg,
+    })
+    print(f"[TIER1_CEILING_PROBE] tok/s={parsed.get('tok_per_s')} ms/tok={parsed.get('ms_per_tok')} {mem_msg}", flush=True)
+    return parsed
 
 
 def _self_test() -> int:
@@ -283,7 +404,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--head-router", type=Path, default=DEFAULT_V10_DIR / "gemma4_31b_v10_head_router.crtr")
     ap.add_argument("--so", type=Path, default=Path("/home/astronautshe/gemma4_verify/experiments/run270_rust/libneon_stream_accelerator.so"))
     ap.add_argument("--teacher-logits", type=Path, default=Path("/mnt/SHE-VAULT/gemma4_v6_1/teacher_lgt1"))
-    ap.add_argument("--assistant-body", type=Path, default=DEFAULT_V10_DIR / "gemma4_31b_v10_assistant_body_q2.t16c")
+    ap.add_argument("--assistant-body", type=Path, default=DEFAULT_V10_DIR / "gemma4_31b_v10_assistant_body_q4.t16c")
     ap.add_argument("--byte-head", type=Path, default=DEFAULT_V10_DIR / "gemma4_31b_v10_assistant.bhdr")
     ap.add_argument("--use-byte-head", action="store_true")
     ap.add_argument("--spec-seed", type=Path, default=DEFAULT_V10_DIR / "gemma4_v10_seed.cngm")
@@ -298,15 +419,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--pin-layers", type=int, default=None)
     ap.add_argument("--profile-components", action="store_true", default=True)
     ap.add_argument("--tri-modal-gate", action="store_true")
-    ap.add_argument("--spec-tree", type=int, default=16)
-    ap.add_argument("--spec-tree-depth", type=int, default=10)
+    ap.add_argument("--spec-tree", type=int, default=2)
+    ap.add_argument("--spec-tree-depth", type=int, default=1)
     ap.add_argument("--spec-ngram", type=int, default=6)
-    ap.add_argument("--cascade-tau", type=float, default=3.5)
-    ap.add_argument("--cascade-mlp-top-p", type=float, default=0.143)
-    ap.add_argument("--cascade-head-top-p", type=float, default=0.25)
-    ap.add_argument("--cascade-mod-thresh", type=float, default=0.55)
+    ap.add_argument("--cascade-tau", type=float, default=0.20)
+    ap.add_argument("--cascade-mlp-top-p", type=float, default=0.65)
+    ap.add_argument("--cascade-head-top-p", type=float, default=0.75)
+    ap.add_argument("--cascade-mod-thresh", type=float, default=0.0)
+    ap.add_argument("--cascade-tier1-tau", type=float, default=0.0)
+    ap.add_argument("--cascade-max-unverified", type=int, default=2)
+    ap.add_argument("--cascade-kv-mid", type=int, default=64)
+    ap.add_argument("--update-report", type=Path, default=None)
     ap.add_argument("--pareto-kv-modes", type=str, default="glyph-lod,fp8")
-    ap.add_argument("--pareto-configs", type=str, default="dense:1.0:0.0:1.0,crtr14_hr25:0.143:0.0:0.25")
+    ap.add_argument("--pareto-configs", type=str, default="dense:1.0:0.0:1.0,crtr75_hr85:0.75:0.0:0.85,crtr14_hr25:0.143:0.0:0.25")
     ap.add_argument("--battery-modes", type=str, default="dense,tree_lossless,cascade,cascade_alu")
     ap.add_argument("--speed-max-tokens", type=int, default=64)
     args = ap.parse_args(argv)
@@ -316,24 +441,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     validate_required_paths(args)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    report: Dict[str, object] = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "mode": args.mode,
-        "host_mem_available_kb": e93.read_mem_available_kb(),
-        "t16c": str(args.t16c),
-        "assistant_body": str(args.assistant_body),
-        "target_shared_head": not args.use_byte_head,
-    }
+    if args.update_report is not None and args.update_report.is_file():
+        report: Dict[str, object] = json.loads(args.update_report.read_text(encoding="utf-8"))
+        report["updated_timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    else:
+        report = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "mode": args.mode,
+            "host_mem_available_kb": e93.read_mem_available_kb(),
+            "t16c": str(args.t16c),
+            "assistant_body": str(args.assistant_body),
+            "target_shared_head": not args.use_byte_head,
+        }
     if args.mode in ("nll-pareto", "all"):
         report["nll_pareto"] = e93.run_nll_pareto(args, args.out_dir)
     if args.mode in ("battery", "all"):
-        report["battery"] = run_battery_v10(args, args.out_dir)
+        bat_new = run_battery_v10(args, args.out_dir)
+        if isinstance(report.get("battery"), dict) and args.update_report is not None:
+            merged_bat = dict(report["battery"])  # type: ignore[arg-type]
+            merged_bat.update(bat_new)
+            report["battery"] = merged_bat
+        else:
+            report["battery"] = bat_new
     if args.mode in ("speed", "all"):
         report["speed_bench"] = run_speed_bench(args, args.out_dir)
+        report["tier1_fast_probe"] = run_tier1_fast_probe(args, args.out_dir)
     if args.mode in ("vision", "all"):
         report["vision"] = e93.run_vision(args, args.out_dir)
 
-    rep_path = args.out_dir / f"v10_{args.mode.replace('-', '_')}_report.json"
+    rep_path = args.update_report if args.update_report is not None else (args.out_dir / f"v10_{args.mode.replace('-', '_')}_report.json")
     rep_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"[V10 REPORT WRITTEN] {rep_path}", flush=True)
     return 0

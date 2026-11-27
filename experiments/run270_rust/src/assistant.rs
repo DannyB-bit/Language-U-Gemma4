@@ -806,7 +806,7 @@ impl AssistantRuntime {
             let (h_final, raw_next_h) =
                 self.forward_backbone_step_with_attend(&tok_emb, &cur_backbone, q_pos, &mut attend_fn)?;
             let next_h = norm_bh_fn(&raw_next_h)?;
-            let cands = predict_top_cands(&h_final, &next_h, cur_tok, branch_k, &mut total_skipped)?;
+            let cands = predict_top_cands(&h_final, &next_h, cur_tok, branch_k.max(2), &mut total_skipped)?;
             if cands.is_empty() {
                 break;
             }
@@ -830,7 +830,7 @@ impl AssistantRuntime {
             // Reserve remaining capacity so depth-0/1 siblings never starve deeper chain drafts.
             let min_rem_depth = max_depth.saturating_sub(step + 1).min(tree.max_nodes.saturating_sub(tree.nodes.len()));
             // Attach high-likelihood sibling branches at early depths (`step <= 2`).
-            for (ci, &(alt_tok, alt_lp)) in cands.iter().enumerate().skip(1) {
+            for (ci, &(alt_tok, alt_lp)) in cands.iter().take(branch_k).enumerate().skip(1) {
                 if tree.max_nodes.saturating_sub(tree.nodes.len()) <= min_rem_depth {
                     break;
                 }

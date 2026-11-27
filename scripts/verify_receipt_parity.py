@@ -133,6 +133,8 @@ def _verify_all_evidence_jsons(root: Path, errors: List[str]) -> int:
         root / "docs" / "full_text_software_validation.json",
         root / "experiments" / "joint_glyphs" / "evidence" / "windows_joint_fast_benchmark.json",
         root / "experiments" / "run270_rust" / "ref_gemma3_native_arith.json",
+        root / "experiments" / "run270_rust" / "calib" / "31b" / "receipts" / "v10_report.json",
+        root / "experiments" / "run270_rust" / "calib" / "31b" / "receipts" / "v10_pi4_world_proof.json",
     ]
     ev_dir = root / "experiments" / "run270_rust" / "evidence"
     if not ev_dir.is_dir():
@@ -656,6 +658,28 @@ def _verify_submission_bundles(root: Path, readme: str, errors: List[str]) -> in
     return claims
 
 
+def _verify_v10_receipts(root: Path, readme: str, frontier_md: str, errors: List[str]) -> int:
+    v10_gpu = _load_json_strict(root / "experiments" / "run270_rust" / "calib" / "31b" / "receipts" / "v10_report.json")
+    v10_pi4 = _load_json_strict(root / "experiments" / "run270_rust" / "calib" / "31b" / "receipts" / "v10_pi4_world_proof.json")
+    t16c_b = int(v10_gpu["t16c_bytes"])
+    e2e = v10_gpu["e2e_stage2_5"]
+    bhdr = v10_gpu["bhdr256"]
+    pareto = {r["config"]: r for r in v10_pi4["nll_pareto"]}
+    bat = v10_pi4["battery"]
+    t1p = v10_pi4["tier1_fast_probe"]
+
+    for doc_name, txt in (("README.md", readme), ("FRONTIER_RECEIPTS.md", frontier_md)):
+        _assert_contains(doc_name, txt, f"{t16c_b:,}", errors)
+        _assert_contains(doc_name, txt, f"{float(e2e['val_kl_after']):.4f}", errors)
+        _assert_contains(doc_name, txt, str(bhdr["heldout_beam_top1_acc"]), errors)
+        _assert_contains(doc_name, txt, f"{float(pareto['dense_fp8']['mean_nll']):.5f}", errors)
+        _assert_contains(doc_name, txt, f"{float(pareto['dense_fp8']['kl_t_to_s']):.5f}", errors)
+        _assert_contains(doc_name, txt, f"{float(pareto['dense_glyph-lod']['mean_nll']):.5f}", errors)
+        _assert_contains(doc_name, txt, f"{int(bat['cascade_alu']['passed'])}/{int(bat['cascade_alu']['total'])}", errors)
+        _assert_contains(doc_name, txt, f"{float(t1p['tok_per_s'])} tok/s", errors)
+    return 16
+
+
 def verify_repo_receipts(repo_root: Path) -> ParityReport:
     """Audit all JSON receipts, local Markdown links, and doc numerical claims."""
     root = repo_root.resolve()
@@ -682,6 +706,7 @@ def verify_repo_receipts(repo_root: Path) -> ParityReport:
     checked_claims += _verify_attention_and_optical(root, readme, errors)
     checked_claims += _verify_windows_and_270m_receipts(root, readme, receipts_md, frontier_md, errors)
     checked_claims += _verify_run31b_receipts(root, readme, frontier_md, errors)
+    checked_claims += _verify_v10_receipts(root, readme, frontier_md, errors)
     checked_claims += _verify_submission_bundles(root, readme, errors)
 
     if errors:

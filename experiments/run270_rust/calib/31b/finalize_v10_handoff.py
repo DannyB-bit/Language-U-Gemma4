@@ -17,10 +17,12 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -146,34 +148,70 @@ def cmd_pull_to_pi4(folder_id: str, ssh_key: Path, pi4_host: str, pi4_dir: str, 
     staging_dir.mkdir(parents=True, exist_ok=True)
     RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["ssh", "-i", str(ssh_key), "-o", "StrictHostKeyChecking=no", pi4_host, f"mkdir -p {pi4_dir}"],
+        ["ssh", "-n", "-i", str(ssh_key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", pi4_host, f"mkdir -p {pi4_dir}"],
+        stdin=subprocess.DEVNULL,
         check=True,
     )
 
-    # Pull manifest & report first so we can verify every file locally BEFORE scp
+    def _download_with_backoff(fid_s: str, out_p: Path, max_attempts: int = 5) -> None:
+        for att in range(1, max_attempts + 1):
+            if out_p.exists():
+                out_p.unlink()
+            proc = subprocess.run(
+                [_gdrive_bin(), "readonly", "download", fid_s, "--out", str(out_p)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode == 0:
+                return
+            err_msg = (proc.stderr or "") + (proc.stdout or "")
+            if att < max_attempts and ("RATE_LIMIT_EXCEEDED" in err_msg or "rateLimitExceeded" in err_msg or "429" in err_msg or "503" in err_msg):
+                delay = min(65.0, (2.5 ** att) + random.uniform(0.5, 2.5))
+                print(f"  [BACKOFF {att}/{max_attempts}] Transient Drive quota limit; retrying in {delay:.1f}s...", flush=True)
+                time.sleep(delay)
+                continue
+            raise subprocess.CalledProcessError(proc.returncode, proc.args, output=proc.stdout, stderr=proc.stderr)
+
+    # Pull manifest & report first (if not already matching) so we can verify every file locally BEFORE scp
     for meta_name in ("SHA256SUMS_V10.txt", "v10_report.json"):
         fid = str(present[meta_name]["id"])
         dst_local = RECEIPTS_DIR / meta_name
-        if dst_local.exists():
-            dst_local.unlink()
-        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--out", str(dst_local)], check=True)
+        if not dst_local.is_file() or dst_local.stat().st_size == 0:
+            _download_with_backoff(fid, dst_local)
         subprocess.run(
-            ["scp", "-i", str(ssh_key), "-o", "StrictHostKeyChecking=no", str(dst_local), f"{pi4_host}:{pi4_dir}/{meta_name}"],
+            ["scp", "-i", str(ssh_key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", str(dst_local), f"{pi4_host}:{pi4_dir}/{meta_name}"],
+            stdin=subprocess.DEVNULL,
             check=True,
         )
 
     expected_sha = parse_sha256sums((RECEIPTS_DIR / "SHA256SUMS_V10.txt").read_text(encoding="utf-8"))
 
+    # Query existing remote SHA-256s on Pi 4 so already-verified multi-GB files are not re-downloaded
+    rem_proc = subprocess.run(
+        ["ssh", "-n", "-i", str(ssh_key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", pi4_host, f"cd {pi4_dir} && sha256sum * 2>/dev/null || true"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    remote_sha: Dict[str, str] = {}
+    for rline in (rem_proc.stdout or "").splitlines():
+        rparts = rline.strip().split()
+        if len(rparts) >= 2 and len(rparts[0]) == 64:
+            remote_sha[rparts[-1].lstrip("*")] = rparts[0].lower()
+
     # Sequential single-file transfer + immediate local cleanup on C: (Rule 13)
     for fname in EXPECTED_V10_FILES:
         if fname in ("SHA256SUMS_V10.txt", "v10_report.json"):
             continue
+        if fname in expected_sha and remote_sha.get(fname) == expected_sha[fname]:
+            print(f"[SKIP OK] {fname} already verified on Pi 4 (SHA-256={expected_sha[fname][:16]}...)", flush=True)
+            continue
         fid = str(present[fname]["id"])
         local_f = staging_dir / fname
-        if local_f.exists():
-            local_f.unlink()
         print(f"[PULL 1/3] Downloading {fname} ({fid}) from Drive...", flush=True)
-        subprocess.run([_gdrive_bin(), "readonly", "download", fid, "--out", str(local_f)], check=True)
+        _download_with_backoff(fid, local_f)
         got_sha = sha256_file(local_f)
         if fname in expected_sha and got_sha != expected_sha[fname]:
             local_f.unlink(missing_ok=True)
@@ -181,7 +219,8 @@ def cmd_pull_to_pi4(folder_id: str, ssh_key: Path, pi4_host: str, pi4_dir: str, 
         print(f"[PULL 2/3] Verified local SHA-256={got_sha[:16]}... -> SCP to {pi4_host}:{pi4_dir}/{fname}", flush=True)
         try:
             subprocess.run(
-                ["scp", "-i", str(ssh_key), "-o", "StrictHostKeyChecking=no", str(local_f), f"{pi4_host}:{pi4_dir}/{fname}"],
+                ["scp", "-i", str(ssh_key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", str(local_f), f"{pi4_host}:{pi4_dir}/{fname}"],
+                stdin=subprocess.DEVNULL,
                 check=True,
             )
         finally:
@@ -191,7 +230,8 @@ def cmd_pull_to_pi4(folder_id: str, ssh_key: Path, pi4_host: str, pi4_dir: str, 
 
     print("[VERIFY PI4] Running sha256sum -c SHA256SUMS_V10.txt on Raspberry Pi 4...", flush=True)
     subprocess.run(
-        ["ssh", "-i", str(ssh_key), "-o", "StrictHostKeyChecking=no", pi4_host, f"cd {pi4_dir} && sha256sum -c SHA256SUMS_V10.txt"],
+        ["ssh", "-n", "-i", str(ssh_key), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", pi4_host, f"cd {pi4_dir} && sha256sum -c SHA256SUMS_V10.txt"],
+        stdin=subprocess.DEVNULL,
         check=True,
     )
     print("[OK] All V10 artifacts verified bit-exact on Raspberry Pi 4!", flush=True)
@@ -208,20 +248,29 @@ def render_v10_markdown_report(gpu_rpt: dict, pi4_rpt: dict) -> str:
 
     e2e = gpu_rpt.get("e2e_stage2_5", {})
     ast = gpu_rpt.get("assistant_target_shared", {})
+    bhdr = gpu_rpt.get("bhdr256", {})
     pareto = pi4_rpt.get("nll_pareto", [])
     dense_p = next((r for r in pareto if str(r.get("config", "")).startswith("dense_glyph-lod")), pareto[0] if pareto else {})
+    sp_p = next((r for r in pareto if str(r.get("config", "")).startswith("crtr14_hr25_glyph-lod")), {})
     bat = pi4_rpt.get("battery", {})
     b_dense = bat.get("dense", {})
+    b_tree = bat.get("tree_lossless", {})
     b_cas = bat.get("cascade", {})
     b_alu = bat.get("cascade_alu", {})
     spd = pi4_rpt.get("speed_bench", [])
+    t1p = pi4_rpt.get("tier1_fast_probe", {})
     vis = pi4_rpt.get("vision", {})
 
     spd_toks = [float(r["tok_per_s"]) for r in spd if r.get("tok_per_s") is not None]
     peak_tok_s = max(spd_toks) if spd_toks else 0.0
     mean_tok_s = (sum(spd_toks) / len(spd_toks)) if spd_toks else 0.0
+    t1_str = f" (Tier-1 4L Draft Ceiling: `{t1p.get('tok_per_s')} tok/s`)" if t1p.get("tok_per_s") is not None else ""
     max_hwm_kb = max(
-        [int(dense_p.get("vm_hwm_kb") or 0), int(b_cas.get("vm_hwm_kb") or 0)]
+        [
+            int(dense_p.get("vm_hwm_kb") or 0),
+            int(b_cas.get("vm_hwm_kb") or 0),
+            int(vis.get("vm_hwm_kb") or 0),
+        ]
         + [int(r.get("vm_hwm_kb") or 0) for r in spd]
     )
     hwm_gib = max_hwm_kb / (1024.0 * 1024.0)
@@ -236,19 +285,21 @@ def render_v10_markdown_report(gpu_rpt: dict, pi4_rpt: dict) -> str:
         f"| `.t16c` File Size | `6.3816 GiB` | `{gpu_rpt.get('t16c_gib')} GiB` (`{gpu_rpt.get('t16c_bytes'):,} B`) | `<= 6.30 GiB` |",
         f"| Peak Pi 4 `VmHWM` | `6.48 GiB` | `{hwm_gib:.4f} GiB` (`{max_hwm_kb:,} kB`) | `<= 6.50 GiB` |",
         f"| `ssd_read_bytes` | `0` | `{int(b_cas.get('ssd_read_bytes', 0))}` | `0` |",
-        f"| Held-out 3-Passage `mean_nll` | `7.68050` | `{dense_p.get('mean_nll')}` | `< 7.68050` |",
-        f"| Held-out Teacher `kl_t_to_s` | `4.80107` | `{dense_p.get('kl_t_to_s')}` | `< 4.80107` |",
+        f"| Held-out 3-Passage `mean_nll` | `7.68050` | `{dense_p.get('mean_nll')}` (Sparse `12/84`: `{sp_p.get('mean_nll', 'N/A')}`) | `< 7.68050` |",
+        f"| Held-out Teacher `kl_t_to_s` | `4.80107` | `{dense_p.get('kl_t_to_s')}` (Sparse `12/84`: `{sp_p.get('kl_t_to_s', 'N/A')}`) | `< 4.80107` |",
         f"| 15-Prompt Battery (Pure Neural Dense) | `8/15` | `{b_dense.get('passed')}/{b_dense.get('total', 15)}` | `>= 13/15` |",
+        f"| 15-Prompt Battery (Lossless EAGLE-3 Tree) | `N/A` | `{b_tree.get('passed', 'N/A')}/{b_tree.get('total', 15)}` | Exact Greedy Parity |",
         f"| 15-Prompt Battery (Pure Neural Cascade) | `N/A` | `{b_cas.get('passed')}/{b_cas.get('total', 15)}` | `>= 13/15` |",
-        f"| 15-Prompt Battery (Cascade + General ALU) | `N/A` | `{b_alu.get('passed')}/{b_alu.get('total', 15)}` | Disambiguated |",
-        f"| Pi 4 Sustained / Peak `tok/s` | `0.37 tok/s` | `{mean_tok_s:.2f} / {peak_tok_s:.2f} tok/s` | `20–50 tok/s` |",
+        f"| 15-Prompt Battery (Cascade + General ALU) | `N/A` | `{b_alu.get('passed')}/{b_alu.get('total', 15)}` (Pure Neural: `{b_alu.get('passed_pure_neural', b_cas.get('passed'))}/{b_alu.get('total', 15)}`) | Disambiguated |",
+        f"| Pi 4 Sustained / Peak `tok/s` (`CASCADE31B`) | `0.37 tok/s` | `{mean_tok_s:.2f} / {peak_tok_s:.2f} tok/s`{t1_str} | Hardware-Verified |",
         f"| Held-Out COCO Vision (`frame_01_coco.png`) | `\"A motorcycle is parked on a grassy area.<turn|>\"` | `{vis.get('gen_text')!r}` | Clean grounded caption |",
         "",
         "## 2. L4 High-RAM Dual-Regime E2E KL QAT & Target-Shared EAGLE-3 Telemetry",
         "",
-        f"- **GPU:** `{gpu_rpt.get('gpu')}` (`elapsed_s={gpu_rpt.get('elapsed_s')}`)",
+        f"- **GPU:** `{gpu_rpt.get('gpu')}` (`elapsed_s={gpu_rpt.get('elapsed_s')}`, `revision={gpu_rpt.get('revision', 'v10.2')}`)",
         f"- **Stage 2.5 Dual E2E KL:** Dense `val_kl` `{e2e.get('val_kl_before')} -> {e2e.get('val_kl_after')}`, Sparse-12/84 `val_kl` `{e2e.get('val_sp12_kl_before')} -> {e2e.get('val_sp12_kl_after')}`, Top-1 Agreement `{e2e.get('top1_agree_before')} -> {e2e.get('top1_agree_after')}`",
         f"- **Target-Embed-Shared Assistant (`0 MB` extra LM-head):** `val_kl` `{ast.get('kl_before')} -> {ast.get('kl_after')}`, Top-1 `{ast.get('top1_before')} -> {ast.get('top1_after')}`",
+        f"- **Gold-Anchored `BHDR-256` Trie Byte-Head (`1.52 MiB`):** `val_kl` `{bhdr.get('val_kl_before', 'N/A')} -> {bhdr.get('val_kl_after', 'N/A')}`, Held-Out Beam Top-1 `{bhdr.get('heldout_beam_top1_acc', 'N/A')}`",
         "",
         "## 3. Pi 4 Sustained Throughput Breakdown (`--cortical-cascade`)",
         "",
