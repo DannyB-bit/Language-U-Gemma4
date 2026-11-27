@@ -355,16 +355,30 @@ impl VaMirrorArena {
         ((code64 >> (lane * 16)) & 0xFFFF) as usize
     }
 
-    /// Map `(lane, depth_tier, band16)` bijectively across the sparse VA lane so every 16-bit
-    /// pigeonhole bucket gets its own cache-line pair dispersed across the `32 GiB` address space.
+    /// Map `(lane, depth_tier, band16)` bijectively with 4 KiB neighborhood page clustering:
+    ///   - Coarse semantic key `(depth_tier, band16 >> 5)` selects the 4 KiB OS page (dispersed
+    ///     bijectively across virtual memory so unrelated domains never collide).
+    ///   - Fine sub-band `band16 & 0x1F` (`0..31`) indexes the `128 B` bucket (`8` x `16 B` slots =
+    ///     `256` slots per `4 KiB` page) INSIDE that physical page, packing up to 32 nearby buckets
+    ///     (256 thought slots) onto a single faulted 4 KiB Linux RAM page.
     #[inline]
     fn bucket_byte_offset(&self, lane: usize, depth_tier: u8, code64: u64) -> usize {
-        let raw_idx = (((depth_tier as usize) & 0x3) << 16) | Self::band16(code64, lane);
-        let sparse_b = raw_idx.wrapping_mul(0x9E37_79B9) & self.bucket_mask;
-        debug_assert!(sparse_b < self.buckets_per_lane);
-        let off = lane * self.lane_bytes + sparse_b * BUCKET_BYTES;
-        debug_assert!(off + BUCKET_BYTES <= self.arena_bytes);
-        off
+        let b16 = Self::band16(code64, lane);
+        if self.buckets_per_lane >= 32 {
+            let page_mask = (self.buckets_per_lane >> 5) - 1;
+            let coarse_page = (((depth_tier as usize) & 0x3) << 11) | (b16 >> 5);
+            let sparse_page = coarse_page.wrapping_mul(0x9E37_79B9) & page_mask;
+            let fine_bkt = b16 & 0x1F;
+            let sparse_b = (sparse_page << 5) | fine_bkt;
+            debug_assert!(sparse_b < self.buckets_per_lane);
+            let off = lane * self.lane_bytes + sparse_b * BUCKET_BYTES;
+            debug_assert!(off + BUCKET_BYTES <= self.arena_bytes);
+            off
+        } else {
+            let raw_idx = (((depth_tier as usize) & 0x3) << 16) | b16;
+            let sparse_b = raw_idx.wrapping_mul(0x9E37_79B9) & self.bucket_mask;
+            lane * self.lane_bytes + sparse_b * BUCKET_BYTES
+        }
     }
 
     #[inline]
@@ -554,5 +568,26 @@ mod tests {
         let mut ortho = mcodes[1];
         ortho.code64 ^= 0x5555_AAAA_3333_CCCC;
         assert!(arena.query(0, ortho, 6).is_none());
+    }
+
+    #[test]
+    fn va_mirror_clusters_32_semantic_neighbor_buckets_onto_single_4k_page_per_lane() {
+        let mut arena = VaMirrorArena::reserve_default().expect("reserve VA arena");
+        let base_code = 0xCAFE_BABE_DEAD_BEE0u64 & !0x001F_001F_001F_001Fu64;
+        // Write 32 distinct thoughts varying ONLY in the lower 5 fine bits of each 16-bit band:
+        // all 32 buckets share the same coarse 11-bit neighborhood in every lane -> 1 4KB page/lane!
+        for fine in 0..32u64 {
+            let c64 = base_code | fine | (fine << 16) | (fine << 32) | (fine << 48);
+            let mcode = VaMirrorCode { code64: c64, sig24: (fine as u32) + 1, cuneiform_u8: 2 };
+            arena.insert(1, mcode, 1000 + (fine as u32), (fine as u32) + 7);
+        }
+        // Without neighborhood clustering this would fault up to 128 pages; with clustering, <= 4 pages!
+        assert_eq!(arena.faulted_pages_4k(), NUM_LSH_LANES);
+        for fine in [0u64, 15u64, 31u64] {
+            let c64 = base_code | fine | (fine << 16) | (fine << 32) | (fine << 48);
+            let mcode = VaMirrorCode { code64: c64, sig24: (fine as u32) + 1, cuneiform_u8: 2 };
+            let hit = arena.query(1, mcode, 0).expect("clustered neighbor hit");
+            assert_eq!(hit.out_tok, 1000 + (fine as u32));
+        }
     }
 }
