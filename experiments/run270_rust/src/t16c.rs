@@ -98,24 +98,7 @@ impl Int8LowRank {
             let zk = &mut z[tok * r..(tok + 1) * r];
             for k in 0..r {
                 let vrow = &self.v_i8[k * d_in..(k + 1) * d_in];
-                let mut acc0 = 0.0f32;
-                let mut acc1 = 0.0f32;
-                let mut acc2 = 0.0f32;
-                let mut acc3 = 0.0f32;
-                let mut j = 0usize;
-                while j + 4 <= d_in {
-                    acc0 += (vrow[j] as f32) * xk[j];
-                    acc1 += (vrow[j + 1] as f32) * xk[j + 1];
-                    acc2 += (vrow[j + 2] as f32) * xk[j + 2];
-                    acc3 += (vrow[j + 3] as f32) * xk[j + 3];
-                    j += 4;
-                }
-                let mut acc = (acc0 + acc1) + (acc2 + acc3);
-                while j < d_in {
-                    acc += (vrow[j] as f32) * xk[j];
-                    j += 1;
-                }
-                zk[k] = acc * self.sv[k];
+                zk[k] = crate::thread_pool::simd_dot_i8_f32(vrow, xk) * self.sv[k];
             }
         }
 
@@ -126,11 +109,7 @@ impl Int8LowRank {
                 let yk = &mut y[tok * d_out..(tok + 1) * d_out];
                 for row in 0..d_out {
                     let urow = &self.u_i8[row * r..(row + 1) * r];
-                    let mut acc = 0.0f32;
-                    for k in 0..r {
-                        acc += (urow[k] as f32) * zk[k];
-                    }
-                    yk[row] += acc * self.su[row];
+                    yk[row] += crate::thread_pool::simd_dot_i8_f32(urow, zk) * self.su[row];
                 }
             }
         } else {
@@ -138,57 +117,26 @@ impl Int8LowRank {
             let u_i8 = &self.u_i8;
             let su = &self.su;
             let z_ref = &z;
-            for tok in 0..k_tokens {
-                let zk = &z_ref[tok * r..(tok + 1) * r];
-                let yk = &mut y[tok * d_out..(tok + 1) * d_out];
-                std::thread::scope(|s| {
-                    for (bi, yslice) in yk.chunks_mut(chunk).enumerate() {
-                        let r0 = bi * chunk;
-                        s.spawn(move || {
-                            for (dr, yv) in yslice.iter_mut().enumerate() {
-                                let row = r0 + dr;
-                                let urow = &u_i8[row * r..(row + 1) * r];
-                                let mut acc = 0.0f32;
-                                for k in 0..r {
-                                    acc += (urow[k] as f32) * zk[k];
-                                }
-                                *yv += acc * su[row];
-                            }
-                        });
+            let y_addr = y.as_mut_ptr() as usize;
+            crate::thread_pool::par_for_chunks(d_out, chunk, nthreads, |_cid, r0, r1| {
+                for tok in 0..k_tokens {
+                    let zk = &z_ref[tok * r..(tok + 1) * r];
+                    let base = tok * d_out;
+                    for row in r0..r1 {
+                        let urow = &u_i8[row * r..(row + 1) * r];
+                        let add = crate::thread_pool::simd_dot_i8_f32(urow, zk) * su[row];
+                        unsafe {
+                            *(y_addr as *mut f32).add(base + row) += add;
+                        }
                     }
-                });
-            }
+                }
+            });
         }
     }
 }
 
 pub fn fwht_block_inplace(x: &mut [f32], bsize: usize) -> Result<(), String> {
-    if !bsize.is_power_of_two() || bsize == 0 || x.len() % bsize != 0 {
-        return Err(format!("fwht_block_inplace invalid bsize={bsize} len={}", x.len()));
-    }
-    let inv_sqrt = 1.0f32 / (bsize as f32).sqrt();
-    for chunk in x.chunks_exact_mut(bsize) {
-        let mut len = 1usize;
-        while len < bsize {
-            let step = len * 2;
-            let mut i = 0usize;
-            while i < bsize {
-                let (left, right) = chunk[i..i + step].split_at_mut(len);
-                for j in 0..len {
-                    let u = left[j];
-                    let v = right[j];
-                    left[j] = u + v;
-                    right[j] = u - v;
-                }
-                i += step;
-            }
-            len = step;
-        }
-        for v in chunk.iter_mut() {
-            *v *= inv_sqrt;
-        }
-    }
-    Ok(())
+    crate::thread_pool::simd_fwht_block_inplace(x, bsize)
 }
 
 const fn build_tern5_lut() -> [[i8; 5]; 243] {
@@ -326,8 +274,129 @@ fn fadvise_dontneed(file: &File, offset: u64, len: usize) {
     }
 }
 
+/// Lossless O(1)-random-access 16-byte-chunk uniform/zero-plane archive (`LLD-AC` skewness principle).
+///
+/// Tag encoding (2 bits per 16-byte chunk, packed 4 chunks per byte):
+/// - `0b00`: all 16 bytes are `0x00` (0 payload bytes)
+/// - `0b01`: all 16 bytes are `0xFF` (0 payload bytes)
+/// - `0b10`: all 16 bytes equal constant `b` (1 payload byte)
+/// - `0b11`: literal 16-byte chunk (16 payload bytes)
+#[derive(Clone)]
+pub struct ZPlaneArchive {
+    pub raw_len: usize,
+    pub tags: Vec<u8>,
+    /// Payload byte offset at the start of every 64-chunk superblock (`1024` uncompressed bytes).
+    pub super_offsets: Vec<u32>,
+    pub payload: Vec<u8>,
+}
+
+impl ZPlaneArchive {
+    pub fn compress(src: &[u8]) -> Self {
+        let raw_len = src.len();
+        let n_chunks = raw_len.div_ceil(16);
+        let mut tags = vec![0u8; n_chunks.div_ceil(4)];
+        let mut super_offsets = Vec::with_capacity(n_chunks.div_ceil(64) + 1);
+        let mut payload = Vec::with_capacity(raw_len / 2);
+
+        for c in 0..n_chunks {
+            if c % 64 == 0 {
+                super_offsets.push(payload.len() as u32);
+            }
+            let s0 = c * 16;
+            let s1 = (s0 + 16).min(raw_len);
+            let mut blk = [0u8; 16];
+            blk[..s1 - s0].copy_from_slice(&src[s0..s1]);
+            let b0 = blk[0];
+            let all_same = blk.iter().all(|&b| b == b0);
+            let tag: u8 = if all_same && b0 == 0x00 {
+                0b00
+            } else if all_same && b0 == 0xFF {
+                0b01
+            } else if all_same {
+                payload.push(b0);
+                0b10
+            } else {
+                payload.extend_from_slice(&blk);
+                0b11
+            };
+            tags[c / 4] |= tag << ((c % 4) * 2);
+        }
+        tags.shrink_to_fit();
+        super_offsets.shrink_to_fit();
+        payload.shrink_to_fit();
+        Self { raw_len, tags, super_offsets, payload }
+    }
+
+    #[inline]
+    pub fn compressed_byte_len(&self) -> usize {
+        self.tags.len() + self.super_offsets.len() * 4 + self.payload.len()
+    }
+
+    #[inline]
+    fn tag_at(&self, chunk_idx: usize) -> u8 {
+        (self.tags[chunk_idx / 4] >> ((chunk_idx % 4) * 2)) & 0b11
+    }
+
+    #[inline]
+    fn tag_payload_size(tag: u8) -> usize {
+        match tag {
+            0b00 | 0b01 => 0,
+            0b10 => 1,
+            _ => 16,
+        }
+    }
+
+    pub fn read_range(&self, rel_off: usize, dst: &mut [u8]) -> Result<(), String> {
+        let end = rel_off.checked_add(dst.len()).ok_or("ZPlaneArchive overflow")?;
+        if end > self.raw_len {
+            return Err(format!("ZPlaneArchive out of bounds ({end} > {})", self.raw_len));
+        }
+        if dst.is_empty() {
+            return Ok(());
+        }
+        let start_chunk = rel_off / 16;
+        let end_chunk = (end - 1) / 16;
+        let sb = start_chunk / 64;
+        let mut p_off = self.super_offsets[sb] as usize;
+        for c in (sb * 64)..start_chunk {
+            p_off += Self::tag_payload_size(self.tag_at(c));
+        }
+        let mut written = 0usize;
+        for c in start_chunk..=end_chunk {
+            let tag = self.tag_at(c);
+            let mut blk = [0u8; 16];
+            match tag {
+                0b00 => {}
+                0b01 => blk.fill(0xFF),
+                0b10 => {
+                    blk.fill(self.payload[p_off]);
+                    p_off += 1;
+                }
+                _ => {
+                    blk.copy_from_slice(&self.payload[p_off..p_off + 16]);
+                    p_off += 16;
+                }
+            }
+            let c_start = c * 16;
+            let b_from = rel_off.saturating_sub(c_start);
+            let b_to = (end - c_start).min(16);
+            let n = b_to - b_from;
+            dst[written..written + n].copy_from_slice(&blk[b_from..b_to]);
+            written += n;
+        }
+        Ok(())
+    }
+
+    pub fn decompress_vec(&self) -> Vec<u8> {
+        let mut out = vec![0u8; self.raw_len];
+        let _ = self.read_range(0, &mut out);
+        out
+    }
+}
+
 enum PackedStorage {
     Owned(Vec<Aligned64>),
+    ZPlane(ZPlaneArchive),
     #[cfg(unix)]
     Mmap {
         map: Arc<MappedFile>,
@@ -380,7 +449,35 @@ impl T16CMat {
     }
 
     pub fn is_streamed(&self) -> bool {
-        matches!(self.packed, PackedStorage::StreamedFile { .. })
+        matches!(self.packed, PackedStorage::StreamedFile { .. } | PackedStorage::ZPlane(_))
+    }
+
+    pub fn is_zplane(&self) -> bool {
+        matches!(self.packed, PackedStorage::ZPlane(_))
+    }
+
+    /// Losslessly compress uniform/zero 16-byte chunks in-place when `PackedStorage::Owned`, returning RAM bytes saved.
+    pub fn compact_zplane(&mut self) -> usize {
+        let arch_opt = match &self.packed {
+            PackedStorage::Owned(buf) => {
+                let raw = aligned_as_slice(buf, self.packed_bytes_len);
+                let arch = ZPlaneArchive::compress(raw);
+                let old_cap = buf.len() * 64;
+                if arch.compressed_byte_len() + 64 < old_cap {
+                    Some((arch, old_cap))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some((arch, old_cap)) = arch_opt {
+            let new_sz = arch.compressed_byte_len();
+            self.packed = PackedStorage::ZPlane(arch);
+            old_cap.saturating_sub(new_sz)
+        } else {
+            0
+        }
     }
 
     pub fn total_bytes(&self) -> usize {
@@ -390,7 +487,11 @@ impl T16CMat {
     }
 
     pub fn resident_bytes(&self) -> usize {
-        let pk = if self.is_streamed() { 0 } else { self.packed_bytes_len };
+        let pk = match &self.packed {
+            PackedStorage::StreamedFile { .. } => 0,
+            PackedStorage::ZPlane(z) => z.compressed_byte_len(),
+            _ => self.packed_bytes_len,
+        };
         pk + self.inv_s.as_ref().map_or(0, |v| v.len() * 4)
             + self.low_rank.as_ref().map_or(0, |lr| lr.byte_len())
     }
@@ -402,8 +503,8 @@ impl T16CMat {
             PackedStorage::Mmap { map, offset, len } => unsafe {
                 std::slice::from_raw_parts(map.ptr.add(*offset), *len)
             },
-            PackedStorage::StreamedFile { .. } => {
-                panic!("packed_slice() called directly on StreamedFile matrix {}", self.name)
+            PackedStorage::StreamedFile { .. } | PackedStorage::ZPlane(_) => {
+                panic!("packed_slice() called directly on streamed/zplane matrix {}", self.name)
             }
         }
     }
@@ -411,6 +512,7 @@ impl T16CMat {
     fn packed_cow(&self) -> Result<Cow<'_, [u8]>, String> {
         match &self.packed {
             PackedStorage::Owned(buf) => Ok(Cow::Borrowed(aligned_as_slice(buf, self.packed_bytes_len))),
+            PackedStorage::ZPlane(z) => Ok(Cow::Owned(z.decompress_vec())),
             #[cfg(unix)]
             PackedStorage::Mmap { map, offset, len } => Ok(Cow::Borrowed(unsafe {
                 std::slice::from_raw_parts(map.ptr.add(*offset), *len)
@@ -439,6 +541,7 @@ impl T16CMat {
                 dst.copy_from_slice(&aligned_as_slice(buf, self.packed_bytes_len)[rel_off..end]);
                 Ok(())
             }
+            PackedStorage::ZPlane(z) => z.read_range(rel_off, dst),
             #[cfg(unix)]
             PackedStorage::Mmap { map, offset, .. } => {
                 let src = unsafe { std::slice::from_raw_parts(map.ptr.add(*offset + rel_off), dst.len()) };
@@ -1922,89 +2025,86 @@ fn matmul_rust_slice(
             Vec::new()
         };
         let yk = &mut y[tok * d_out..(tok + 1) * d_out];
-        std::thread::scope(|s| {
-            for (bi, yslice) in yk.chunks_mut(chunk).enumerate() {
-                let r_start = bi * chunk;
-                let xbn = &x_blk_norms;
-                let skip_ref = &total_skipped;
-                s.spawn(move || {
-                    for (dr, yv) in yslice.iter_mut().enumerate() {
-                        let row = r_start + dr;
-                        let t = row / 16;
-                        let r = row % 16;
-                        let mut acc = 0.0f64;
-                        for blk in 0..n_blks {
-                            if let Some(norms) = tile_norms_fp16 {
-                                let wn = fp16_to_f32(norms[t * n_blks + blk]);
-                                if wn * xbn[blk] <= cs_skip_thresh {
-                                    if r == 0 {
-                                        skip_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                    continue;
-                                }
+        let yk_addr = yk.as_mut_ptr() as usize;
+        let xbn = &x_blk_norms;
+        let skip_ref = &total_skipped;
+        crate::thread_pool::par_for_chunks(d_out, chunk, nthreads, |_bi, r_start, r_end| {
+            for row in r_start..r_end {
+                let t = row / 16;
+                let r = row % 16;
+                let mut acc = 0.0f64;
+                for blk in 0..n_blks {
+                    if let Some(norms) = tile_norms_fp16 {
+                        let wn = fp16_to_f32(norms[t * n_blks + blk]);
+                        if wn * xbn[blk] <= cs_skip_thresh {
+                            if r == 0 {
+                                skip_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
-                            let off = if is_colblock {
-                                (blk * n_tiles + t) * tblk_bytes
-                            } else {
-                                (t * n_blks + blk) * tblk_bytes
-                            };
-                            let sc = fp16_to_f32(u16::from_le_bytes([packed[off + r * 2], packed[off + r * 2 + 1]])) as f64;
-                            let xb = &xk[blk * bsize..(blk + 1) * bsize];
-                            if eff_bits == 5 {
-                                let mut bsum = 0.0f64;
-                                for g in 0..quintets {
-                                    let code = packed[off + 32 + g * 16 + r] as usize;
-                                    debug_assert!(code < 243);
-                                    let t5 = TERN5_LUT.get(code).copied().unwrap_or([0; 5]);
-                                    let base = g * 5;
-                                    for k in 0..5 {
-                                        let col = base + k;
-                                        if col < bsize && t5[k] != 0 {
-                                            bsum += (t5[k] as f64) * (xb[col] as f64);
-                                        }
-                                    }
-                                }
-                                acc += sc * bsum;
-                            } else if eff_bits == 8 {
-                                let mut wsum = 0.0f64;
-                                for c in 0..bsize {
-                                    let q = packed[off + 32 + c * 16 + r] as i8;
-                                    wsum += (q as f64) * (xb[c] as f64);
-                                }
-                                acc += sc * wsum;
-                            } else {
-                                let bi_v = if is_asym {
-                                    fp16_to_f32(u16::from_le_bytes([packed[off + 32 + r * 2], packed[off + 32 + r * 2 + 1]])) as f64
-                                } else {
-                                    0.0f64
-                                };
-                                if is_asym {
-                                    let sx: f64 = xb.iter().map(|&v| v as f64).sum();
-                                    acc += bi_v * sx;
-                                }
-                                for p in 0..eff_bits {
-                                    let wp = sc * (plane_weight(n_bits_raw, p) as f64);
-                                    let p_off = off + hdr_bytes + p * plane_bytes;
-                                    let mut isum = 0.0f64;
-                                    for bo in 0..bytes_per_row_blk {
-                                        let b = if rowmajor {
-                                            packed[p_off + r * bytes_per_row_blk + bo]
-                                        } else {
-                                            packed[p_off + bo * 16 + r]
-                                        };
-                                        let base = bo * 8;
-                                        for bit in 0..8 {
-                                            let v = xb[base + bit] as f64;
-                                            isum += if ((b >> (7 - bit)) & 1) != 0 { v } else { -v };
-                                        }
-                                    }
-                                    acc += wp * isum;
+                            continue;
+                        }
+                    }
+                    let off = if is_colblock {
+                        (blk * n_tiles + t) * tblk_bytes
+                    } else {
+                        (t * n_blks + blk) * tblk_bytes
+                    };
+                    let sc = fp16_to_f32(u16::from_le_bytes([packed[off + r * 2], packed[off + r * 2 + 1]])) as f64;
+                    let xb = &xk[blk * bsize..(blk + 1) * bsize];
+                    if eff_bits == 5 {
+                        let mut bsum = 0.0f64;
+                        for g in 0..quintets {
+                            let code = packed[off + 32 + g * 16 + r] as usize;
+                            debug_assert!(code < 243);
+                            let t5 = TERN5_LUT.get(code).copied().unwrap_or([0; 5]);
+                            let base = g * 5;
+                            for k in 0..5 {
+                                let col = base + k;
+                                if col < bsize && t5[k] != 0 {
+                                    bsum += (t5[k] as f64) * (xb[col] as f64);
                                 }
                             }
                         }
-                        *yv = acc as f32;
+                        acc += sc * bsum;
+                    } else if eff_bits == 8 {
+                        let mut wsum = 0.0f64;
+                        for c in 0..bsize {
+                            let q = packed[off + 32 + c * 16 + r] as i8;
+                            wsum += (q as f64) * (xb[c] as f64);
+                        }
+                        acc += sc * wsum;
+                    } else {
+                        let bi_v = if is_asym {
+                            fp16_to_f32(u16::from_le_bytes([packed[off + 32 + r * 2], packed[off + 32 + r * 2 + 1]])) as f64
+                        } else {
+                            0.0f64
+                        };
+                        if is_asym {
+                            let sx: f64 = xb.iter().map(|&v| v as f64).sum();
+                            acc += bi_v * sx;
+                        }
+                        for p in 0..eff_bits {
+                            let wp = sc * (plane_weight(n_bits_raw, p) as f64);
+                            let p_off = off + hdr_bytes + p * plane_bytes;
+                            let mut isum = 0.0f64;
+                            for bo in 0..bytes_per_row_blk {
+                                let b = if rowmajor {
+                                    packed[p_off + r * bytes_per_row_blk + bo]
+                                } else {
+                                    packed[p_off + bo * 16 + r]
+                                };
+                                let base = bo * 8;
+                                for bit in 0..8 {
+                                    let v = xb[base + bit] as f64;
+                                    isum += if ((b >> (7 - bit)) & 1) != 0 { v } else { -v };
+                                }
+                            }
+                            acc += wp * isum;
+                        }
                     }
-                });
+                }
+                unsafe {
+                    *(yk_addr as *mut f32).add(row) = acc as f32;
+                }
             }
         });
     }
@@ -2561,6 +2661,26 @@ impl Drop for NativeTile16Kernel {
 pub struct T16CLoadPolicy {
     pub defer_vision_fault: bool,
     pub cold_mlp_layers: HashSet<usize>,
+    /// Optional `[l_start, l_end)` shard filter for distributed cluster workers:
+    /// layers outside `[l_start, l_end)` remain unmapped/streamed with zero RAM fault.
+    pub active_layer_range: Option<(usize, usize)>,
+    /// When true (on intermediate cluster workers), defer faulting `embed_tokens` (`~514 MiB`).
+    pub skip_embed_tokens: bool,
+    /// Evidence-parked layers (e.g. `cca.cluster_plan.v1` `tier2_bypass_layers`): every matrix stays
+    /// VA/file-addressable as `StreamedFile` metadata but is never faulted into physical DRAM.
+    pub parked_layers: HashSet<usize>,
+}
+
+pub fn parse_any_layer_idx(name: &str) -> Option<usize> {
+    let rest = name
+        .strip_prefix("model.language_model.layers.")
+        .or_else(|| name.strip_prefix("model.layers."))?;
+    let (idx_s, _) = rest.split_once('.')?;
+    idx_s.parse::<usize>().ok()
+}
+
+pub fn is_embed_mat(name: &str) -> bool {
+    name.ends_with("embed_tokens.weight") || name.ends_with("lm_head.weight")
 }
 
 pub fn parse_mlp_layer_idx(name: &str) -> Option<usize> {
@@ -2873,7 +2993,14 @@ impl T16CModel {
             if packed_bytes != exp_p {
                 return Err(format!("{name}: packed_bytes {packed_bytes} != expected {exp_p}"));
             }
-            let is_cold = parse_mlp_layer_idx(&name).is_some_and(|l| policy.cold_mlp_layers.contains(&l));
+            let out_of_shard = policy
+                .active_layer_range
+                .and_then(|(ls, le)| parse_any_layer_idx(&name).map(|l| l < ls || l >= le))
+                .unwrap_or(false)
+                || (policy.skip_embed_tokens && is_embed_mat(&name));
+            let is_cold = out_of_shard
+                || parse_any_layer_idx(&name).is_some_and(|l| policy.parked_layers.contains(&l))
+                || parse_mlp_layer_idx(&name).is_some_and(|l| policy.cold_mlp_layers.contains(&l));
             let packed = r.read_packed_with_policy(packed_bytes, &mut pos, &name, is_cold)?;
 
             let inv_s = match inv_s_kind {
@@ -2939,6 +3066,11 @@ impl T16CModel {
 
     pub fn load(path: &Path, native_lib: Option<&Path>, disable_native: bool) -> Result<Self, String> {
         Self::load_with_policy(path, native_lib, disable_native, &T16CLoadPolicy::default())
+    }
+
+    /// Losslessly compact zero/uniform 16-byte chunks across all `Owned` matrices (`LLD-AC` ZPlane), returning RAM saved.
+    pub fn compact_zplane_all(&mut self) -> usize {
+        self.mats.values_mut().map(|m| m.compact_zplane()).sum()
     }
 
     pub fn load_with_policy(
@@ -4142,6 +4274,7 @@ mod tests {
         let mut pol = T16CLoadPolicy {
             defer_vision_fault: true,
             cold_mlp_layers: HashSet::new(),
+            ..Default::default()
         };
         pol.cold_mlp_layers.insert(6);
         let sel_m = T16CModel::load_with_policy(&tmp, None, true, &pol).unwrap();
@@ -4170,5 +4303,57 @@ mod tests {
             }
             let _ = m_sel.advise_dontneed();
         }
+    }
+
+    #[test]
+    fn zplane_archive_compacts_sparse_planes_and_preserves_bit_exact_projection() {
+        let d_out = 32usize;
+        let d_in = 128usize;
+        let bsize = 64usize;
+        let n_blks = d_in / bsize;
+        let sc = vec![0.04f32; d_out * n_blks];
+        let bi = vec![0.0f32; d_out * n_blks];
+        let idx: Vec<u8> = (0..d_out * d_in)
+            .map(|i| if i % 29 == 0 { 3u8 } else { 0u8 })
+            .collect();
+        let m_orig = T16CMat::pack_from_components(
+            "zplane.test.weight".into(),
+            d_out,
+            d_in,
+            bsize,
+            3 | T16C_GAUSS_BIT,
+            true,
+            true,
+            &sc,
+            Some(&bi),
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut m_comp = T16CMat::pack_from_components(
+            "zplane.test.weight".into(),
+            d_out,
+            d_in,
+            bsize,
+            3 | T16C_GAUSS_BIT,
+            true,
+            true,
+            &sc,
+            Some(&bi),
+            &idx,
+            None,
+            None,
+        )
+        .unwrap();
+        let saved = m_comp.compact_zplane();
+        assert!(saved > 0, "expected ZPlaneArchive to save RAM on sparse planes");
+        assert!(m_comp.is_zplane());
+        assert!(m_comp.resident_bytes() < m_orig.resident_bytes());
+
+        let x: Vec<f32> = (0..3 * d_in).map(|i| ((i * 7 % 19) as f32 - 9.0) * 0.12).collect();
+        let y_orig = m_orig.project_batch(&x, 3, None, 2).unwrap();
+        let y_comp = m_comp.project_batch(&x, 3, None, 2).unwrap();
+        assert_eq!(y_orig, y_comp, "ZPlaneArchive projection must be 100% bit-exact");
     }
 }

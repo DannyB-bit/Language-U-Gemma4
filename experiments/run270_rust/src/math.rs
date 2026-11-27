@@ -14,27 +14,7 @@ pub fn rmsn_gemma(x: &[f32], w: &[f32], eps: f32) -> Vec<f32> {
 
 #[inline]
 pub fn dot_f32_4way(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-    let n = a.len();
-    let chunks = n / 4;
-    let mut s0 = 0.0f32;
-    let mut s1 = 0.0f32;
-    let mut s2 = 0.0f32;
-    let mut s3 = 0.0f32;
-    let mut i = 0usize;
-    for _ in 0..chunks {
-        s0 += a[i] * b[i];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
-        i += 4;
-    }
-    let mut s = (s0 + s1) + (s2 + s3);
-    while i < n {
-        s += a[i] * b[i];
-        i += 1;
-    }
-    s
+    crate::thread_pool::simd_dot_f32(a, b)
 }
 
 #[inline]
@@ -268,9 +248,7 @@ pub fn attn_decode_range(
             let p = e * inv_wsum;
             let base = tt * n_kv * hd + kvh * hd;
             let vs = &v_seq[base..base + hd];
-            for (d_val, &v_val) in dst.iter_mut().zip(vs.iter()) {
-                *d_val += p * v_val;
-            }
+            crate::thread_pool::simd_axpy_f32(dst, p, vs);
         }
     }
     ctx
@@ -344,12 +322,61 @@ pub fn attn_decode_tree(
             let p = e * inv_wsum;
             let base = slot * n_kv * hd + kvh * hd;
             let vs = &v_seq[base..base + hd];
-            for (d_val, &v_val) in dst.iter_mut().zip(vs.iter()) {
-                *d_val += p * v_val;
-            }
+            crate::thread_pool::simd_axpy_f32(dst, p, vs);
         }
     }
     ctx
+}
+
+/// Multi-threaded speculative token-tree attention across all `seq_len` tree nodes using the persistent pool.
+#[allow(clippy::too_many_arguments)]
+pub fn attn_decode_tree_batch_into(
+    q_batch: &[f32],
+    k_seq: &[f32],
+    v_seq: &[f32],
+    base_t: usize,
+    seq_len: usize,
+    ancestor_masks: &[u32],
+    tree_depths: &[usize],
+    start_pos: usize,
+    n_heads: usize,
+    n_kv: usize,
+    hd: usize,
+    sw: Option<usize>,
+    threads: usize,
+    ctx_batch: &mut [f32],
+) {
+    let q_stride = n_heads * hd;
+    debug_assert_eq!(q_batch.len(), seq_len * q_stride);
+    debug_assert_eq!(ctx_batch.len(), seq_len * q_stride);
+    if seq_len == 0 {
+        return;
+    }
+    let ctx_addr = ctx_batch.as_mut_ptr() as usize;
+    let chunk = seq_len.div_ceil(threads.max(1)).max(1);
+    crate::thread_pool::par_for_chunks(seq_len, chunk, threads.max(1), |_cid, t0, t1| {
+        for t in t0..t1 {
+            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+            let c_t = attn_decode_tree(
+                q_t,
+                k_seq,
+                v_seq,
+                base_t,
+                seq_len,
+                ancestor_masks[t],
+                tree_depths,
+                start_pos + tree_depths[t],
+                n_heads,
+                n_kv,
+                hd,
+                sw,
+            );
+            unsafe {
+                let dst = std::slice::from_raw_parts_mut((ctx_addr as *mut f32).add(t * q_stride), q_stride);
+                dst.copy_from_slice(&c_t);
+            }
+        }
+    });
 }
 
 #[inline]
@@ -377,7 +404,7 @@ pub fn gelu_tanh_fast_f32(x: f32) -> f32 {
     0.5f32 * x * (1.0f32 + t)
 }
 
-/// In-place multi-threaded fast Padé GELU across a slice (auto-vectorizes to 4-wide NEON FP32 per core).
+/// In-place multi-threaded fast Padé GELU across a slice (uses persistent zero-spawn pool).
 pub fn gelu_tanh_inplace_parallel(v: &mut [f32], threads: usize) {
     let n = v.len();
     let nt = threads.max(1);
@@ -387,14 +414,12 @@ pub fn gelu_tanh_inplace_parallel(v: &mut [f32], threads: usize) {
         }
         return;
     }
-    let chunk = n.div_ceil(nt);
-    std::thread::scope(|s| {
-        for sl in v.chunks_mut(chunk) {
-            s.spawn(move || {
-                for x in sl.iter_mut() {
-                    *x = gelu_tanh_fast_f32(*x);
-                }
-            });
+    let chunk = n.div_ceil(nt).max(1);
+    let ptr_addr = v.as_mut_ptr() as usize;
+    crate::thread_pool::par_for_chunks(n, chunk, nt, |_cid, s, e| unsafe {
+        let sl = std::slice::from_raw_parts_mut((ptr_addr as *mut f32).add(s), e - s);
+        for x in sl.iter_mut() {
+            *x = gelu_tanh_fast_f32(*x);
         }
     });
 }

@@ -480,6 +480,141 @@ impl SpecTreeBuilder {
     pub fn depths_and_masks(&self) -> Vec<(usize, u32)> {
         self.nodes.iter().map(|n| (n.depth, n.ancestor_mask)).collect()
     }
+
+    /// Graft a continuation sequence starting under an arbitrary existing `start_slot` (e.g., an EAGLE-3 leaf).
+    pub fn graft_from_slot(&mut self, start_slot: usize, seq: &[u32], eos: &[u32], margin: f32) -> usize {
+        if start_slot >= self.nodes.len() || eos.contains(&self.nodes[start_slot].token_id) {
+            return 0;
+        }
+        let mut cur = start_slot;
+        let mut added = 0usize;
+        for &tok in seq {
+            let prev_len = self.nodes.len();
+            match self.insert_child(cur, tok) {
+                Some(next_slot) => {
+                    if self.nodes.len() > prev_len {
+                        added += 1;
+                    }
+                    if margin > self.slot_margin(next_slot) {
+                        self.set_slot_margin(next_slot, margin);
+                    }
+                    cur = next_slot;
+                    if eos.contains(&tok) {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        added
+    }
+
+    /// Extend active tree leaves with zero-DRAM suffix + n-gram ("Macro-Glyph" multi-token span) continuations
+    /// up to `max_leaf_ext` tokens per leaf, turning shallow neural drafts into deep single-sweep trees.
+    pub fn extend_leaves_with_macro_spans(
+        &mut self,
+        history_before_root: &[u32],
+        ngram: &FastNGramProposalEngine,
+        eos: &[u32],
+        max_leaf_ext: usize,
+    ) -> usize {
+        if max_leaf_ext == 0 || self.nodes.len() >= self.max_nodes {
+            return 0;
+        }
+        let orig_len = self.nodes.len();
+        let mut has_child = vec![false; orig_len];
+        for n in &self.nodes[1..orig_len] {
+            if n.parent >= 0 && (n.parent as usize) < orig_len {
+                has_child[n.parent as usize] = true;
+            }
+        }
+        // Collect leaf slots sorted by deepest / primary path first
+        let mut leaves: Vec<usize> = (0..orig_len).filter(|&i| !has_child[i]).collect();
+        leaves.sort_by_key(|&i| (std::cmp::Reverse(self.nodes[i].depth), i));
+
+        let mut total_added = 0usize;
+        for leaf in leaves {
+            if self.nodes.len() >= self.max_nodes {
+                break;
+            }
+            if eos.contains(&self.nodes[leaf].token_id) {
+                continue;
+            }
+            // Reconstruct exact ancestor path from root `0..=leaf`
+            let mut chain = Vec::with_capacity(self.nodes[leaf].depth + 1);
+            let mut cur = leaf as i32;
+            while cur >= 0 {
+                chain.push(self.nodes[cur as usize].token_id);
+                cur = self.nodes[cur as usize].parent;
+            }
+            chain.reverse();
+
+            let mut full_ctx = Vec::with_capacity(history_before_root.len() + chain.len());
+            full_ctx.extend_from_slice(history_before_root);
+            full_ctx.extend_from_slice(&chain);
+
+            let sfx = prompt_suffix_lookup(&full_ctx, 2, max_leaf_ext);
+            if !sfx.is_empty() {
+                total_added += self.graft_from_slot(leaf, &sfx, eos, 8.0);
+            }
+            if self.nodes.len() < self.max_nodes {
+                let ng = ngram.propose_sequence(&full_ctx, max_leaf_ext);
+                if !ng.is_empty() {
+                    total_added += self.graft_from_slot(leaf, &ng, eos, 4.5);
+                }
+            }
+        }
+        total_added
+    }
+}
+
+/// Fuse `unverified_prefix` (`[u_0, ..., u_{m-1}]`, `m >= 0`) with `tree` (`[y_0, d_1, ...]`)
+/// into ONE single prefix-tree batch (`m + tree.nodes.len() <= 24` slots) so both the unverified
+/// Tier-1 streak AND the new speculative tree execute in a SINGLE 60-layer DRAM sweep!
+pub fn fuse_unverified_prefix_and_tree(
+    unverified_prefix: &[u32],
+    tree: &SpecTreeBuilder,
+) -> Result<(Vec<SpecTreeNode>, usize), String> {
+    let m = unverified_prefix.len();
+    let n = tree.nodes.len();
+    if n == 0 {
+        return Err("fuse_unverified_prefix_and_tree: empty tree".into());
+    }
+    if m + n > 24 {
+        return Err(format!(
+            "fuse_unverified_prefix_and_tree: m({m}) + n({n}) = {} exceeds 24-slot NEON tree limit",
+            m + n
+        ));
+    }
+    if m == 0 {
+        return Ok((tree.nodes.clone(), 0));
+    }
+    let mut fused = Vec::with_capacity(m + n);
+    let mut running_mask = 0u32;
+    for (i, &tok) in unverified_prefix.iter().enumerate() {
+        running_mask |= 1u32 << i;
+        fused.push(SpecTreeNode {
+            token_id: tok,
+            parent: if i == 0 { -1 } else { (i - 1) as i32 },
+            depth: i,
+            ancestor_mask: running_mask,
+        });
+    }
+    let prefix_mask = running_mask; // `(1 << m) - 1`
+    for (j, tn) in tree.nodes.iter().enumerate() {
+        let parent = if j == 0 {
+            (m - 1) as i32
+        } else {
+            tn.parent + (m as i32)
+        };
+        fused.push(SpecTreeNode {
+            token_id: tn.token_id,
+            parent,
+            depth: m + tn.depth,
+            ancestor_mask: prefix_mask | (tn.ancestor_mask << m),
+        });
+    }
+    Ok((fused, m))
 }
 
 /// Zero-DRAM O(1) longest-suffix matcher (PLD-style) over active token history.
@@ -869,5 +1004,35 @@ mod tests {
         tb.graft_sequence_with_margin(&hit, &[1], 88.0);
         assert_eq!(tb.nodes.len(), 3);
         assert!((tb.slot_margin(1) - 88.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fuse_prefix_and_macro_leaf_extension_preserve_exact_ancestor_masks() {
+        let mut ngram = FastNGramProposalEngine::new(4);
+        ngram.train_tokens(&[5, 6, 7, 8, 9, 10, 5, 6, 7, 8, 9, 10]);
+
+        let mut tb = SpecTreeBuilder::new(6, 16);
+        let s1 = tb.insert_child(0, 7).unwrap();
+        assert_eq!(s1, 1);
+        let added = tb.extend_leaves_with_macro_spans(&[5], &ngram, &[1], 3);
+        assert!(added >= 2, "expected macro span leaf extension, got {added}");
+        // Path 6 -> 7 -> 8 -> 9 -> 10
+        assert_eq!(tb.nodes[2].token_id, 8);
+        assert_eq!(tb.nodes[3].token_id, 9);
+
+        let (fused, m) = fuse_unverified_prefix_and_tree(&[4, 5], &tb).unwrap();
+        assert_eq!(m, 2);
+        assert_eq!(fused[0].token_id, 4);
+        assert_eq!(fused[0].ancestor_mask, 0b1);
+        assert_eq!(fused[1].token_id, 5);
+        assert_eq!(fused[1].ancestor_mask, 0b11);
+        assert_eq!(fused[2].token_id, 6);
+        assert_eq!(fused[2].parent, 1);
+        assert_eq!(fused[2].depth, 2);
+        assert_eq!(fused[2].ancestor_mask, 0b111);
+        assert_eq!(fused[3].token_id, 7);
+        assert_eq!(fused[3].parent, 2);
+        assert_eq!(fused[3].depth, 3);
+        assert_eq!(fused[3].ancestor_mask, 0b1111);
     }
 }

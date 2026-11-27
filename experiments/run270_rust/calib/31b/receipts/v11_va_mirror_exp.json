@@ -1,0 +1,47 @@
+{
+"schema_version": "lu.va_mirror_exp.v1",
+"va_reserved_gib": 32.00,
+"va_faulted_pages_4k": 878,
+"va_faulted_kb": 3512,
+"hardware_mmap": true,
+"hardware_tbi": true,
+"warm_tokens": 94,
+"arena_total_writes": 407,
+"strict_unseen_split": [
+    {"depth": 0, "role": "input_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 24, "hits": 11, "hit_rate": 0.4583, "agrees": 10, "agree_on_hit": 0.9091, "overall_exact": 0.4167, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 24, "hits": 13, "hit_rate": 0.5417, "agrees": 11, "agree_on_hit": 0.8462, "overall_exact": 0.4583, "mean_hamming_on_hit": 0.38}, {"max_hamming": 8, "n_eval": 24, "hits": 13, "hit_rate": 0.5417, "agrees": 11, "agree_on_hit": 0.8462, "overall_exact": 0.4583, "mean_hamming_on_hit": 0.38}, {"max_hamming": 12, "n_eval": 24, "hits": 14, "hit_rate": 0.5833, "agrees": 12, "agree_on_hit": 0.8571, "overall_exact": 0.5000, "mean_hamming_on_hit": 1.21}]},
+    {"depth": 8, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 24, "hits": 4, "hit_rate": 0.1667, "agrees": 4, "agree_on_hit": 1.0000, "overall_exact": 0.1667, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 24, "hits": 14, "hit_rate": 0.5833, "agrees": 12, "agree_on_hit": 0.8571, "overall_exact": 0.5000, "mean_hamming_on_hit": 1.07}, {"max_hamming": 8, "n_eval": 24, "hits": 17, "hit_rate": 0.7083, "agrees": 13, "agree_on_hit": 0.7647, "overall_exact": 0.5417, "mean_hamming_on_hit": 1.76}, {"max_hamming": 12, "n_eval": 24, "hits": 22, "hit_rate": 0.9167, "agrees": 15, "agree_on_hit": 0.6818, "overall_exact": 0.6250, "mean_hamming_on_hit": 3.55}]},
+    {"depth": 20, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 24, "hits": 4, "hit_rate": 0.1667, "agrees": 3, "agree_on_hit": 0.7500, "overall_exact": 0.1250, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 24, "hits": 14, "hit_rate": 0.5833, "agrees": 9, "agree_on_hit": 0.6429, "overall_exact": 0.3750, "mean_hamming_on_hit": 2.36}, {"max_hamming": 8, "n_eval": 24, "hits": 22, "hit_rate": 0.9167, "agrees": 11, "agree_on_hit": 0.5000, "overall_exact": 0.4583, "mean_hamming_on_hit": 3.73}, {"max_hamming": 12, "n_eval": 24, "hits": 23, "hit_rate": 0.9583, "agrees": 11, "agree_on_hit": 0.4783, "overall_exact": 0.4583, "mean_hamming_on_hit": 4.00}]},
+    {"depth": 32, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 24, "hits": 3, "hit_rate": 0.1250, "agrees": 3, "agree_on_hit": 1.0000, "overall_exact": 0.1250, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 24, "hits": 9, "hit_rate": 0.3750, "agrees": 5, "agree_on_hit": 0.5556, "overall_exact": 0.2083, "mean_hamming_on_hit": 2.00}, {"max_hamming": 8, "n_eval": 24, "hits": 22, "hit_rate": 0.9167, "agrees": 7, "agree_on_hit": 0.3182, "overall_exact": 0.2917, "mean_hamming_on_hit": 4.18}, {"max_hamming": 12, "n_eval": 24, "hits": 24, "hit_rate": 1.0000, "agrees": 8, "agree_on_hit": 0.3333, "overall_exact": 0.3333, "mean_hamming_on_hit": 4.67}]}
+  ],
+"shifted_domain_split": [
+    {"depth": 0, "role": "input_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 36, "hits": 33, "hit_rate": 0.9167, "agrees": 31, "agree_on_hit": 0.9394, "overall_exact": 0.8611, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 36, "hits": 34, "hit_rate": 0.9444, "agrees": 32, "agree_on_hit": 0.9412, "overall_exact": 0.8889, "mean_hamming_on_hit": 0.09}, {"max_hamming": 8, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 33, "agree_on_hit": 0.9429, "overall_exact": 0.9167, "mean_hamming_on_hit": 0.26}, {"max_hamming": 12, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 33, "agree_on_hit": 0.9429, "overall_exact": 0.9167, "mean_hamming_on_hit": 0.26}]},
+    {"depth": 8, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 36, "hits": 33, "hit_rate": 0.9167, "agrees": 33, "agree_on_hit": 1.0000, "overall_exact": 0.9167, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 35, "agree_on_hit": 1.0000, "overall_exact": 0.9722, "mean_hamming_on_hit": 0.09}, {"max_hamming": 8, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 35, "agree_on_hit": 1.0000, "overall_exact": 0.9722, "mean_hamming_on_hit": 0.09}, {"max_hamming": 12, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 35, "agree_on_hit": 1.0000, "overall_exact": 0.9722, "mean_hamming_on_hit": 0.09}]},
+    {"depth": 20, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 36, "hits": 28, "hit_rate": 0.7778, "agrees": 28, "agree_on_hit": 1.0000, "overall_exact": 0.7778, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 36, "hits": 35, "hit_rate": 0.9722, "agrees": 35, "agree_on_hit": 1.0000, "overall_exact": 0.9722, "mean_hamming_on_hit": 0.26}, {"max_hamming": 8, "n_eval": 36, "hits": 36, "hit_rate": 1.0000, "agrees": 36, "agree_on_hit": 1.0000, "overall_exact": 1.0000, "mean_hamming_on_hit": 0.42}, {"max_hamming": 12, "n_eval": 36, "hits": 36, "hit_rate": 1.0000, "agrees": 36, "agree_on_hit": 1.0000, "overall_exact": 1.0000, "mean_hamming_on_hit": 0.42}]},
+    {"depth": 32, "role": "hidden_mirror", "thresholds": [{"max_hamming": 0, "n_eval": 36, "hits": 25, "hit_rate": 0.6944, "agrees": 25, "agree_on_hit": 1.0000, "overall_exact": 0.6944, "mean_hamming_on_hit": 0.00}, {"max_hamming": 4, "n_eval": 36, "hits": 36, "hit_rate": 1.0000, "agrees": 36, "agree_on_hit": 1.0000, "overall_exact": 1.0000, "mean_hamming_on_hit": 0.39}, {"max_hamming": 8, "n_eval": 36, "hits": 36, "hit_rate": 1.0000, "agrees": 36, "agree_on_hit": 1.0000, "overall_exact": 1.0000, "mean_hamming_on_hit": 0.39}, {"max_hamming": 12, "n_eval": 36, "hits": 36, "hit_rate": 1.0000, "agrees": 36, "agree_on_hit": 1.0000, "overall_exact": 1.0000, "mean_hamming_on_hit": 0.39}]}
+  ],
+"live_decode_benchmark": {
+"tokens": 16,
+"dense_60l_prefill_s": 38.31,
+"dense_60l_decode_s": 33.95,
+"dense_60l_tok_per_s": 0.471,
+"va_mirror_l0_decode_s": 26.82,
+"va_mirror_l0_tok_per_s": 0.597,
+"speedup_l0_vs_dense_60l": 1.27,
+"l0_hits": 5,
+"l0_misses": 10,
+"l0_exact_token_matches": 5,
+"va_mirror_l8_decode_s": 16.73,
+"va_mirror_l8_tok_per_s": 0.957,
+"speedup_l8_vs_dense_60l": 2.03,
+"l8_hits": 12,
+"l8_misses": 3,
+"l8_exact_token_matches": 16,
+"base_text": "To solve the linear system, you can use a step-by-step approach",
+"va_mirror_l0_text": "To solve the linear system own steps:\n1. **Step 2**",
+"va_mirror_l8_text": "To solve the linear system, you can use a step-by-step approach"
+},
+"vm_hwm_kb": Some(6519172),
+"vm_rss_kb": Some(6468276),
+"ssd_read_bytes": 0,
+"elapsed_s": 368.06
+}

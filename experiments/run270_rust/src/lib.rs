@@ -1,6 +1,7 @@
 pub mod alu;
 pub mod assistant;
 pub mod byte_head;
+pub mod cca_bridge;
 pub mod codec;
 pub mod cortical_router;
 pub mod cuneiform_tbi;
@@ -13,6 +14,9 @@ pub mod safetensors;
 pub mod sha256;
 pub mod speculative;
 pub mod t16c;
+pub mod thread_pool;
 pub mod tokenizer;
 pub mod tri_modal;
+pub mod va_mirror;
 pub mod vision;
+pub mod zk_cluster;

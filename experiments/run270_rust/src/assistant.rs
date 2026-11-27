@@ -372,6 +372,11 @@ impl AssistantRuntime {
     }
 
     /// Execute the 4-layer KV-sharing assistant backbone, returning `(h_final, next_backbone_h)`.
+    /// Losslessly compact uniform/zero 16-byte tile chunks across resident Assistant matrices (`LLD-AC` ZPlane).
+    pub fn compact_zplane(&mut self) -> usize {
+        self.model.compact_zplane_all()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn forward_backbone_step(
         &self,

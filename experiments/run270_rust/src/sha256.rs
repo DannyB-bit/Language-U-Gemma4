@@ -127,6 +127,13 @@ impl Sha256 {
     }
 }
 
+#[inline]
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize()
+}
+
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(data);

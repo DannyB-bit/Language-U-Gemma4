@@ -10,12 +10,13 @@
 use run270_rust::alu::evaluate_alu_context;
 use run270_rust::assistant::AssistantRuntime;
 use run270_rust::byte_head::BpePrefixTrie;
+use run270_rust::cca_bridge::{cca_quantile, CcaClusterPlan, CcaLayerPolicy, CCA_PROBE_PAIRS};
 use run270_rust::codec::{bf16_to_f32, f32_to_bf16};
 use run270_rust::cortical_router::{CorticalRouterBank, DistrictRouterBank};
 use run270_rust::glyph_kv::{GlyphKvLayer, GlyphKvMemStats};
 use run270_rust::json;
 use run270_rust::math::{
-    attn_decode_range, attn_decode_tree, gelu_tanh_fast_f32, gelu_tanh_inplace_parallel,
+    attn_decode_range, attn_decode_tree_batch_into, gelu_tanh_fast_f32, gelu_tanh_inplace_parallel,
     qk_norm_raw_inplace, rmsn_raw, rmsn_raw_into, rope_cos_sin_for_pos, rope_head_with_cos_sin,
     rope_inv_freqs,
 };
@@ -23,17 +24,23 @@ use run270_rust::optical_carrier::{decode_tokens_from_optical_frame, optical_con
 use run270_rust::packed::{PackedMatrix, QuantScheme};
 use run270_rust::safetensors::SafeTensors;
 use run270_rust::speculative::{
-    argmax_f32, prompt_suffix_lookup, verify_greedy_draft_batch, verify_greedy_tree_batch,
-    AdaptiveDraftController, FastNGramProposalEngine, SpecTreeBuilder,
+    argmax_f32, fuse_unverified_prefix_and_tree, prompt_suffix_lookup, verify_greedy_draft_batch,
+    verify_greedy_tree_batch, AdaptiveDraftController, FastNGramProposalEngine, SpecTreeBuilder,
 };
 use run270_rust::t16c::T16CLoadPolicy;
+use run270_rust::thread_pool::detect_fast_cpus;
 use run270_rust::tokenizer::Tokenizer;
 use run270_rust::tri_modal::{
     analyze_hear_fwht, analyze_read_logits, analyze_see_spatial, evaluate_6sense_consensus_gate,
     extract_6sense_pov_features, render_tri_modal_rescue_canvas, ConsensusConfig, ConsensusMode,
     TriModalConsensusGate,
 };
+use run270_rust::va_mirror::{MirrorProjector, VaMirrorArena, MIRROR_DEPTHS};
 use run270_rust::vision::GEMMA4_IMAGE_TOKEN_ID;
+use run270_rust::zk_cluster::{
+    pack_zk_lora_chirps, reassemble_zk_lora_message, serve_cluster_worker,
+    unpack_and_verify_zk_lora_chirp, ClusterWorkerConn, LayerShardBackend, ZKLORA_MTU,
+};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -1259,6 +1266,11 @@ struct Runtime31B {
     ephemeral_tree_kv: Vec<(Vec<f32>, Vec<f32>)>,
     pending_l29_states: Vec<f32>,
     vision: Option<run270_rust::vision::VisionWeights>,
+    local_layer_range: (usize, usize),
+    cluster_workers: Vec<ClusterWorkerConn>,
+    bypass_layers: Vec<bool>,
+    cca_layer_policies: Option<Vec<CcaLayerPolicy>>,
+    cca_sparse_active: bool,
     threads: usize,
     ssd_bytes_read: u64,
 }
@@ -1288,7 +1300,7 @@ impl Runtime31B {
 
     #[allow(dead_code)]
     fn kv_len(&self) -> usize {
-        self.layer_kv_len(0)
+        self.layer_kv_len(self.local_layer_range.0)
     }
 
     fn glyph_kv_total_stats(&self) -> GlyphKvMemStats {
@@ -1321,9 +1333,13 @@ impl Runtime31B {
                 self.pending_l29_states.truncate(keep_pend);
             }
         }
+        let (ls_own, le_own) = self.local_layer_range;
+        for w in &mut self.cluster_workers {
+            w.truncate_kv(keep_tokens)?;
+        }
         if self.kv_quant.is_glyph() {
-            for (l, g_opt) in self.glyph_kv.iter_mut().enumerate() {
-                if let Some(g) = g_opt.as_mut() {
+            for l in ls_own..le_own.min(self.glyph_kv.len()) {
+                if let Some(g) = self.glyph_kv[l].as_mut() {
                     let cur = g.total_seen();
                     if keep_tokens < cur {
                         g.truncate(keep_tokens)?;
@@ -1334,7 +1350,8 @@ impl Runtime31B {
             }
             return Ok(());
         }
-        for (l, layer_kv) in self.kv.iter_mut().enumerate() {
+        for l in ls_own..le_own.min(self.kv.len()) {
+            let layer_kv = &mut self.kv[l];
             let is_full = self.cfg.layer_full[l];
             let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
             let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
@@ -1396,21 +1413,28 @@ impl Runtime31B {
         raw_l29_batch: Option<&[f32]>,
     ) -> Result<(), String> {
         let lim = layers_upto.min(self.cfg.n_layers);
-        if lim < self.cfg.n_layers {
+        if lim < self.cfg.n_layers && self.local_layer_range == (0, self.cfg.n_layers) {
             let d = self.cfg.d;
             let raw = raw_l29_batch.ok_or("commit_tree_slots_upto < n_layers requires raw_l29_batch")?;
             for &slot in accepted_slots {
                 self.pending_l29_states.extend_from_slice(&raw[slot * d..(slot + 1) * d]);
             }
         }
+        let (ls_own, le_own) = self.local_layer_range;
+        let loc_end = lim.min(le_own);
+        for w in &mut self.cluster_workers {
+            if w.layer_start < lim {
+                w.commit_tree(base_kv_len, accepted_slots)?;
+            }
+        }
         if self.kv_quant.is_glyph() {
-            if self.ephemeral_tree_kv.len() < lim {
+            if ls_own < loc_end && self.ephemeral_tree_kv.len() < loc_end {
                 return Err(format!(
-                    "commit_tree_slots: ephemeral_tree_kv len {} < layers_upto {lim}",
+                    "commit_tree_slots: ephemeral_tree_kv len {} < loc_end {loc_end}",
                     self.ephemeral_tree_kv.len(),
                 ));
             }
-            for l in 0..lim {
+            for l in ls_own..loc_end {
                 let is_full = self.cfg.layer_full[l];
                 let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
                 let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
@@ -1438,7 +1462,8 @@ impl Runtime31B {
             self.ephemeral_tree_kv.clear();
             return Ok(());
         }
-        for (l, layer_kv) in self.kv.iter_mut().take(lim).enumerate() {
+        for l in ls_own..loc_end {
+            let layer_kv = &mut self.kv[l];
             let is_full = self.cfg.layer_full[l];
             let hd = if is_full { self.cfg.global_hd } else { self.cfg.hd };
             let n_kv = if is_full { self.cfg.n_global_kv } else { self.cfg.n_kv };
@@ -1460,18 +1485,16 @@ impl Runtime31B {
     }
 
     fn assistant_kv_layers(&self) -> Result<(usize, usize), String> {
-        let slide_l = self
-            .cfg
-            .layer_full
-            .iter()
-            .rposition(|&f| !f)
-            .ok_or("no sliding_attention layer in model for assistant KV sharing")?;
-        let full_l = self
-            .cfg
-            .layer_full
-            .iter()
-            .rposition(|&f| f)
-            .ok_or("no full_attention layer in model for assistant KV sharing")?;
+        let (ls, le) = self.local_layer_range;
+        let end_l = le.min(self.cfg.layer_full.len());
+        let slide_l = (ls..end_l)
+            .rev()
+            .find(|&i| !self.cfg.layer_full[i])
+            .ok_or("no local sliding_attention layer in shard for assistant KV sharing")?;
+        let full_l = (ls..end_l)
+            .rev()
+            .find(|&i| self.cfg.layer_full[i])
+            .ok_or("no local full_attention layer in shard for assistant KV sharing")?;
         Ok((slide_l, full_l))
     }
 
@@ -1770,7 +1793,7 @@ impl Runtime31B {
     #[allow(clippy::too_many_arguments)]
     fn forward_batch_with_embeds_layers(
         &mut self,
-        mut states: Vec<f32>,
+        states: Vec<f32>,
         seq_len: usize,
         start_pos: usize,
         verbose_layers: bool,
@@ -1780,6 +1803,105 @@ impl Runtime31B {
         layer_start: usize,
         layer_end: usize,
         raw_states_out: Option<&mut Vec<f32>>,
+    ) -> Result<Vec<f32>, String> {
+        let lim = layer_end.min(self.cfg.n_layers);
+        if !self.cluster_workers.is_empty() && layer_start == 0 && lim > self.local_layer_range.1 {
+            let loc_end = self.local_layer_range.1.min(lim);
+            let mut cur_states = if loc_end > 0 {
+                self.forward_batch_with_embeds_layers_raw(
+                    states,
+                    seq_len,
+                    start_pos,
+                    verbose_layers,
+                    vis_kv_ends,
+                    tree_spec,
+                    0,
+                    loc_end,
+                )?
+            } else {
+                states
+            };
+            for w in &mut self.cluster_workers {
+                if w.layer_start >= lim {
+                    break;
+                }
+                cur_states = if let Some((depths, masks)) = tree_spec {
+                    w.forward_tree(&cur_states, seq_len, start_pos, depths, masks)?
+                } else {
+                    w.forward_seq(&cur_states, seq_len, start_pos)?
+                };
+            }
+            if let Some(out_raw) = raw_states_out {
+                *out_raw = cur_states.clone();
+            }
+            return self.finalize_hidden_states(&cur_states, seq_len, lim, all_final);
+        }
+        let raw_states = self.forward_batch_with_embeds_layers_raw(
+            states,
+            seq_len,
+            start_pos,
+            verbose_layers,
+            vis_kv_ends,
+            tree_spec,
+            layer_start,
+            lim,
+        )?;
+        if let Some(out_raw) = raw_states_out {
+            *out_raw = raw_states.clone();
+        }
+        self.finalize_hidden_states(&raw_states, seq_len, lim, all_final)
+    }
+
+    fn finalize_hidden_states(
+        &self,
+        states: &[f32],
+        seq_len: usize,
+        lim: usize,
+        all_final: bool,
+    ) -> Result<Vec<f32>, String> {
+        let d = self.cfg.d;
+        let eps = self.cfg.eps;
+        let fn_key = if lim < self.cfg.n_layers && self.norms.contains_key("model.language_model.early_exit_l29_norm.weight") {
+            "model.language_model.early_exit_l29_norm.weight"
+        } else if lim < self.cfg.n_layers && self.norms.contains_key("model.early_exit_l29_norm.weight") {
+            "model.early_exit_l29_norm.weight"
+        } else {
+            "model.language_model.norm.weight"
+        };
+        let fn_gain = self.norm(fn_key)?;
+        let mut out = if all_final {
+            let mut all_out = Vec::with_capacity(seq_len * d);
+            for t in 0..seq_len {
+                all_out.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(fn_gain), eps));
+            }
+            all_out
+        } else {
+            let last_state = &states[(seq_len - 1) * d..seq_len * d];
+            rmsn_raw(last_state, Some(fn_gain), eps)
+        };
+        let n_out_tok = out.len() / d;
+        if lim == self.cfg.n_layers && self.apply_c8d_proj {
+            if let Some(ref bank) = self.c8d_bank {
+                if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
+                    let x_in = out.clone();
+                    entry.apply_batch_into(&x_in, n_out_tok, &mut out, bank.native.as_ref(), self.threads, None)?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_with_embeds_layers_raw(
+        &mut self,
+        mut states: Vec<f32>,
+        seq_len: usize,
+        start_pos: usize,
+        verbose_layers: bool,
+        vis_kv_ends: Option<&[usize]>,
+        tree_spec: Option<(&[usize], &[u32])>,
+        layer_start: usize,
+        layer_end: usize,
     ) -> Result<Vec<f32>, String> {
         if seq_len == 0 {
             return Err("empty token slice".into());
@@ -1820,6 +1942,9 @@ impl Runtime31B {
         let attn_shared_heads = self.attn_shared_heads;
         let mod_thresh = self.mod_thresh;
         let mod_zero_kv = self.mod_zero_kv;
+        let bypass_layers = &self.bypass_layers;
+        let cca_layer_policies = &self.cca_layer_policies;
+        let cca_sparse_active = self.cca_sparse_active;
         let profile_components = self.profile_components;
         let kv_quant = self.kv_quant;
         let fp8_lut = &self.fp8_lut;
@@ -2121,6 +2246,49 @@ impl Runtime31B {
                 let n_kv = if is_full { cfg.n_global_kv } else { cfg.n_kv };
                 let sw = if is_full { None } else { Some(cfg.window) };
 
+                let cca_pol_opt = if cca_sparse_active {
+                    cca_layer_policies.as_ref().and_then(|v| v.get(l))
+                } else {
+                    None
+                };
+                let explicit_bypass = bypass_layers.get(l).copied().unwrap_or(false)
+                    || cca_pol_opt.is_some_and(|p| p.tier2_bypass);
+                if explicit_bypass {
+                    mod_total_step += 1;
+                    mod_skipped_step += 1;
+                    let kv_elems = seq_len * n_kv * hd;
+                    let zero_kv = vec![0.0f32; kv_elems];
+                    if kv_quant.is_glyph() {
+                        if tree_spec.is_some() {
+                            ephemeral_tree_kv[l] = (zero_kv.clone(), zero_kv);
+                        } else {
+                            let gkv = glyph_kv[l]
+                                .as_mut()
+                                .ok_or_else(|| format!("missing GlyphKvLayer at layer {l}"))?;
+                            let stride = n_kv * hd;
+                            for t in 0..seq_len {
+                                let kt = &zero_kv[t * stride..(t + 1) * stride];
+                                let vt = if gkv.k_eq_v { &[][..] } else { kt };
+                                gkv.append_token(kt, vt, native_t16c.as_deref())?;
+                            }
+                        }
+                    } else {
+                        kv[l].k.extend_from_slice(&zero_kv);
+                        kv[l].v.extend_from_slice(&zero_kv);
+                    }
+                    let ls = scalars[l];
+                    if (ls - 1.0).abs() > 1e-7 {
+                        for v in states.iter_mut() {
+                            *v *= ls;
+                        }
+                    }
+                    continue;
+                }
+
+                let layer_mlp_top_p = cca_pol_opt.map_or(mlp_top_p, |p| p.mlp_top_p);
+                let layer_head_top_p = cca_pol_opt.map_or(attn_head_top_p, |p| p.head_top_p);
+                let layer_mod_thresh = cca_pol_opt.map_or(mod_thresh, |p| p.mod_thresh);
+
                 {
                     let t_n0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                     let g_in = get_norm(&format!("{pfx}.input_layernorm.weight"))?;
@@ -2162,8 +2330,8 @@ impl Runtime31B {
                         0.72,
                         0.48,
                         base_top_k_l,
-                        if mlp_top_p < 0.9999 { mlp_top_p } else { 0.30 },
-                        mod_thresh,
+                        if layer_mlp_top_p < 0.9999 { layer_mlp_top_p } else { 0.30 },
+                        layer_mod_thresh,
                         pov_base_draft_k,
                     );
                     pov_layers_step += 1;
@@ -2177,7 +2345,7 @@ impl Runtime31B {
                     dec
                 });
                 let eff_mod_thresh = effective_pov_mod_thresh(
-                    mod_thresh,
+                    layer_mod_thresh,
                     pov_decision_opt.as_ref().map(|dec| dec.adaptive_mod_q),
                     player_pov_6sense && pov_target_dynamic,
                 );
@@ -2299,13 +2467,13 @@ impl Runtime31B {
 
                 let head_masks_opt: Option<(Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<Vec<u8>>>)> =
                     if let Some(hr) = head_router.as_ref() {
-                        if attn_head_top_p < 0.9999 && l >= 2 && l + 2 < cfg.n_layers {
+                        if layer_head_top_p < 0.9999 && l >= 2 && l + 2 < cfg.n_layers {
                             let tr0 = if profile_components { Some(std::time::Instant::now()) } else { None };
                             let tok_masks = hr.layers[l].predict_per_token_col_masks(
                                 &inp,
                                 seq_len,
                                 attn_shared_heads,
-                                attn_head_top_p,
+                                layer_head_top_p,
                             )?;
                             let head_cmask = union_col_masks(&tok_masks, n_heads);
                             let head_tok_masks = if seq_len > 1 { Some(tok_masks) } else { None };
@@ -2543,24 +2711,22 @@ impl Runtime31B {
                     drop(k_batch);
                     drop(v_batch);
                     if let Some((tree_depths, ancestor_masks)) = tree_spec {
-                        for t in 0..seq_len {
-                            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
-                            let c_t = attn_decode_tree(
-                                q_t,
-                                &kv[l].k,
-                                &kv[l].v,
-                                base_t,
-                                seq_len,
-                                ancestor_masks[t],
-                                tree_depths,
-                                start_pos + tree_depths[t],
-                                n_heads,
-                                n_kv,
-                                hd,
-                                sw,
-                            );
-                            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
-                        }
+                        attn_decode_tree_batch_into(
+                            &q_batch,
+                            &kv[l].k,
+                            &kv[l].v,
+                            base_t,
+                            seq_len,
+                            ancestor_masks,
+                            tree_depths,
+                            start_pos,
+                            n_heads,
+                            n_kv,
+                            hd,
+                            sw,
+                            threads,
+                            &mut ctx_batch,
+                        );
                     } else if seq_len > 1 && threads > 1 {
                         let tok_chunk = seq_len.div_ceil(threads);
                         let k_seq_ref = &kv[l].k;
@@ -2649,12 +2815,12 @@ impl Runtime31B {
                     prof_norm_kv_step += t0.elapsed().as_secs_f64();
                 }
                 let t_g0 = if profile_components { Some(std::time::Instant::now()) } else { None };
-                let eff_mlp_top_p = if player_pov_6sense && pov_target_dynamic && mlp_top_p < 0.9999 {
+                let eff_mlp_top_p = if player_pov_6sense && pov_target_dynamic && layer_mlp_top_p < 0.9999 {
                     pov_decision_opt
                         .as_ref()
-                        .map_or(mlp_top_p, |dec| dec.adaptive_crtr_top_p)
+                        .map_or(layer_mlp_top_p, |dec| dec.adaptive_crtr_top_p)
                 } else {
-                    mlp_top_p
+                    layer_mlp_top_p
                 };
                 let gta_lod_shared_l = lod_shared_mats.as_ref().and_then(|sh| {
                     let g = sh
@@ -3392,38 +3558,7 @@ impl Runtime31B {
         }
         self.kv_raw_bytes += kv_raw_step;
         self.kv_compressed_bytes += kv_cmp_step;
-
-        if let Some(out_raw) = raw_states_out {
-            *out_raw = states.clone();
-        }
-        let fn_key = if lim < self.cfg.n_layers && self.norms.contains_key("model.language_model.early_exit_l29_norm.weight") {
-            "model.language_model.early_exit_l29_norm.weight"
-        } else if lim < self.cfg.n_layers && self.norms.contains_key("model.early_exit_l29_norm.weight") {
-            "model.early_exit_l29_norm.weight"
-        } else {
-            "model.language_model.norm.weight"
-        };
-        let fn_gain = self.norm(fn_key)?;
-        let mut out = if all_final {
-            let mut all_out = Vec::with_capacity(seq_len * d);
-            for t in 0..seq_len {
-                all_out.extend_from_slice(&rmsn_raw(&states[t * d..(t + 1) * d], Some(fn_gain), eps));
-            }
-            all_out
-        } else {
-            let last_state = &states[(seq_len - 1) * d..seq_len * d];
-            rmsn_raw(last_state, Some(fn_gain), eps)
-        };
-        let n_out_tok = out.len() / d;
-        if lim == self.cfg.n_layers && self.apply_c8d_proj {
-            if let Some(ref bank) = self.c8d_bank {
-                if let Some(entry) = bank.entries.get("model.language_model.norm.post_cell60") {
-                    let x_in = out.clone();
-                    entry.apply_batch_into(&x_in, n_out_tok, &mut out, bank.native.as_ref(), self.threads, None)?;
-                }
-            }
-        }
-        Ok(out)
+        Ok(states)
     }
 
     fn compute_logits(&mut self, hidden: &[f32]) -> Result<Vec<f32>, String> {
@@ -3658,6 +3793,56 @@ impl Runtime31B {
     }
 }
 
+impl LayerShardBackend for Runtime31B {
+    fn shard_info(&self) -> (usize, usize, usize) {
+        (self.local_layer_range.0, self.local_layer_range.1, self.cfg.d)
+    }
+
+    fn forward_hidden_seq(&mut self, hidden_in: &[f32], seq_len: usize, start_pos: usize) -> Result<Vec<f32>, String> {
+        let (ls, le) = self.local_layer_range;
+        self.forward_batch_with_embeds_layers_raw(
+            hidden_in.to_vec(),
+            seq_len,
+            start_pos,
+            false,
+            None,
+            None,
+            ls,
+            le,
+        )
+    }
+
+    fn forward_hidden_tree(
+        &mut self,
+        hidden_in: &[f32],
+        seq_len: usize,
+        start_pos: usize,
+        tree_depths: &[usize],
+        ancestor_masks: &[u32],
+    ) -> Result<Vec<f32>, String> {
+        let (ls, le) = self.local_layer_range;
+        self.forward_batch_with_embeds_layers_raw(
+            hidden_in.to_vec(),
+            seq_len,
+            start_pos,
+            false,
+            None,
+            Some((tree_depths, ancestor_masks)),
+            ls,
+            le,
+        )
+    }
+
+    fn commit_tree_slots_shard(&mut self, base_kv_len: usize, accepted_slots: &[usize]) -> Result<(), String> {
+        let le = self.local_layer_range.1;
+        self.commit_tree_slots_upto(base_kv_len, accepted_slots, le, None)
+    }
+
+    fn truncate_kv_shard(&mut self, new_len: usize) -> Result<(), String> {
+        self.truncate_kv(new_len)
+    }
+}
+
 fn load_runtime_31b(
     model_path: &Path,
     cfg: Gemma4Cfg,
@@ -3738,7 +3923,8 @@ fn load_runtime_31b(
 
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
     let glyph_kv = init_glyph_kv(&cfg, kv_quant, kv_lod_caps)?;
-    Ok((
+        let n_layers_init = cfg.n_layers;
+        Ok((
         Runtime31B {
             cfg,
             sf: Some(sf),
@@ -3805,6 +3991,11 @@ fn load_runtime_31b(
             ephemeral_tree_kv: Vec::new(),
             pending_l29_states: Vec::new(),
             vision: None,
+            local_layer_range: (0, n_layers_init),
+            cluster_workers: Vec::new(),
+            bypass_layers: vec![false; n_layers_init],
+            cca_layer_policies: None,
+            cca_sparse_active: false,
             threads,
             ssd_bytes_read: 0,
         },
@@ -3859,7 +4050,7 @@ fn load_runtime_31b_t16c(
         .remove("model.language_model.embed_tokens.weight")
         .or_else(|| t16c.mats.remove("model.embed_tokens.weight"))
     {
-        let nb = mat.total_bytes();
+        let nb = mat.resident_bytes();
         (Embed31B::T16C { mat, native: native_t16c.clone() }, nb)
     } else if let Some(ref sf) = sf_opt {
         let em_key = "model.language_model.embed_tokens.weight";
@@ -3944,6 +4135,8 @@ fn load_runtime_31b_t16c(
         hybrid_qat_layers
     );
 
+    let loc_range = t16c_policy.active_layer_range.unwrap_or((0, cfg.n_layers));
+    let n_layers_init = cfg.n_layers;
     let kv = (0..cfg.n_layers).map(|_| LayerKv { k: Vec::new(), v: Vec::new() }).collect();
     let glyph_kv = init_glyph_kv(&cfg, kv_quant, kv_lod_caps)?;
     Ok((
@@ -4013,6 +4206,11 @@ fn load_runtime_31b_t16c(
             ephemeral_tree_kv: Vec::new(),
             pending_l29_states: Vec::new(),
             vision,
+            local_layer_range: loc_range,
+            cluster_workers: Vec::new(),
+            bypass_layers: vec![false; n_layers_init],
+            cca_layer_policies: None,
+            cca_sparse_active: false,
             threads,
             ssd_bytes_read: 0,
         },
@@ -4558,6 +4756,28 @@ fn run() -> Result<(), String> {
         None => None,
     };
     let general_alu = args.iter().any(|a| a == "--general-alu");
+    let zplane_compact = args.iter().any(|a| a == "--zplane-compact");
+    let fast_cores = args.iter().any(|a| a == "--fast-cores");
+    let layers_range_arg = get("--layers");
+    let cluster_worker_bind = get("--cluster-worker");
+    let cluster_workers_arg = get("--cluster-workers");
+    let mut cluster_psk = get("--cluster-psk").unwrap_or_else(|| "lu-v11-default-psk".into());
+    let cluster_max_sessions: Option<usize> = match get("--cluster-max-sessions") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --cluster-max-sessions '{s}'"))?),
+        None => None,
+    };
+    let zk_lora_chirp_in = get("--zk-lora-chirp-in");
+    let zk_lora_chirp_out = args.iter().any(|a| a == "--zk-lora-chirp-out");
+    let bypass_layers_arg = get("--bypass-layers");
+    let cca_plan_arg = get("--cca-plan");
+    let cca_va_plan_arg = get("--cca-va-plan");
+    let cca_depth_probe_out = get("--cca-depth-probe");
+    let cca_probe_layers_arg = get("--cca-probe-layers");
+    let va_mirror_exp_out = get("--va-mirror-exp");
+    let va_meaning_cache_depth: Option<usize> = match get("--va-meaning-cache") {
+        Some(s) => Some(s.parse().map_err(|_| format!("invalid --va-meaning-cache '{s}'"))?),
+        None => None,
+    };
     let spec_tree_nodes: Option<usize> = match get("--spec-tree") {
         Some(s) => {
             let n: usize = s.parse().map_err(|_| format!("invalid --spec-tree '{s}'"))?;
@@ -4566,7 +4786,7 @@ fn run() -> Result<(), String> {
             }
             Some(n)
         }
-        None => if cortical_cascade_tau.is_some() { Some(16) } else { None },
+        None => if cortical_cascade_tau.is_some() { Some(12) } else { None },
     };
     let spec_tree_depth: usize = match get("--spec-tree-depth") {
         Some(s) => {
@@ -4688,7 +4908,30 @@ fn run() -> Result<(), String> {
         Some(s) => s.parse().map_err(|_| format!("invalid --max-tokens '{s}'"))?,
         None => 8,
     };
-    let prompt_text = get("--prompt-text").unwrap_or_else(|| "Who wrote the play Hamlet?".into());
+    let mut prompt_text = get("--prompt-text").unwrap_or_else(|| "Who wrote the play Hamlet?".into());
+    if let Some(ref hex_in) = zk_lora_chirp_in {
+        let clean: String = hex_in.chars().filter(|c| !c.is_whitespace()).collect();
+        if clean.len() % (ZKLORA_MTU * 2) != 0 || clean.is_empty() {
+            return Err(format!("--zk-lora-chirp-in hex len {} is not a multiple of 510 (255B frame)", clean.len()));
+        }
+        let mut raw_bytes = Vec::with_capacity(clean.len() / 2);
+        for i in (0..clean.len()).step_by(2) {
+            raw_bytes.push(u8::from_str_radix(&clean[i..i + 2], 16).map_err(|e| format!("bad hex in --zk-lora-chirp-in: {e}"))?);
+        }
+        let mut decoded_chirps = Vec::new();
+        for ch in raw_bytes.chunks_exact(ZKLORA_MTU) {
+            let mut arr = [0u8; ZKLORA_MTU];
+            arr.copy_from_slice(ch);
+            let dc = unpack_and_verify_zk_lora_chirp(&arr, None, None)?;
+            println!(
+                "ZKLORA_INGRESS seq={} frag={}/{} coords_6d={:?} nullifier={:02x}{:02x}{:02x}{:02x}",
+                dc.seq_id, dc.frag_idx + 1, dc.frag_total, dc.coords_6d,
+                dc.nullifier_hash[0], dc.nullifier_hash[1], dc.nullifier_hash[2], dc.nullifier_hash[3]
+            );
+            decoded_chirps.push(dc);
+        }
+        prompt_text = reassemble_zk_lora_message(&decoded_chirps)?;
+    }
     let raw_prompt = args.iter().any(|a| a == "--raw-prompt");
     let image_arg = get("--image");
     let optical_self_analyze = args.iter().any(|a| a == "--optical-self-analyze");
@@ -4731,9 +4974,64 @@ fn run() -> Result<(), String> {
     if is_multi_prompt && (dump_seq_logits.is_some() || eval_teacher_logits.is_some()) {
         return Err("--dump-seq-logits and --eval-teacher-logits require a single prompt sequence".into());
     }
+    let active_layer_range: Option<(usize, usize)> = if let Some(ref lr_s) = layers_range_arg {
+        let (a_s, b_s) = lr_s
+            .split_once("..")
+            .or_else(|| lr_s.split_once('-'))
+            .ok_or_else(|| format!("invalid --layers '{lr_s}': expected L_start..L_end"))?;
+        let ls: usize = a_s.trim().parse().map_err(|_| format!("invalid --layers start '{a_s}'"))?;
+        let le: usize = b_s.trim().parse().map_err(|_| format!("invalid --layers end '{b_s}'"))?;
+        if ls >= le || le > cfg.n_layers {
+            return Err(format!("invalid --layers {ls}..{le} for n_layers={}", cfg.n_layers));
+        }
+        Some((ls, le))
+    } else {
+        None
+    };
+    let threads = if fast_cores {
+        let fc = detect_fast_cpus();
+        let n_fc = fc.len().max(1);
+        eprintln!("[run31b] --fast-cores detected {} performance CPUs: {:?}", n_fc, fc);
+        threads.min(n_fc).max(1)
+    } else {
+        threads
+    };
+    let is_worker_only = cluster_worker_bind.is_some();
+    let need_vision_ever = keep_vision_resident
+        || image_arg.is_some()
+        || optical_self_analyze
+        || batch_has_images
+        || vision_only;
+    // Intra-chip VA plan (`--cca-va-plan`): evidence-parked layers stay VA/file-addressable but are
+    // never faulted into DRAM and are always residual-bypassed (prefill, verify, and dense rescue alike).
+    let cca_va_plan: Option<CcaClusterPlan> = match cca_va_plan_arg.as_deref() {
+        Some(p) => {
+            let plan = CcaClusterPlan::load(Path::new(p))?;
+            if plan.num_layers != cfg.n_layers || plan.d_model != cfg.d {
+                return Err(format!(
+                    "--cca-va-plan {p} dims (L={} d={}) mismatch model (L={} d={})",
+                    plan.num_layers, plan.d_model, cfg.n_layers, cfg.d
+                ));
+            }
+            for &li in &plan.tier2_bypass_layers {
+                if cfg.layer_full[li] {
+                    return Err(format!("--cca-va-plan refuses to park global full-attention layer {li}"));
+                }
+            }
+            Some(plan)
+        }
+        None => None,
+    };
+    let parked_layers: HashSet<usize> = cca_va_plan
+        .as_ref()
+        .map(|p| p.tier2_bypass_layers.iter().copied().collect())
+        .unwrap_or_default();
     let t16c_policy = T16CLoadPolicy {
         defer_vision_fault: !keep_vision_resident,
         cold_mlp_layers,
+        active_layer_range,
+        skip_embed_tokens: is_worker_only,
+        parked_layers,
     };
     eprintln!(
         "[run31b] cfg d={} layers={} ff={} heads={}/{} global_kv={} hd={}/{} window={} softcap={:?} kv_quant={kv_quant:?} kv_lod={kv_lod_caps:?} keep_vis={keep_vision_resident} cold_mlps={}",
@@ -4758,6 +5056,64 @@ fn run() -> Result<(), String> {
     } else {
         load_runtime_31b(Path::new(model.as_deref().unwrap()), cfg, embed_mode, pin_layers, kv_quant, kv_lod_caps, threads)?
     };
+    // Evict Vision metadata & pages BEFORE allocating Routers + Assistant on text-only runs so lifetime VmHWM stays <= 6.50 GiB!
+    if !need_vision_ever {
+        if let Some(vw_early) = rt.vision.take() {
+            let ev = vw_early.evict_pages();
+            drop(vw_early);
+            if ev > 0 {
+                eprintln!("[run31b] pre-router text-only vision evicted {ev} B (vm={:?})", proc_status_kb());
+            }
+        }
+    }
+    // Tag each layer matrix handle's unused ARM64 TBI top byte with its evidence tier, force-bypass
+    // parked layers, and prefault measured Cognitive-Core layers.
+    if let Some(ref plan) = cca_va_plan {
+        let mut parked_va_bytes = 0usize;
+        let mut core_touched_bytes = 0usize;
+        let mut tagged_handles_xor = 0u64;
+        let mut tagged_handles = 0usize;
+        if let Some(ref mats) = rt.t16c_mats {
+            for (mname, mat) in mats {
+                if let Some(li) = run270_rust::t16c::parse_any_layer_idx(mname) {
+                    if let Some(pol) = plan.layer_policies.get(li) {
+                        let tag = pol.intra_chip_tbi_tag();
+                        let raw_va = mat as *const run270_rust::t16c::T16CMat as usize as u64;
+                        let tbi_va = tag.tag_va(raw_va);
+                        let (dec_tag, dec_va) = run270_rust::cca_bridge::TbiCognitiveTag::from_tagged_va(tbi_va);
+                        if dec_va != raw_va || dec_tag != tag {
+                            return Err(format!("TBI tag roundtrip failed on {mname}"));
+                        }
+                        tagged_handles_xor ^= tbi_va;
+                        tagged_handles += 1;
+                        if pol.tier2_bypass {
+                            parked_va_bytes += mat.total_bytes().saturating_sub(mat.resident_bytes());
+                        } else if pol.selected_cognitive_core {
+                            core_touched_bytes += mat.advise_willneed_and_touch();
+                        }
+                    }
+                }
+            }
+        }
+        for &li in &plan.tier2_bypass_layers {
+            rt.bypass_layers[li] = true;
+        }
+        println!(
+            "CCA_VA_REALLOC tbi_hw={} tagged_handles={tagged_handles} parked_layers={:?} parked_va_bytes={parked_va_bytes} core_layers={:?} core_touched_bytes={core_touched_bytes} tbi_xor=0x{tagged_handles_xor:016x} vm={:?}",
+            cfg!(all(target_arch = "aarch64", target_os = "linux")),
+            plan.tier2_bypass_layers,
+            plan.selected_cognitive_core_layers,
+            proc_status_kb()
+        );
+    }
+    if zplane_compact {
+        if let Some(ref mut mats) = rt.t16c_mats {
+            let zp_saved: usize = mats.values_mut().map(|m| m.compact_zplane()).sum();
+            if zp_saved > 0 {
+                eprintln!("[run31b] --zplane-compact saved {:.2} MiB on Owned backbone tiles", zp_saved as f64 / (1024.0 * 1024.0));
+            }
+        }
+    }
     if let Some(cp) = c8d_arg.as_deref() {
         let native_hint = so_arg
             .as_deref()
@@ -4854,6 +5210,7 @@ fn run() -> Result<(), String> {
         let cold_all = T16CLoadPolicy {
             defer_vision_fault: true,
             cold_mlp_layers: (0..rt.cfg.n_layers).collect(),
+            ..Default::default()
         };
         let mut d_shards = Vec::new();
         for di in 0..16 {
@@ -4948,6 +5305,621 @@ fn run() -> Result<(), String> {
             "[run31b] enabled LM-head CS pruning: sieve_frac={sf_cs:.3} norms_bytes={lmhead_cs_bytes}"
         );
     }
+    if let Some(ref bp_spec) = bypass_layers_arg {
+        let bp_set = parse_layer_spec(bp_spec, rt.cfg.n_layers)?;
+        for &li in &bp_set {
+            rt.bypass_layers[li] = true;
+        }
+        eprintln!("[run31b] enabled explicit --bypass-layers ({} layers): {bp_spec}", bp_set.len());
+    }
+    if let Some(ref cca_p) = cca_plan_arg {
+        let plan = CcaClusterPlan::load(Path::new(cca_p))?;
+        if plan.num_layers != rt.cfg.n_layers || plan.d_model != rt.cfg.d {
+            return Err(format!(
+                "--cca-plan {} dims (L={} d={}) mismatch model (L={} d={})",
+                cca_p, plan.num_layers, plan.d_model, rt.cfg.n_layers, rt.cfg.d
+            ));
+        }
+        cluster_psk = plan.bind_psk(&cluster_psk);
+        eprintln!(
+            "[run31b] loaded Cognitive-Core-Atlas plan {}: core_layers={:?} tier2_bypass={:?} sha256={}",
+            cca_p,
+            plan.selected_cognitive_core_layers,
+            plan.tier2_bypass_layers,
+            &plan.cca_manifest_sha256[..16]
+        );
+        rt.cca_layer_policies = Some(plan.layer_policies);
+        rt.cca_sparse_active = cortical_cascade_tau.is_none();
+    }
+    if let Some(ref probe_out) = cca_depth_probe_out {
+        let tk = Tokenizer::load(Path::new(&tkp))?;
+        let mut probe_layers: Vec<usize> = if let Some(ref pl_s) = cca_probe_layers_arg {
+            let mut v: Vec<usize> = parse_layer_spec(pl_s, rt.cfg.n_layers)?.into_iter().collect();
+            v.sort_unstable();
+            v
+        } else {
+            (0..rt.cfg.n_layers).collect()
+        };
+        probe_layers.dedup();
+        if probe_layers.is_empty() {
+            return Err("--cca-probe-layers resolved to 0 layers".into());
+        }
+        let t_probe = std::time::Instant::now();
+        let n_p = probe_layers.len();
+        let mut base_records: Vec<String> = Vec::new();
+        let mut r_deltas_by_l: Vec<Vec<f64>> = vec![Vec::with_capacity(CCA_PROBE_PAIRS.len()); n_p];
+        let mut c_deltas_by_l: Vec<Vec<f64>> = vec![Vec::with_capacity(CCA_PROBE_PAIRS.len()); n_p];
+
+        let score_answer_nll = |rt_ref: &mut Runtime31B, final_h: &[f32], prompt_len: usize, ans_ids: &[u32]| -> Result<f64, String> {
+            let d_h = rt_ref.cfg.d;
+            let vocab = rt_ref.cfg.vocab;
+            let start_p = prompt_len - 1;
+            let cnt = ans_ids.len();
+            let h_sl = &final_h[start_p * d_h..(start_p + cnt) * d_h];
+            let logits_c = rt_ref.compute_logits_batch_mode(h_sl, cnt, false)?;
+            let mut sum_nll = 0.0f64;
+            for (ci, &gold_id) in ans_ids.iter().enumerate() {
+                let row = &logits_c[ci * vocab..(ci + 1) * vocab];
+                let (nll, _, _, _) = eval_student_logits_stats(row, gold_id)?;
+                sum_nll += nll;
+            }
+            Ok(sum_nll / (cnt as f64))
+        };
+
+        for pair in &CCA_PROBE_PAIRS {
+            for &(dom, q_txt) in &[("reasoning", pair.reasoning), ("control", pair.control)] {
+                let chat = format!("<|turn>user\n{q_txt}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+                let p_ids = tk.encode(&chat, true);
+                let mut a_ids = tk.encode(&format!(" {}", pair.answer), false);
+                if a_ids.is_empty() {
+                    a_ids = tk.encode(pair.answer, false);
+                }
+                if p_ids.is_empty() || a_ids.is_empty() {
+                    return Err(format!("empty prompt/answer encoding on CCA pair {}", pair.id));
+                }
+                let mut full_ids = Vec::with_capacity(p_ids.len() + a_ids.len());
+                full_ids.extend_from_slice(&p_ids);
+                full_ids.extend_from_slice(&a_ids);
+                let seq_len = full_ids.len();
+
+                rt.truncate_kv(0)?;
+                let mut cur_h = rt.embed_batch(&full_ids)?;
+                let mut cur_l = 0usize;
+                let mut saved_at_probe: Vec<(usize, usize, Vec<f32>)> = Vec::with_capacity(n_p);
+                for (pi, &pl) in probe_layers.iter().enumerate() {
+                    if cur_l < pl {
+                        cur_h = rt.forward_batch_with_embeds_layers_raw(
+                            cur_h, seq_len, 0, false, None, None, cur_l, pl,
+                        )?;
+                    }
+                    saved_at_probe.push((pi, pl, cur_h.clone()));
+                    cur_h = rt.forward_batch_with_embeds_layers_raw(
+                        cur_h, seq_len, 0, false, None, None, pl, pl + 1,
+                    )?;
+                    cur_l = pl + 1;
+                }
+                if cur_l < rt.cfg.n_layers {
+                    cur_h = rt.forward_batch_with_embeds_layers_raw(
+                        cur_h, seq_len, 0, false, None, None, cur_l, rt.cfg.n_layers,
+                    )?;
+                }
+                let base_final = rt.finalize_hidden_states(&cur_h, seq_len, rt.cfg.n_layers, true)?;
+                let base_nll = score_answer_nll(&mut rt, &base_final, p_ids.len(), &a_ids)?;
+                base_records.push(format!(
+                    "    {{\"id\": \"{}\", \"domain\": \"{}\", \"answer\": \"{}\", \"baseline_nll\": {:.6}}}",
+                    pair.id, dom, pair.answer, base_nll
+                ));
+
+                for (pi, pl, mut h_in) in saved_at_probe {
+                    let ls = rt.scalars[pl];
+                    if (ls - 1.0).abs() > 1e-7 {
+                        for v in &mut h_in {
+                            *v *= ls;
+                        }
+                    }
+                    rt.truncate_kv(0)?;
+                    let raw_after = if pl + 1 < rt.cfg.n_layers {
+                        rt.forward_batch_with_embeds_layers_raw(
+                            h_in, seq_len, 0, false, None, None, pl + 1, rt.cfg.n_layers,
+                        )?
+                    } else {
+                        h_in
+                    };
+                    let abl_final = rt.finalize_hidden_states(&raw_after, seq_len, rt.cfg.n_layers, true)?;
+                    let abl_nll = score_answer_nll(&mut rt, &abl_final, p_ids.len(), &a_ids)?;
+                    let delta = abl_nll - base_nll;
+                    if dom == "reasoning" {
+                        r_deltas_by_l[pi].push(delta);
+                    } else {
+                        c_deltas_by_l[pi].push(delta);
+                    }
+                }
+                eprintln!("[cca-probe] finished {}:{} base_nll={base_nll:.4} elapsed={:.1}s", pair.id, dom, t_probe.elapsed().as_secs_f64());
+            }
+        }
+
+        let mut selected_layers: Vec<usize> = Vec::new();
+        let mut layer_json_rows: Vec<String> = Vec::with_capacity(n_p);
+        for (pi, &pl) in probe_layers.iter().enumerate() {
+            let r_vec = &r_deltas_by_l[pi];
+            let c_vec = &c_deltas_by_l[pi];
+            let mean_r = r_vec.iter().sum::<f64>() / (r_vec.len() as f64);
+            let mean_c = c_vec.iter().sum::<f64>() / (c_vec.len() as f64);
+            let q95_c = cca_quantile(c_vec, 0.95)?;
+            let stab = (r_vec.iter().filter(|&&d| d > q95_c).count() as f64) / (r_vec.len() as f64);
+            let sel = mean_r > q95_c && stab >= 0.8;
+            if sel {
+                selected_layers.push(pl);
+            }
+            layer_json_rows.push(format!(
+                "    {{\"layer\": {pl}, \"mean_reasoning_nll_delta\": {mean_r:.6}, \"mean_control_nll_delta\": {mean_c:.6}, \"control_q95_threshold\": {q95_c:.6}, \"reasoning_stability\": {stab:.4}, \"selected\": {sel}}}"
+            ));
+        }
+
+        let model_src = t16c_arg.as_deref().or(model.as_deref()).unwrap_or("gemma-4-31B");
+        let sel_str = selected_layers.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+        let doc = format!(
+            "{{\n  \"schema_version\": \"cca.depth.v1\",\n  \"complete\": true,\n  \"model_id\": \"google/gemma-4-31B-it\",\n  \"model_dir\": {model_src:?},\n  \"dtype\": \"t16c_v1\",\n  \"real_weights\": true,\n  \"probe_elapsed_s\": {:.2},\n  \"total_layers\": {},\n  \"probed_layer_count\": {},\n  \"selected_count\": {},\n  \"selected_layers\": [{}],\n  \"baseline\": [\n{}\n  ],\n  \"layers\": [\n{}\n  ]\n}}\n",
+            t_probe.elapsed().as_secs_f64(),
+            rt.cfg.n_layers,
+            n_p,
+            selected_layers.len(),
+            sel_str,
+            base_records.join(",\n"),
+            layer_json_rows.join(",\n")
+        );
+        fs::write(probe_out, doc).map_err(|e| format!("write --cca-depth-probe {probe_out}: {e}"))?;
+        println!(
+            "CCA_DEPTH_PROBE probed={} selected_count={} selected_layers={:?} elapsed_s={:.2} out={probe_out}",
+            n_p,
+            selected_layers.len(),
+            selected_layers,
+            t_probe.elapsed().as_secs_f64()
+        );
+        print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, t_probe.elapsed().as_secs_f64(), 0.0);
+        return Ok(());
+    }
+    if let Some(ref mirror_out_p) = va_mirror_exp_out {
+        let tk = Tokenizer::load(Path::new(&tkp))?;
+        let d_h = rt.cfg.d;
+        let vocab = rt.cfg.vocab;
+        let n_layers_tot = rt.cfg.n_layers;
+        let projector = MirrorProjector::new(d_h);
+        let mut arena = VaMirrorArena::reserve_default()?;
+        println!(
+            "VA_MIRROR_ARENA_INIT va_reserved_gib={:.2} hardware_mmap={} hardware_tbi={} initial_faulted_kb={}",
+            arena.va_reserved_gib(),
+            arena.hardware_mmap,
+            arena.hardware_tbi,
+            arena.faulted_ram_kb()
+        );
+
+        let warm_passages: [(&str, &str); 3] = [
+            ("warm_systems", "Virtual memory page tables translate virtual addresses to physical RAM frames via TLBs."),
+            ("warm_code", "def merge_sorted(a, b): return sorted(a + b)"),
+            ("warm_math", "Solve the linear system 2a + b = 11 and a - b = 1 step by step."),
+        ];
+        let unseen_passage = "Hardware caches store recently translated physical frames to cut memory latency.";
+        let shifted_passage = "Solve the linear system 2a + b = 13 and a - b = 1 step by step.";
+
+        let mut eval_seq_mirrors = |arena_mut: &mut VaMirrorArena, text: &str, store_in_arena: bool, collect_out_mirrors: bool| -> Result<(Vec<[run270_rust::va_mirror::VaMirrorCode; 4]>, Vec<u32>), String> {
+            let chat = format!("<|turn>user\n{text}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+            let ids = tk.encode(&chat, true);
+            let seq_len = ids.len();
+            if seq_len < 4 {
+                return Err("VA mirror sequence too short".into());
+            }
+            rt.truncate_kv(0)?;
+            let raw_embeds = rt.embed_batch(&ids)?;
+            let (mir_vecs, in_codes) = projector.convert_input_sequence(&raw_embeds, seq_len)?;
+            if store_in_arena {
+                let last_p = seq_len - 1;
+                let mc_last = in_codes[last_p];
+                println!(
+                    "VA_INPUT_MIRROR_SAMPLE tok={} in_mir0={:.4} mirror_code=0x{:016x} tbi_tag=0x{:02x} c6d=0x{:02x}",
+                    ids[last_p],
+                    mir_vecs[last_p * d_h],
+                    mc_last.code64,
+                    mc_last.tbi_tag(0, 1),
+                    mc_last.cuneiform_u8
+                );
+            }
+
+            let h8 = rt.forward_batch_with_embeds_layers_raw(raw_embeds, seq_len, 0, false, None, None, 0, 8)?;
+            let h20 = rt.forward_batch_with_embeds_layers_raw(h8.clone(), seq_len, 0, false, None, None, 8, 20)?;
+            let h32 = rt.forward_batch_with_embeds_layers_raw(h20.clone(), seq_len, 0, false, None, None, 20, 32)?;
+            let h60_raw = rt.forward_batch_with_embeds_layers_raw(h32.clone(), seq_len, 0, false, None, None, 32, n_layers_tot)?;
+            let h60_norm = rt.finalize_hidden_states(&h60_raw, seq_len, n_layers_tot, true)?;
+            drop(h60_raw);
+
+            let mut codes_per_pos: Vec<[run270_rust::va_mirror::VaMirrorCode; 4]> = Vec::with_capacity(seq_len);
+            let mut teacher_toks: Vec<u32> = Vec::with_capacity(seq_len);
+            let chunk_t = 16usize;
+            let mut p0 = 0usize;
+            while p0 < seq_len {
+                let cnt = (seq_len - p0).min(chunk_t);
+                let l_chunk = rt.compute_logits_batch_mode(&h60_norm[p0 * d_h..(p0 + cnt) * d_h], cnt, false)?;
+                for c in 0..cnt {
+                    let pos = p0 + c;
+                    let row = &l_chunk[c * vocab..(c + 1) * vocab];
+                    let pred_tok = argmax_f32(row);
+                    teacher_toks.push(pred_tok);
+
+                    let c0 = in_codes[pos];
+                    let c8 = projector.encode_state(&h8[pos * d_h..(pos + 1) * d_h])?;
+                    let c20 = projector.encode_state(&h20[pos * d_h..(pos + 1) * d_h])?;
+                    let c32 = projector.encode_state(&h32[pos * d_h..(pos + 1) * d_h])?;
+                    let tup = [c0, c8, c20, c32];
+                    if store_in_arena {
+                        let out_sig = if collect_out_mirrors {
+                            let oe = rt.embed_token_ro(pred_tok)?;
+                            projector.encode_state(&oe)?.sig24
+                        } else {
+                            c0.sig24
+                        };
+                        for (di, &mc) in tup.iter().enumerate() {
+                            arena_mut.insert(di as u8, mc, pred_tok, out_sig);
+                        }
+                    }
+                    codes_per_pos.push(tup);
+                }
+                p0 += cnt;
+            }
+            Ok((codes_per_pos, teacher_toks))
+        };
+
+        let t_exp = std::time::Instant::now();
+        let mut warm_tokens_tot = 0usize;
+        for (wname, wtxt) in warm_passages {
+            let (_codes, ttoks) = eval_seq_mirrors(&mut arena, wtxt, true, true)?;
+            warm_tokens_tot += ttoks.len();
+            println!(
+                "VA_MIRROR_WARM tag={wname} tokens={} total_writes={} faulted_kb={}",
+                ttoks.len(),
+                arena.total_writes,
+                arena.faulted_ram_kb()
+            );
+        }
+
+        let probe_split = |arena_ref: &VaMirrorArena, split_name: &str, codes: &[[run270_rust::va_mirror::VaMirrorCode; 4]], ttoks: &[u32]| -> Vec<String> {
+            let mut rows_json = Vec::new();
+            for (di, &depth_l) in MIRROR_DEPTHS.iter().enumerate() {
+                let mut per_h_json = Vec::new();
+                for &max_h in &[0u32, 4u32, 8u32, 12u32] {
+                    let mut hits = 0usize;
+                    let mut agrees = 0usize;
+                    let mut sum_dist = 0u64;
+                    let n_eval = ttoks.len().saturating_sub(1);
+                    for p in 1..ttoks.len() {
+                        if let Some(hit) = arena_ref.query(di as u8, codes[p][di], max_h) {
+                            hits += 1;
+                            sum_dist += hit.hamming_dist as u64;
+                            if hit.out_tok == ttoks[p] {
+                                agrees += 1;
+                            }
+                        }
+                    }
+                    let hit_rate = if n_eval > 0 { hits as f64 / n_eval as f64 } else { 0.0 };
+                    let agree_on_hit = if hits > 0 { agrees as f64 / hits as f64 } else { 0.0 };
+                    let overall_agree = if n_eval > 0 { agrees as f64 / n_eval as f64 } else { 0.0 };
+                    println!(
+                        "VA_MIRROR_EVAL split={split_name} depth={depth_l} max_hamming={max_h} n={n_eval} hits={hits} ({:.1}%) agrees={agrees} agree_on_hit={:.1}% overall_exact={:.1}%",
+                        hit_rate * 100.0,
+                        agree_on_hit * 100.0,
+                        overall_agree * 100.0
+                    );
+                    per_h_json.push(format!(
+                        "{{\"max_hamming\": {max_h}, \"n_eval\": {n_eval}, \"hits\": {hits}, \"hit_rate\": {:.4}, \"agrees\": {agrees}, \"agree_on_hit\": {:.4}, \"overall_exact\": {:.4}, \"mean_hamming_on_hit\": {:.2}}}",
+                        hit_rate,
+                        agree_on_hit,
+                        overall_agree,
+                        if hits > 0 { sum_dist as f64 / hits as f64 } else { 0.0 }
+                    ));
+                }
+                rows_json.push(format!(
+                    "    {{\"depth\": {depth_l}, \"role\": \"{}\", \"thresholds\": [{}]}}",
+                    if depth_l == 0 { "input_mirror" } else { "hidden_mirror" },
+                    per_h_json.join(", ")
+                ));
+            }
+            rows_json
+        };
+
+        let (unseen_codes, unseen_toks) = eval_seq_mirrors(&mut arena, unseen_passage, false, false)?;
+        let unseen_rows = probe_split(&arena, "strict_unseen", &unseen_codes, &unseen_toks);
+
+        let (shifted_codes, shifted_toks) = eval_seq_mirrors(&mut arena, shifted_passage, false, false)?;
+        let shifted_rows = probe_split(&arena, "shifted_domain", &shifted_codes, &shifted_toks);
+
+        // Phase 3: Physical Autoregressive Speed & Exact Parity Test on Pi 4 (`16` tokens):
+        //   Pass A (Dense 60L Warmup Decode): populates Layer-0 Input Mirror & Layer-8 Hidden Mirror
+        //   into the 32 GiB VA arena during generation.
+        //   Pass B (VA-Mirror Early-Exit L=8 Decode on perturbed question): skips layers `8..60` on
+        //   hits while preserving exact 60L KV via deferred batched upper-layer flush on miss.
+        let decode_prompt_warm = "Solve the linear system 2a + b = 11 and a - b = 1 step by step.";
+        let decode_prompt_test = "Solve the linear system 2a + b = 11 and a - b = 1 step by step.";
+        let dec_steps = 16usize;
+
+        let mut run_dense_populate = |p_txt: &str| -> Result<(Vec<u32>, f64, f64), String> {
+            let chat = format!("<|turn>user\n{p_txt}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+            let ids = tk.encode(&chat, true);
+            rt.truncate_kv(0)?;
+            let t_pf0 = std::time::Instant::now();
+            let pf_embeds = rt.embed_batch(&ids)?;
+            let (_mv, pf_in_codes) = projector.convert_input_sequence(&pf_embeds, ids.len())?;
+            let pf_h8 = rt.forward_batch_with_embeds_layers_raw(pf_embeds, ids.len(), 0, false, None, None, 0, 8)?;
+            let pf_h60 = rt.forward_batch_with_embeds_layers_raw(pf_h8, ids.len(), 0, false, None, None, 8, n_layers_tot)?;
+            let pf_norm = rt.finalize_hidden_states(&pf_h60, ids.len(), n_layers_tot, false)?;
+            let prefill_s = t_pf0.elapsed().as_secs_f64();
+            let mut logits = rt.compute_logits(&pf_norm)?;
+            apply_degeneracy_guard(&mut logits, &ids, &[]);
+            let mut gen: Vec<u32> = Vec::with_capacity(dec_steps);
+            let mut recent_e: Vec<Vec<f32>> = vec![
+                rt.embed_token_ro(ids[ids.len().saturating_sub(2)])?,
+                rt.embed_token_ro(ids[ids.len().saturating_sub(1)])?,
+            ];
+            let t_dec0 = std::time::Instant::now();
+            let mut cur_tok = argmax_f32(&logits);
+            let oe0 = rt.embed_token_ro(cur_tok)?;
+            arena.insert(0, *pf_in_codes.last().unwrap(), cur_tok, projector.encode_state(&oe0)?.sig24);
+            gen.push(cur_tok);
+            let mut pos = ids.len();
+            while gen.len() < dec_steps {
+                let step_e = rt.embed_batch(&[cur_tok])?;
+                recent_e.push(step_e.clone());
+                if recent_e.len() > 3 {
+                    recent_e.remove(0);
+                }
+                let mut mix = vec![0.0f32; d_h];
+                let e_len = recent_e.len();
+                for j in 0..d_h {
+                    mix[j] = if e_len >= 3 {
+                        0.65 * recent_e[e_len - 1][j] + 0.25 * recent_e[e_len - 2][j] + 0.10 * recent_e[e_len - 3][j]
+                    } else {
+                        0.72 * recent_e[e_len - 1][j] + 0.28 * recent_e[0][j]
+                    };
+                }
+                let c0 = projector.encode_state(&mix)?;
+                let h8 = rt.forward_batch_with_embeds_layers_raw(step_e, 1, pos, false, None, None, 0, 8)?;
+                let c8 = projector.encode_state(&h8)?;
+                let h60 = rt.forward_batch_with_embeds_layers_raw(h8, 1, pos, false, None, None, 8, n_layers_tot)?;
+                let h_norm = rt.finalize_hidden_states(&h60, 1, n_layers_tot, false)?;
+                let mut l = rt.compute_logits(&h_norm)?;
+                apply_degeneracy_guard(&mut l, &ids, &gen);
+                let nxt = argmax_f32(&l);
+                let osig = projector.encode_state(&rt.embed_token_ro(nxt)?)?.sig24;
+                arena.insert(0, c0, nxt, osig);
+                arena.insert(1, c8, nxt, osig);
+                gen.push(nxt);
+                cur_tok = nxt;
+                pos += 1;
+            }
+            let decode_s = t_dec0.elapsed().as_secs_f64();
+            Ok((gen, prefill_s, decode_s))
+        };
+
+        let (base_ids, base_pf_s, base_dec_s) = run_dense_populate(decode_prompt_warm)?;
+        let base_tps = (base_ids.len() as f64) / base_dec_s.max(1e-6);
+
+        let chat_t = format!("<|turn>user\n{decode_prompt_test}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+        let ids_t = tk.encode(&chat_t, true);
+        rt.truncate_kv(0)?;
+        let pf_e = rt.embed_batch(&ids_t)?;
+        let pf_h60 = rt.forward_batch_with_embeds_layers_raw(pf_e, ids_t.len(), 0, false, None, None, 0, n_layers_tot)?;
+        let pf_norm = rt.finalize_hidden_states(&pf_h60, ids_t.len(), n_layers_tot, false)?;
+        let mut l0 = rt.compute_logits(&pf_norm)?;
+        apply_degeneracy_guard(&mut l0, &ids_t, &[]);
+        let mut cur_t = argmax_f32(&l0);
+        let mut mir_gen: Vec<u32> = vec![cur_t];
+        let mut pending_l8_states: Vec<f32> = Vec::new();
+        let mut upper_pos = ids_t.len();
+        let mut pos_l = ids_t.len();
+        let mut mirror_hits = 0usize;
+        let mut mirror_misses = 0usize;
+        let t_mir0 = std::time::Instant::now();
+        while mir_gen.len() < dec_steps {
+            let step_e = rt.embed_batch(&[cur_t])?;
+            let h8 = rt.forward_batch_with_embeds_layers_raw(step_e, 1, pos_l, false, None, None, 0, 8)?;
+            let c8 = projector.encode_state(&h8)?;
+            pending_l8_states.extend_from_slice(&h8);
+            pos_l += 1;
+
+            let hit_opt = arena.query(1, c8, 4).filter(|_| pending_l8_states.len() / d_h < 4);
+            if let Some(hit) = hit_opt {
+                mirror_hits += 1;
+                cur_t = hit.out_tok;
+                mir_gen.push(cur_t);
+            } else {
+                mirror_misses += 1;
+                let k_pend = pending_l8_states.len() / d_h;
+                let pend_buf = std::mem::take(&mut pending_l8_states);
+                let h60 = rt.forward_batch_with_embeds_layers_raw(
+                    pend_buf,
+                    k_pend,
+                    upper_pos,
+                    false,
+                    None,
+                    None,
+                    8,
+                    n_layers_tot,
+                )?;
+                upper_pos += k_pend;
+                let last_h60 = &h60[(k_pend - 1) * d_h..k_pend * d_h];
+                let h_norm = rt.finalize_hidden_states(last_h60, 1, n_layers_tot, false)?;
+                let mut l = rt.compute_logits(&h_norm)?;
+                apply_degeneracy_guard(&mut l, &ids_t, &mir_gen);
+                cur_t = argmax_f32(&l);
+                mir_gen.push(cur_t);
+            }
+        }
+        let mir_dec_s = t_mir0.elapsed().as_secs_f64();
+        let mir_tps = (mir_gen.len() as f64) / mir_dec_s.max(1e-6);
+        let exact_matches = base_ids.iter().zip(mir_gen.iter()).filter(|(a, b)| a == b).count();
+
+        // Pass C: Live Layer-0 Direct Input-Mirror Decode (skips ALL 60 layers on hits, flushes 0..60 batched on miss!)
+        rt.truncate_kv(0)?;
+        let pf_e0 = rt.embed_batch(&ids_t)?;
+        let pf_h60_0 = rt.forward_batch_with_embeds_layers_raw(pf_e0, ids_t.len(), 0, false, None, None, 0, n_layers_tot)?;
+        let pf_norm0 = rt.finalize_hidden_states(&pf_h60_0, ids_t.len(), n_layers_tot, false)?;
+        let mut l0_c = rt.compute_logits(&pf_norm0)?;
+        apply_degeneracy_guard(&mut l0_c, &ids_t, &[]);
+        let mut cur_c0 = argmax_f32(&l0_c);
+        let mut mir0_gen: Vec<u32> = vec![cur_c0];
+        let mut recent_e0: Vec<Vec<f32>> = vec![
+            rt.embed_token_ro(ids_t[ids_t.len().saturating_sub(2)])?,
+            rt.embed_token_ro(ids_t[ids_t.len().saturating_sub(1)])?,
+        ];
+        let mut pending_l0_ids: Vec<u32> = Vec::new();
+        let mut pos_l0 = ids_t.len();
+        let mut mir0_hits = 0usize;
+        let mut mir0_misses = 0usize;
+        let t_mir0_start = std::time::Instant::now();
+        while mir0_gen.len() < dec_steps {
+            let step_e = rt.embed_batch(&[cur_c0])?;
+            recent_e0.push(step_e);
+            if recent_e0.len() > 3 {
+                recent_e0.remove(0);
+            }
+            let mut mix = vec![0.0f32; d_h];
+            let el = recent_e0.len();
+            for j in 0..d_h {
+                mix[j] = if el >= 3 {
+                    0.65 * recent_e0[el - 1][j] + 0.25 * recent_e0[el - 2][j] + 0.10 * recent_e0[el - 3][j]
+                } else {
+                    0.72 * recent_e0[el - 1][j] + 0.28 * recent_e0[0][j]
+                };
+            }
+            let c0 = projector.encode_state(&mix)?;
+            pending_l0_ids.push(cur_c0);
+            let hit0 = arena.query(0, c0, 4).filter(|_| pending_l0_ids.len() < 6);
+            if let Some(h) = hit0 {
+                mir0_hits += 1;
+                cur_c0 = h.out_tok;
+                mir0_gen.push(cur_c0);
+            } else {
+                mir0_misses += 1;
+                let batch_pend = std::mem::take(&mut pending_l0_ids);
+                let bcnt = batch_pend.len();
+                let h60 = rt.forward_batch_mode(&batch_pend, pos_l0, false, false)?;
+                pos_l0 += bcnt;
+                let mut l = rt.compute_logits(&h60)?;
+                apply_degeneracy_guard(&mut l, &ids_t, &mir0_gen);
+                cur_c0 = argmax_f32(&l);
+                mir0_gen.push(cur_c0);
+            }
+        }
+        let mir0_dec_s = t_mir0_start.elapsed().as_secs_f64();
+        let mir0_tps = (mir0_gen.len() as f64) / mir0_dec_s.max(1e-6);
+        let exact_matches_l0 = base_ids.iter().zip(mir0_gen.iter()).filter(|(a, b)| a == b).count();
+        let (vm_hwm_end, vm_rss_end) = proc_status_kb();
+
+        let doc = format!(
+            "{{\n\
+              \"schema_version\": \"lu.va_mirror_exp.v1\",\n\
+              \"va_reserved_gib\": {:.2},\n\
+              \"va_faulted_pages_4k\": {},\n\
+              \"va_faulted_kb\": {},\n\
+              \"hardware_mmap\": {},\n\
+              \"hardware_tbi\": {},\n\
+              \"warm_tokens\": {warm_tokens_tot},\n\
+              \"arena_total_writes\": {},\n\
+              \"strict_unseen_split\": [\n{}\n  ],\n\
+              \"shifted_domain_split\": [\n{}\n  ],\n\
+              \"live_decode_benchmark\": {{\n\
+                \"tokens\": {},\n\
+                \"dense_60l_prefill_s\": {base_pf_s:.2},\n\
+                \"dense_60l_decode_s\": {base_dec_s:.2},\n\
+                \"dense_60l_tok_per_s\": {base_tps:.3},\n\
+                \"va_mirror_l0_decode_s\": {mir0_dec_s:.2},\n\
+                \"va_mirror_l0_tok_per_s\": {mir0_tps:.3},\n\
+                \"speedup_l0_vs_dense_60l\": {:.2},\n\
+                \"l0_hits\": {mir0_hits},\n\
+                \"l0_misses\": {mir0_misses},\n\
+                \"l0_exact_token_matches\": {exact_matches_l0},\n\
+                \"va_mirror_l8_decode_s\": {mir_dec_s:.2},\n\
+                \"va_mirror_l8_tok_per_s\": {mir_tps:.3},\n\
+                \"speedup_l8_vs_dense_60l\": {:.2},\n\
+                \"l8_hits\": {mirror_hits},\n\
+                \"l8_misses\": {mirror_misses},\n\
+                \"l8_exact_token_matches\": {exact_matches},\n\
+                \"base_text\": {:?},\n\
+                \"va_mirror_l0_text\": {:?},\n\
+                \"va_mirror_l8_text\": {:?}\n\
+              }},\n\
+              \"vm_hwm_kb\": {:?},\n\
+              \"vm_rss_kb\": {:?},\n\
+              \"ssd_read_bytes\": {},\n\
+              \"elapsed_s\": {:.2}\n\
+            }}\n",
+            arena.va_reserved_gib(),
+            arena.faulted_pages_4k(),
+            arena.faulted_ram_kb(),
+            arena.hardware_mmap,
+            arena.hardware_tbi,
+            arena.total_writes,
+            unseen_rows.join(",\n"),
+            shifted_rows.join(",\n"),
+            base_ids.len(),
+            mir0_tps / base_tps.max(1e-6),
+            mir_tps / base_tps.max(1e-6),
+            tk.decode(&base_ids),
+            tk.decode(&mir0_gen),
+            tk.decode(&mir_gen),
+            vm_hwm_end,
+            vm_rss_end,
+            rt.ssd_bytes_read,
+            t_exp.elapsed().as_secs_f64()
+        );
+        fs::write(mirror_out_p, &doc).map_err(|e| format!("write --va-mirror-exp {mirror_out_p}: {e}"))?;
+        println!(
+            "VA_MIRROR_EXP_COMPLETE va_reserved_gib={:.2} faulted_kb={} base_tps={base_tps:.3} va_l0_tps={mir0_tps:.3} ({:.2}x) va_l8_tps={mir_tps:.3} ({:.2}x) l0_exact={exact_matches_l0}/{} l8_exact={exact_matches}/{} vm_hwm_kb={vm_hwm_end:?} out={mirror_out_p}",
+            arena.va_reserved_gib(),
+            arena.faulted_ram_kb(),
+            mir0_tps / base_tps.max(1e-6),
+            mir_tps / base_tps.max(1e-6),
+            base_ids.len(),
+            base_ids.len()
+        );
+        let _ = va_meaning_cache_depth;
+        return Ok(());
+    }
+    if let Some(ref bind_ep) = cluster_worker_bind {
+        eprintln!(
+            "[run31b] starting V11 ZK-Cortical-Cluster Worker on {bind_ep} layers={}..{} d={} vm={:?}",
+            rt.local_layer_range.0,
+            rt.local_layer_range.1,
+            rt.cfg.d,
+            proc_status_kb()
+        );
+        return serve_cluster_worker(bind_ep, &cluster_psk, &mut rt, cluster_max_sessions);
+    }
+    if let Some(ref w_list) = cluster_workers_arg {
+        let mut conns = Vec::new();
+        let mut expected_next = rt.local_layer_range.1;
+        for raw_ep in w_list.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            let conn = ClusterWorkerConn::connect_and_attest(raw_ep, &cluster_psk, rt.cfg.d)?;
+            if conn.layer_start != expected_next {
+                return Err(format!(
+                    "cluster shard gap/overlap at {raw_ep}: expected layer_start={expected_next}, worker reported {}..{}",
+                    conn.layer_start, conn.layer_end
+                ));
+            }
+            expected_next = conn.layer_end;
+            eprintln!(
+                "[run31b] attested ZK-Cluster Worker {} -> layers {}..{} (ChaCha20-Poly1305 + FWHT-INT8)",
+                raw_ep, conn.layer_start, conn.layer_end
+            );
+            conns.push(conn);
+        }
+        if expected_next != rt.cfg.n_layers {
+            return Err(format!(
+                "cluster pipeline ends at layer {expected_next} != n_layers {}",
+                rt.cfg.n_layers
+            ));
+        }
+        rt.cluster_workers = conns;
+    }
+
     let tk = Tokenizer::load(Path::new(&tkp))?;
     let assistant_state: Option<(AssistantRuntime, usize, usize)> = if let Some(ap) = spec_assistant_arg.as_deref() {
         let native_hint = so_arg
@@ -4958,7 +5930,7 @@ fn run() -> Result<(), String> {
         } else {
             None
         };
-        let ast = AssistantRuntime::load_31b_with_byte_head(
+        let mut ast = AssistantRuntime::load_31b_with_byte_head(
             std::path::Path::new(ap),
             spec_byte_head_arg.as_deref().map(std::path::Path::new),
             trie_opt,
@@ -4970,6 +5942,11 @@ fn run() -> Result<(), String> {
             rt.cfg.window,
             rt.cfg.vocab,
         )?;
+        let ast_zp_saved = if zplane_compact || cortical_cascade_tau.is_some() {
+            ast.compact_zplane()
+        } else {
+            0
+        };
         if ast.cfg.backbone_hidden != rt.cfg.d || ast.cfg.vocab != rt.cfg.vocab {
             return Err(format!(
                 "assistant {} dims ({}x{}) incompatible with 31B ({}x{})",
@@ -4978,11 +5955,12 @@ fn run() -> Result<(), String> {
         }
         let (sl_l, fl_l) = rt.assistant_kv_layers()?;
         eprintln!(
-            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} byte_head={} target_shared_head={} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
+            "[run31b] loaded AssistantRuntime {}: layers={} d={} resident_mb={:.2} zplane_saved_kb={} byte_head={} target_shared_head={} shared_kv=(L{sl_l},L{fl_l}) step_pos={assistant_step_pos}",
             ap,
             ast.cfg.n_layers,
             ast.cfg.d,
             ast.resident_bytes() as f64 / (1024.0 * 1024.0),
+            ast_zp_saved / 1024,
             ast.has_byte_head(),
             ast.uses_target_shared_head(),
         );
@@ -5410,6 +6388,23 @@ fn run() -> Result<(), String> {
             let n = ngram.load_seed_file(std::path::Path::new(sp))?;
             eprintln!("[run31b] loaded CNGM spec seed {sp}: transitions={n}");
             n
+        } else if let Some(tp) = t16c_arg.as_deref() {
+            // Auto-discover co-located V10 `.cngm` Macro-Glyph transition seed if present
+            let auto_p = Path::new(tp)
+                .parent()
+                .map(|d| d.join("gemma4_v10_seed.cngm"))
+                .filter(|p| p.is_file());
+            if let Some(ap) = auto_p {
+                match ngram.load_seed_file(&ap) {
+                    Ok(n) => {
+                        eprintln!("[run31b] auto-loaded co-located CNGM Macro-Glyph seed {}: transitions={n}", ap.display());
+                        n
+                    }
+                    Err(_) => 0,
+                }
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -5475,11 +6470,8 @@ fn run() -> Result<(), String> {
             if let Some(max_tree_nodes) = spec_tree_nodes {
                 let max_depth_step = spec_tree_depth.min(rem.saturating_sub(1));
                 let raw_tree_cap = max_tree_nodes.min(1 + rem.saturating_sub(1).saturating_mul(3)).max(1);
-                let eff_tree_cap = if cortical_cascade_tau.is_some() {
-                    raw_tree_cap.min(5)
-                } else {
-                    raw_tree_cap
-                };
+                let max_prefix_cap = 24usize.saturating_sub(tier1_unverified.len()).max(1);
+                let eff_tree_cap = raw_tree_cap.min(max_prefix_cap);
                 let cascade_fast_budget = if cortical_cascade_tau.is_some()
                     && cascade_tier1_tau > 0.0
                     && tier1_unverified.len() < cascade_max_unverified
@@ -5496,7 +6488,7 @@ fn run() -> Result<(), String> {
                     let ngram_branches = ngram.propose_multi_branches(&history, max_depth_step, 2);
                     let ngram_hint = ngram_branches.first().map(|v| v.as_slice()).unwrap_or(&[]);
                     let ast_depth = if cortical_cascade_tau.is_some() {
-                        2usize.min(max_depth_step)
+                        4usize.min(max_depth_step)
                     } else {
                         max_depth_step
                     };
@@ -5578,6 +6570,10 @@ fn run() -> Result<(), String> {
                         for alt_seq in ngram_branches.iter().skip(1) {
                             tree_b.graft_sequence_with_margin(alt_seq, &eos, 4.0);
                         }
+                        // Extend EAGLE-3 leaves with zero-DRAM Macro-Glyph / suffix spans!
+                        let hist_before_y0 = &history[..history.len().saturating_sub(1)];
+                        let max_span_ext = max_depth_step.saturating_sub(ast_depth).clamp(2, 5);
+                        tree_b.extend_leaves_with_macro_spans(hist_before_y0, &ngram, &eos, max_span_ext);
                         spec_margin_stopped += m_stop;
                         if ast_sk > 0 {
                             ast_lm_skipped_blocks += ast_sk as u64;
@@ -5661,6 +6657,7 @@ fn run() -> Result<(), String> {
                         let orig_mod = rt.mod_thresh;
                         let orig_mod_z = rt.mod_zero_kv;
                         let orig_sieve = rt.lmhead_cs_sieve;
+                        let orig_cca_sp = rt.cca_sparse_active;
 
                         rt.mlp_top_p = cascade_mlp_top_p;
                         if rt.head_router.is_some() {
@@ -5670,31 +6667,39 @@ fn run() -> Result<(), String> {
                             rt.mod_thresh = cascade_mod_thresh;
                             rt.mod_zero_kv = cascade_mod_zero_kv;
                         }
+                        if rt.cca_layer_policies.is_some() {
+                            rt.cca_sparse_active = true;
+                        }
                         rt.lmhead_cs_sieve = orig_sieve;
 
                         let t_t2 = std::time::Instant::now();
-                        let (verify_kv_len, h_batch, raw_l29_batch, mut l_batch) = (|| -> Result<(usize, Vec<f32>, Vec<f32>, Vec<f32>), String> {
-                            if !tier1_unverified.is_empty() {
-                                let flush_ids = std::mem::take(&mut tier1_unverified);
-                                let f_pos = rt.layer_kv_len(0);
-                                rt.forward_batch_upto(&flush_ids, f_pos, cascade_tier2_layers)?;
-                            }
-                            let base_pos = rt.layer_kv_len(0);
-                            let (hb, raw_b) = rt.forward_batch_tree_upto(
-                                &batch_ids,
+                        let flush_ids = std::mem::take(&mut tier1_unverified);
+                        let m_prefix = flush_ids.len();
+                        let (fused_nodes, _) = fuse_unverified_prefix_and_tree(&flush_ids, &tree_b)?;
+                        let fused_ids: Vec<u32> = fused_nodes.iter().map(|n| n.token_id).collect();
+                        let fused_depths: Vec<usize> = fused_nodes.iter().map(|n| n.depth).collect();
+                        let fused_masks: Vec<u32> = fused_nodes.iter().map(|n| n.ancestor_mask).collect();
+
+                        let (verify_kv_len, h_tree, raw_l29_batch, mut l_batch) = (|| -> Result<(usize, Vec<f32>, Vec<f32>, Vec<f32>), String> {
+                            let base_pos = rt.kv_len();
+                            // Single fused 60-layer sweep across `flush_ids + tree_b` (eliminates double 6.27 GiB DRAM read!)
+                            let (hb_all, raw_all) = rt.forward_batch_tree_upto(
+                                &fused_ids,
                                 base_pos,
-                                &tree_depths,
-                                &ancestor_masks,
+                                &fused_depths,
+                                &fused_masks,
                                 cascade_tier2_layers,
                             )?;
+                            let hb_tree = hb_all[m_prefix * d_hidden..].to_vec();
+                            drop(hb_all);
                             let mut seed_row_ids = vec![-1i32; n_nodes];
                             for p_idx in 0..n_nodes {
                                 if let Some(child) = tree_b.nodes.iter().skip(p_idx + 1).find(|c| c.parent == p_idx as i32) {
                                     seed_row_ids[p_idx] = child.token_id as i32;
                                 }
                             }
-                            let lb = rt.compute_logits_batch_seeded(&hb, n_nodes, Some(&seed_row_ids))?;
-                            Ok((base_pos, hb, raw_b, lb))
+                            let lb = rt.compute_logits_batch_seeded(&hb_tree, n_nodes, Some(&seed_row_ids))?;
+                            Ok((base_pos, hb_tree, raw_all, lb))
                         })()?;
                         cascade_tier2_s += t_t2.elapsed().as_secs_f64();
 
@@ -5703,6 +6708,7 @@ fn run() -> Result<(), String> {
                         rt.mod_thresh = orig_mod;
                         rt.mod_zero_kv = orig_mod_z;
                         rt.lmhead_cs_sieve = orig_sieve;
+                        rt.cca_sparse_active = orig_cca_sp;
 
                         let mut accepted_drafts: Vec<u32> = Vec::with_capacity(max_d);
                         let mut accepted_slots: Vec<usize> = Vec::with_capacity(1 + max_d);
@@ -5759,9 +6765,13 @@ fn run() -> Result<(), String> {
                         spec_accepted += acc;
                         cascade_tier2_accepted += acc;
                         ctrl.observe(acc, max_d);
+                        let mut commit_slots: Vec<usize> = (0..m_prefix).collect();
+                        for &s in &accepted_slots {
+                            commit_slots.push(m_prefix + s);
+                        }
                         rt.commit_tree_slots_upto(
                             verify_kv_len,
-                            &accepted_slots,
+                            &commit_slots,
                             cascade_tier2_layers,
                             if cascade_tier2_layers < rt.cfg.n_layers { Some(&raw_l29_batch) } else { None },
                         )?;
@@ -5775,15 +6785,15 @@ fn run() -> Result<(), String> {
                         let last_slot = *accepted_slots.last().unwrap_or(&0);
                         let next_pending: Option<u32>;
                         if hit_stop {
-                            last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
+                            last_backbone_h = h_tree[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
                             next_pending = None;
                         } else if final_margin >= tau {
-                            last_backbone_h = h_batch[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
+                            last_backbone_h = h_tree[last_slot * d_hidden..(last_slot + 1) * d_hidden].to_vec();
                             next_pending = Some(final_tok);
                         } else {
                             // Tier-3 Exact Dense 60/60 Rescue on uncertain fork node (syncing all 60 layers cleanly)
                             let t_t3 = std::time::Instant::now();
-                            let rescue_pos = verify_kv_len + accepted_slots.len() - 1;
+                            let rescue_pos = verify_kv_len + commit_slots.len() - 1;
                             let sync_pos = rt.layer_kv_len(rt.cfg.n_layers - 1).min(rescue_pos);
                             rt.truncate_kv(sync_pos)?;
                             rt.mlp_top_p = 1.0;
@@ -5791,6 +6801,7 @@ fn run() -> Result<(), String> {
                             rt.mod_thresh = 0.0;
                             rt.mod_zero_kv = false;
                             rt.lmhead_cs_sieve = None;
+                            rt.cca_sparse_active = false;
                             let dense_res = (|| -> Result<(Vec<f32>, Vec<f32>), String> {
                                 let hd = rt.forward_batch(&history[sync_pos..=rescue_pos], sync_pos, false)?;
                                 let ld = rt.compute_logits_batch_mode(&hd, 1, false)?;
@@ -5801,6 +6812,7 @@ fn run() -> Result<(), String> {
                             rt.mod_thresh = orig_mod;
                             rt.mod_zero_kv = orig_mod_z;
                             rt.lmhead_cs_sieve = orig_sieve;
+                            rt.cca_sparse_active = orig_cca_sp;
                             let (h_dense, mut l_dense) = dense_res?;
                             apply_degeneracy_guard(&mut l_dense, &ids, &generated);
                             last_backbone_h = h_dense;
@@ -6151,6 +7163,29 @@ fn run() -> Result<(), String> {
         }
     }
     let decode_s = t_dec.elapsed().as_secs_f64();
+    if zk_lora_chirp_out {
+        let gen_txt = tk.decode(&generated);
+        let secret = run270_rust::zk_cluster::derive_cluster_key(&cluster_psk);
+        let shard_tag = run270_rust::zk_cluster::compute_shard_attestation(
+            &secret,
+            rt.local_layer_range.0,
+            rt.cfg.n_layers,
+            rt.cfg.d,
+        );
+        let chirps = pack_zk_lora_chirps(&gen_txt, &secret, 1, &shard_tag);
+        let mut hex = String::with_capacity(chirps.len() * ZKLORA_MTU * 2);
+        for ch in &chirps {
+            for &b in ch {
+                hex.push_str(&format!("{b:02x}"));
+            }
+        }
+        println!(
+            "ZKLORA_EGRESS chirps={} total_rf_bytes={} text_bytes={} hex={hex}",
+            chirps.len(),
+            chirps.len() * ZKLORA_MTU,
+            gen_txt.len()
+        );
+    }
     if batch_k > 1 && !speculative {
         let vocab = rt.cfg.vocab;
         let batch_ids: Vec<u32> = (0..batch_k).map(|i| generated[i % generated.len().max(1)]).collect();
