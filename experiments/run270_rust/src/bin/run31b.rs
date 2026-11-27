@@ -630,6 +630,69 @@ fn prefill_glyph_kv_causal_batch(
     Ok(())
 }
 
+/// Stateless exact causal FP32 self-attention over `n_trajs` independent trajectories packed contiguously into
+/// `seq_len = n_trajs * traj_len` tokens (zero KV-cache allocation, shared weight-pass execution for CCA probes).
+#[allow(clippy::too_many_arguments)]
+fn causal_self_attn_independent_trajs(
+    q_batch: &[f32],
+    k_batch: &[f32],
+    v_batch: &[f32],
+    seq_len: usize,
+    traj_len: usize,
+    start_pos: usize,
+    n_heads: usize,
+    n_kv: usize,
+    hd: usize,
+    sw: Option<usize>,
+    threads: usize,
+    ctx_batch: &mut [f32],
+) -> Result<(), String> {
+    if traj_len == 0 || seq_len % traj_len != 0 {
+        return Err(format!("causal_self_attn_independent_trajs: seq_len={seq_len} not divisible by traj_len={traj_len}"));
+    }
+    let q_stride = n_heads * hd;
+    let kv_stride = n_kv * hd;
+    if q_batch.len() != seq_len * q_stride
+        || k_batch.len() != seq_len * kv_stride
+        || v_batch.len() != seq_len * kv_stride
+        || ctx_batch.len() != seq_len * q_stride
+    {
+        return Err("causal_self_attn_independent_trajs buffer shape mismatch".into());
+    }
+    if seq_len > 1 && threads > 1 {
+        let tok_chunk = seq_len.div_ceil(threads);
+        std::thread::scope(|s| {
+            for (ci, dst_chunk) in ctx_batch.chunks_mut(tok_chunk * q_stride).enumerate() {
+                let t_base = ci * tok_chunk;
+                let n_tok = dst_chunk.len() / q_stride;
+                s.spawn(move || {
+                    for dt in 0..n_tok {
+                        let t = t_base + dt;
+                        let b = t / traj_len;
+                        let local_t = t % traj_len;
+                        let kb = &k_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+                        let vb = &v_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+                        let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+                        let c_t = attn_decode_range(q_t, kb, vb, local_t, local_t, start_pos + local_t, n_heads, n_kv, hd, sw);
+                        dst_chunk[dt * q_stride..(dt + 1) * q_stride].copy_from_slice(&c_t);
+                    }
+                });
+            }
+        });
+    } else {
+        for t in 0..seq_len {
+            let b = t / traj_len;
+            let local_t = t % traj_len;
+            let kb = &k_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+            let vb = &v_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+            let q_t = &q_batch[t * q_stride..(t + 1) * q_stride];
+            let c_t = attn_decode_range(q_t, kb, vb, local_t, local_t, start_pos + local_t, n_heads, n_kv, hd, sw);
+            ctx_batch[t * q_stride..(t + 1) * q_stride].copy_from_slice(&c_t);
+        }
+    }
+    Ok(())
+}
+
 fn fp8_e4m3_encode_scalar(v: f32) -> u8 {
     let sign = if v.is_sign_negative() { 0x80u8 } else { 0x00u8 };
     let av = v.abs().min(448.0);
@@ -1894,7 +1957,7 @@ impl Runtime31B {
     #[allow(clippy::too_many_arguments)]
     fn forward_batch_with_embeds_layers_raw(
         &mut self,
-        mut states: Vec<f32>,
+        states: Vec<f32>,
         seq_len: usize,
         start_pos: usize,
         verbose_layers: bool,
@@ -1903,8 +1966,38 @@ impl Runtime31B {
         layer_start: usize,
         layer_end: usize,
     ) -> Result<Vec<f32>, String> {
+        self.forward_batch_with_embeds_layers_raw_opt(
+            states,
+            seq_len,
+            start_pos,
+            verbose_layers,
+            vis_kv_ends,
+            tree_spec,
+            layer_start,
+            layer_end,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batch_with_embeds_layers_raw_opt(
+        &mut self,
+        mut states: Vec<f32>,
+        seq_len: usize,
+        start_pos: usize,
+        verbose_layers: bool,
+        vis_kv_ends: Option<&[usize]>,
+        tree_spec: Option<(&[usize], &[u32])>,
+        layer_start: usize,
+        layer_end: usize,
+        independent_traj_len: Option<usize>,
+    ) -> Result<Vec<f32>, String> {
         if seq_len == 0 {
             return Err("empty token slice".into());
+        }
+        let traj_len = independent_traj_len.unwrap_or(seq_len);
+        if traj_len == 0 || seq_len % traj_len != 0 {
+            return Err(format!("invalid independent_traj_len={traj_len} for seq_len={seq_len}"));
         }
         let lim = layer_end.min(self.cfg.n_layers);
         if layer_start == 0 && lim == self.cfg.n_layers && !self.pending_l29_states.is_empty() {
@@ -2210,11 +2303,12 @@ impl Runtime31B {
             let inv_f_global = rope_inv_freqs(cfg.theta_global, rot_global, cfg.global_hd);
             let half_rot_local = inv_f_local.len();
             let half_rot_global = inv_f_global.len();
-            let mut rope_cos_local = vec![0.0f32; seq_len * half_rot_local];
-            let mut rope_sin_local = vec![0.0f32; seq_len * half_rot_local];
-            let mut rope_cos_global = vec![0.0f32; seq_len * half_rot_global];
-            let mut rope_sin_global = vec![0.0f32; seq_len * half_rot_global];
-            for t in 0..seq_len {
+            let rope_len = independent_traj_len.unwrap_or(seq_len);
+            let mut rope_cos_local = vec![0.0f32; rope_len * half_rot_local];
+            let mut rope_sin_local = vec![0.0f32; rope_len * half_rot_local];
+            let mut rope_cos_global = vec![0.0f32; rope_len * half_rot_global];
+            let mut rope_sin_global = vec![0.0f32; rope_len * half_rot_global];
+            for t in 0..rope_len {
                 let pos = (start_pos + tree_spec.map_or(t, |(depths, _)| depths[t])) as u32;
                 if half_rot_local > 0 {
                     rope_cos_sin_for_pos(
@@ -2251,8 +2345,9 @@ impl Runtime31B {
                 } else {
                     None
                 };
-                let explicit_bypass = bypass_layers.get(l).copied().unwrap_or(false)
-                    || cca_pol_opt.is_some_and(|p| p.tier2_bypass);
+                let explicit_bypass = (bypass_layers.get(l).copied().unwrap_or(false)
+                    || cca_pol_opt.is_some_and(|p| p.tier2_bypass))
+                    && independent_traj_len.is_none();
                 if explicit_bypass {
                     mod_total_step += 1;
                     mod_skipped_step += 1;
@@ -2350,6 +2445,7 @@ impl Runtime31B {
                     player_pov_6sense && pov_target_dynamic,
                 );
                 let mod_eligible = eff_mod_thresh > 0.0
+                    && independent_traj_len.is_none()
                     && !is_full
                     && l >= 4
                     && l + 4 < cfg.n_layers
@@ -2544,8 +2640,9 @@ impl Runtime31B {
                                 s.spawn(move || {
                                     for dt in 0..n_tok {
                                         let t = t_base + dt;
-                                        let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
-                                        let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
+                                        let rope_t = if independent_traj_len.is_some() { t % rope_len } else { t };
+                                        let cos_t = &rcos_all[rope_t * hrot..(rope_t + 1) * hrot];
+                                        let sin_t = &rsin_all[rope_t * hrot..(rope_t + 1) * hrot];
                                         let qs = &mut qc[dt * q_stride..(dt + 1) * q_stride];
                                         qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
                                         for h in 0..n_heads {
@@ -2564,8 +2661,9 @@ impl Runtime31B {
                         });
                     } else {
                         for t in 0..seq_len {
-                            let cos_t = &rcos_all[t * hrot..(t + 1) * hrot];
-                            let sin_t = &rsin_all[t * hrot..(t + 1) * hrot];
+                            let rope_t = if independent_traj_len.is_some() { t % rope_len } else { t };
+                            let cos_t = &rcos_all[rope_t * hrot..(rope_t + 1) * hrot];
+                            let sin_t = &rsin_all[rope_t * hrot..(rope_t + 1) * hrot];
                             let qs = &mut q_batch[t * q_stride..(t + 1) * q_stride];
                             qk_norm_raw_inplace(qs, n_heads, hd, Some(qn), eps);
                             for h in 0..n_heads {
@@ -2586,7 +2684,24 @@ impl Runtime31B {
 
                 let q_stride = n_heads * hd;
                 let mut ctx_batch = vec![0.0f32; seq_len * q_stride];
-                if kv_quant.is_glyph() {
+                if let Some(tlen) = independent_traj_len {
+                    causal_self_attn_independent_trajs(
+                        &q_batch,
+                        &k_batch,
+                        &v_batch,
+                        seq_len,
+                        tlen,
+                        start_pos,
+                        n_heads,
+                        n_kv,
+                        hd,
+                        sw,
+                        threads,
+                        &mut ctx_batch,
+                    )?;
+                    drop(k_batch);
+                    drop(v_batch);
+                } else if kv_quant.is_glyph() {
                     if let Some((tree_depths, ancestor_masks)) = tree_spec {
                         let gkv_ref = glyph_kv[l]
                             .as_ref()
@@ -5346,27 +5461,59 @@ fn run() -> Result<(), String> {
         }
         let t_probe = std::time::Instant::now();
         let n_p = probe_layers.len();
+        let d_h = rt.cfg.d;
+        let vocab = rt.cfg.vocab;
+        let n_layers_tot = rt.cfg.n_layers;
+        let mut probe_idx_by_layer: Vec<Option<usize>> = vec![None; n_layers_tot];
+        for (pi, &pl) in probe_layers.iter().enumerate() {
+            probe_idx_by_layer[pl] = Some(pi);
+        }
         let mut base_records: Vec<String> = Vec::new();
         let mut r_deltas_by_l: Vec<Vec<f64>> = vec![Vec::with_capacity(CCA_PROBE_PAIRS.len()); n_p];
         let mut c_deltas_by_l: Vec<Vec<f64>> = vec![Vec::with_capacity(CCA_PROBE_PAIRS.len()); n_p];
+        let model_src = t16c_arg.as_deref().or(model.as_deref()).unwrap_or("gemma-4-31B");
 
-        let score_answer_nll = |rt_ref: &mut Runtime31B, final_h: &[f32], prompt_len: usize, ans_ids: &[u32]| -> Result<f64, String> {
-            let d_h = rt_ref.cfg.d;
-            let vocab = rt_ref.cfg.vocab;
-            let start_p = prompt_len - 1;
-            let cnt = ans_ids.len();
-            let h_sl = &final_h[start_p * d_h..(start_p + cnt) * d_h];
-            let logits_c = rt_ref.compute_logits_batch_mode(h_sl, cnt, false)?;
-            let mut sum_nll = 0.0f64;
-            for (ci, &gold_id) in ans_ids.iter().enumerate() {
-                let row = &logits_c[ci * vocab..(ci + 1) * vocab];
-                let (nll, _, _, _) = eval_student_logits_stats(row, gold_id)?;
-                sum_nll += nll;
+        let write_depth_report = |complete: bool,
+                                  elapsed_s: f64,
+                                  b_recs: &[String],
+                                  r_by_l: &[Vec<f64>],
+                                  c_by_l: &[Vec<f64>]|
+         -> Result<Vec<usize>, String> {
+            let mut selected_layers: Vec<usize> = Vec::new();
+            let mut layer_json_rows: Vec<String> = Vec::with_capacity(n_p);
+            for (pi, &pl) in probe_layers.iter().enumerate() {
+                let r_vec = &r_by_l[pi];
+                let c_vec = &c_by_l[pi];
+                let mean_r = r_vec.iter().sum::<f64>() / (r_vec.len().max(1) as f64);
+                let mean_c = c_vec.iter().sum::<f64>() / (c_vec.len().max(1) as f64);
+                let q95_c = cca_quantile(c_vec, 0.95)?;
+                let stab = (r_vec.iter().filter(|&&d| d > q95_c).count() as f64) / (r_vec.len().max(1) as f64);
+                let sel = mean_r > q95_c && stab >= 0.8;
+                if sel {
+                    selected_layers.push(pl);
+                }
+                layer_json_rows.push(format!(
+                    "    {{\"layer\": {pl}, \"mean_reasoning_nll_delta\": {mean_r:.6}, \"mean_control_nll_delta\": {mean_c:.6}, \"control_q95_threshold\": {q95_c:.6}, \"reasoning_stability\": {stab:.4}, \"selected\": {sel}}}"
+                ));
             }
-            Ok(sum_nll / (cnt as f64))
+            let sel_str = selected_layers.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+            let doc = format!(
+                "{{\n  \"schema_version\": \"cca.depth.v1\",\n  \"complete\": {complete},\n  \"model_id\": \"google/gemma-4-31B-it\",\n  \"model_dir\": {model_src:?},\n  \"dtype\": \"t16c_v1\",\n  \"real_weights\": true,\n  \"probe_elapsed_s\": {elapsed_s:.2},\n  \"total_layers\": {n_layers_tot},\n  \"probed_layer_count\": {n_p},\n  \"selected_count\": {},\n  \"selected_layers\": [{sel_str}],\n  \"baseline\": [\n{}\n  ],\n  \"layers\": [\n{}\n  ]\n}}\n",
+                selected_layers.len(),
+                b_recs.join(",\n"),
+                layer_json_rows.join(",\n")
+            );
+            let tmp_p = format!("{probe_out}.tmp");
+            fs::write(&tmp_p, doc).map_err(|e| format!("write --cca-depth-probe tmp {tmp_p}: {e}"))?;
+            fs::rename(&tmp_p, probe_out).map_err(|e| format!("rename {tmp_p} -> {probe_out}: {e}"))?;
+            Ok(selected_layers)
         };
 
-        for pair in &CCA_PROBE_PAIRS {
+        let orig_cca_sp = rt.cca_sparse_active;
+        rt.cca_sparse_active = false;
+        const MAX_TRAJ_BATCH_TOKS: usize = 384;
+
+        for (pair_idx, pair) in CCA_PROBE_PAIRS.iter().enumerate() {
             for &(dom, q_txt) in &[("reasoning", pair.reasoning), ("control", pair.control)] {
                 let chat = format!("<|turn>user\n{q_txt}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
                 let p_ids = tk.encode(&chat, true);
@@ -5375,108 +5522,163 @@ fn run() -> Result<(), String> {
                     a_ids = tk.encode(pair.answer, false);
                 }
                 if p_ids.is_empty() || a_ids.is_empty() {
+                    rt.cca_sparse_active = orig_cca_sp;
                     return Err(format!("empty prompt/answer encoding on CCA pair {}", pair.id));
                 }
-                let mut full_ids = Vec::with_capacity(p_ids.len() + a_ids.len());
-                full_ids.extend_from_slice(&p_ids);
-                full_ids.extend_from_slice(&a_ids);
-                let seq_len = full_ids.len();
+                let start_p = p_ids.len() - 1;
+                let cnt = a_ids.len();
+                let mut eval_ids = Vec::with_capacity(start_p + cnt);
+                eval_ids.extend_from_slice(&p_ids);
+                if cnt > 1 {
+                    eval_ids.extend_from_slice(&a_ids[..cnt - 1]);
+                }
+                let seq_len = eval_ids.len();
+                let max_trajs_per_chunk = (MAX_TRAJ_BATCH_TOKS / seq_len).max(1);
 
-                rt.truncate_kv(0)?;
-                let mut cur_h = rt.embed_batch(&full_ids)?;
-                let mut cur_l = 0usize;
-                let mut saved_at_probe: Vec<(usize, usize, Vec<f32>)> = Vec::with_capacity(n_p);
-                for (pi, &pl) in probe_layers.iter().enumerate() {
-                    if cur_l < pl {
-                        cur_h = rt.forward_batch_with_embeds_layers_raw(
-                            cur_h, seq_len, 0, false, None, None, cur_l, pl,
+                let mut base_h = rt.embed_batch(&eval_ids)?;
+                let mut active_trajs: Vec<(usize, Vec<f32>)> = Vec::with_capacity(n_p);
+                let mut final_raw_by_pi: Vec<Option<Vec<f32>>> = vec![None; n_p];
+
+                for l in 0..n_layers_tot {
+                    let spawned: Option<(usize, Vec<f32>)> = if let Some(pi) = probe_idx_by_layer[l] {
+                        let ls = rt.scalars[l];
+                        let mut skipped_h = base_h.clone();
+                        if (ls - 1.0).abs() > 1e-7 {
+                            for v in &mut skipped_h {
+                                *v *= ls;
+                            }
+                        }
+                        if l + 1 == n_layers_tot {
+                            final_raw_by_pi[pi] = Some(skipped_h[start_p * d_h..(start_p + cnt) * d_h].to_vec());
+                            None
+                        } else {
+                            Some((pi, skipped_h))
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Pack `[base_h] + active_trajs` into bounded token micro-batches so weights stream once
+                    // across trajectories while staying safely inside the <= 6.50 GiB Pi 4 memory envelope.
+                    let total_trajs = 1 + active_trajs.len();
+                    let mut c0 = 0usize;
+                    while c0 < total_trajs {
+                        let c1 = (c0 + max_trajs_per_chunk).min(total_trajs);
+                        let n_c = c1 - c0;
+                        let mut packed = Vec::with_capacity(n_c * seq_len * d_h);
+                        for tidx in c0..c1 {
+                            if tidx == 0 {
+                                packed.extend_from_slice(&base_h);
+                            } else {
+                                packed.extend_from_slice(&active_trajs[tidx - 1].1);
+                            }
+                        }
+                        let updated = rt.forward_batch_with_embeds_layers_raw_opt(
+                            packed,
+                            n_c * seq_len,
+                            0,
+                            false,
+                            None,
+                            None,
+                            l,
+                            l + 1,
+                            Some(seq_len),
                         )?;
+                        let stride_t = seq_len * d_h;
+                        for (off_i, tidx) in (c0..c1).enumerate() {
+                            let sl = &updated[off_i * stride_t..(off_i + 1) * stride_t];
+                            if tidx == 0 {
+                                base_h.copy_from_slice(sl);
+                            } else {
+                                active_trajs[tidx - 1].1.copy_from_slice(sl);
+                            }
+                        }
+                        c0 = c1;
                     }
-                    saved_at_probe.push((pi, pl, cur_h.clone()));
-                    cur_h = rt.forward_batch_with_embeds_layers_raw(
-                        cur_h, seq_len, 0, false, None, None, pl, pl + 1,
-                    )?;
-                    cur_l = pl + 1;
+
+                    if let Some((pi, skipped_h)) = spawned {
+                        active_trajs.push((pi, skipped_h));
+                    }
                 }
-                if cur_l < rt.cfg.n_layers {
-                    cur_h = rt.forward_batch_with_embeds_layers_raw(
-                        cur_h, seq_len, 0, false, None, None, cur_l, rt.cfg.n_layers,
-                    )?;
+
+                for (pi, traj_h) in active_trajs {
+                    final_raw_by_pi[pi] = Some(traj_h[start_p * d_h..(start_p + cnt) * d_h].to_vec());
                 }
-                let base_final = rt.finalize_hidden_states(&cur_h, seq_len, rt.cfg.n_layers, true)?;
-                let base_nll = score_answer_nll(&mut rt, &base_final, p_ids.len(), &a_ids)?;
+                let base_ans_raw = base_h[start_p * d_h..(start_p + cnt) * d_h].to_vec();
+
+                let mut all_normed = Vec::with_capacity((1 + n_p) * cnt * d_h);
+                all_normed.extend_from_slice(&rt.finalize_hidden_states(&base_ans_raw, cnt, n_layers_tot, true)?);
+                for pi in 0..n_p {
+                    let sl = final_raw_by_pi[pi]
+                        .as_deref()
+                        .ok_or_else(|| format!("missing probed output for probe index {pi}"))?;
+                    all_normed.extend_from_slice(&rt.finalize_hidden_states(sl, cnt, n_layers_tot, true)?);
+                }
+
+                let score_logits_nll = |logits_slice: &[f32]| -> Result<f64, String> {
+                    let mut sum_nll = 0.0f64;
+                    for (ci, &gold_id) in a_ids.iter().enumerate() {
+                        let row = &logits_slice[ci * vocab..(ci + 1) * vocab];
+                        let (nll, _, _, _) = eval_student_logits_stats(row, gold_id)?;
+                        sum_nll += nll;
+                    }
+                    Ok(sum_nll / (cnt as f64))
+                };
+
+                let total_evals = 1 + n_p;
+                let mut nlls = Vec::with_capacity(total_evals);
+                let mut e0 = 0usize;
+                while e0 < total_evals {
+                    let e1 = (e0 + 16).min(total_evals);
+                    let ec = e1 - e0;
+                    let sub_h = &all_normed[e0 * cnt * d_h..e1 * cnt * d_h];
+                    let logits_b = rt.compute_logits_batch_mode(sub_h, ec * cnt, false)?;
+                    for k in 0..ec {
+                        let ls = &logits_b[k * cnt * vocab..(k + 1) * cnt * vocab];
+                        nlls.push(score_logits_nll(ls)?);
+                    }
+                    e0 = e1;
+                }
+
+                let base_nll = nlls[0];
                 base_records.push(format!(
                     "    {{\"id\": \"{}\", \"domain\": \"{}\", \"answer\": \"{}\", \"baseline_nll\": {:.6}}}",
                     pair.id, dom, pair.answer, base_nll
                 ));
-
-                for (pi, pl, mut h_in) in saved_at_probe {
-                    let ls = rt.scalars[pl];
-                    if (ls - 1.0).abs() > 1e-7 {
-                        for v in &mut h_in {
-                            *v *= ls;
-                        }
-                    }
-                    rt.truncate_kv(0)?;
-                    let raw_after = if pl + 1 < rt.cfg.n_layers {
-                        rt.forward_batch_with_embeds_layers_raw(
-                            h_in, seq_len, 0, false, None, None, pl + 1, rt.cfg.n_layers,
-                        )?
-                    } else {
-                        h_in
-                    };
-                    let abl_final = rt.finalize_hidden_states(&raw_after, seq_len, rt.cfg.n_layers, true)?;
-                    let abl_nll = score_answer_nll(&mut rt, &abl_final, p_ids.len(), &a_ids)?;
-                    let delta = abl_nll - base_nll;
+                for pi in 0..n_p {
+                    let delta = nlls[1 + pi] - base_nll;
                     if dom == "reasoning" {
                         r_deltas_by_l[pi].push(delta);
                     } else {
                         c_deltas_by_l[pi].push(delta);
                     }
                 }
-                eprintln!("[cca-probe] finished {}:{} base_nll={base_nll:.4} elapsed={:.1}s", pair.id, dom, t_probe.elapsed().as_secs_f64());
+                eprintln!(
+                    "[cca-probe] finished {}:{} ({}/{}) base_nll={base_nll:.4} probed={} elapsed={:.1}s",
+                    pair.id,
+                    dom,
+                    pair_idx + 1,
+                    CCA_PROBE_PAIRS.len(),
+                    n_p,
+                    t_probe.elapsed().as_secs_f64()
+                );
+            }
+            let is_last = pair_idx + 1 == CCA_PROBE_PAIRS.len();
+            let sel = write_depth_report(is_last, t_probe.elapsed().as_secs_f64(), &base_records, &r_deltas_by_l, &c_deltas_by_l)?;
+            if is_last {
+                rt.cca_sparse_active = orig_cca_sp;
+                println!(
+                    "CCA_DEPTH_PROBE probed={} selected_count={} selected_layers={:?} elapsed_s={:.2} out={probe_out}",
+                    n_p,
+                    sel.len(),
+                    sel,
+                    t_probe.elapsed().as_secs_f64()
+                );
+                print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, t_probe.elapsed().as_secs_f64(), 0.0);
+                return Ok(());
             }
         }
-
-        let mut selected_layers: Vec<usize> = Vec::new();
-        let mut layer_json_rows: Vec<String> = Vec::with_capacity(n_p);
-        for (pi, &pl) in probe_layers.iter().enumerate() {
-            let r_vec = &r_deltas_by_l[pi];
-            let c_vec = &c_deltas_by_l[pi];
-            let mean_r = r_vec.iter().sum::<f64>() / (r_vec.len() as f64);
-            let mean_c = c_vec.iter().sum::<f64>() / (c_vec.len() as f64);
-            let q95_c = cca_quantile(c_vec, 0.95)?;
-            let stab = (r_vec.iter().filter(|&&d| d > q95_c).count() as f64) / (r_vec.len() as f64);
-            let sel = mean_r > q95_c && stab >= 0.8;
-            if sel {
-                selected_layers.push(pl);
-            }
-            layer_json_rows.push(format!(
-                "    {{\"layer\": {pl}, \"mean_reasoning_nll_delta\": {mean_r:.6}, \"mean_control_nll_delta\": {mean_c:.6}, \"control_q95_threshold\": {q95_c:.6}, \"reasoning_stability\": {stab:.4}, \"selected\": {sel}}}"
-            ));
-        }
-
-        let model_src = t16c_arg.as_deref().or(model.as_deref()).unwrap_or("gemma-4-31B");
-        let sel_str = selected_layers.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
-        let doc = format!(
-            "{{\n  \"schema_version\": \"cca.depth.v1\",\n  \"complete\": true,\n  \"model_id\": \"google/gemma-4-31B-it\",\n  \"model_dir\": {model_src:?},\n  \"dtype\": \"t16c_v1\",\n  \"real_weights\": true,\n  \"probe_elapsed_s\": {:.2},\n  \"total_layers\": {},\n  \"probed_layer_count\": {},\n  \"selected_count\": {},\n  \"selected_layers\": [{}],\n  \"baseline\": [\n{}\n  ],\n  \"layers\": [\n{}\n  ]\n}}\n",
-            t_probe.elapsed().as_secs_f64(),
-            rt.cfg.n_layers,
-            n_p,
-            selected_layers.len(),
-            sel_str,
-            base_records.join(",\n"),
-            layer_json_rows.join(",\n")
-        );
-        fs::write(probe_out, doc).map_err(|e| format!("write --cca-depth-probe {probe_out}: {e}"))?;
-        println!(
-            "CCA_DEPTH_PROBE probed={} selected_count={} selected_layers={:?} elapsed_s={:.2} out={probe_out}",
-            n_p,
-            selected_layers.len(),
-            selected_layers,
-            t_probe.elapsed().as_secs_f64()
-        );
-        print_runtime_telemetry(&rt, pinned_bytes, embed_bytes, t_probe.elapsed().as_secs_f64(), 0.0);
+        rt.cca_sparse_active = orig_cca_sp;
         return Ok(());
     }
     if let Some(ref mirror_out_p) = va_mirror_exp_out {
@@ -7879,5 +8081,58 @@ mod tests {
             assert_eq!(a.to_bits(), b.to_bits(), "bit mismatch at float index {idx}: {a} != {b}");
         }
         assert_eq!(gkv_batch.total_seen(), seq_len);
+    }
+
+    #[test]
+    fn causal_self_attn_independent_trajs_matches_single_trajectory_bit_for_bit() {
+        let traj_len = 7usize;
+        let n_trajs = 3usize;
+        let seq_len = n_trajs * traj_len;
+        let n_heads = 4usize;
+        let n_kv = 2usize;
+        let hd = 16usize;
+        let sw = Some(4usize);
+        let q_stride = n_heads * hd;
+        let kv_stride = n_kv * hd;
+        let q_batch: Vec<f32> = (0..seq_len * q_stride)
+            .map(|i| (((i * 29 + 3) % 887) as f32) * 0.003 - 1.2)
+            .collect();
+        let k_batch: Vec<f32> = (0..seq_len * kv_stride)
+            .map(|i| (((i * 37 + 7) % 881) as f32) * 0.003 - 1.1)
+            .collect();
+        let v_batch: Vec<f32> = (0..seq_len * kv_stride)
+            .map(|i| (((i * 41 + 13) % 877) as f32) * 0.003 - 1.0)
+            .collect();
+
+        let mut packed_ctx = vec![0.0f32; seq_len * q_stride];
+        causal_self_attn_independent_trajs(
+            &q_batch,
+            &k_batch,
+            &v_batch,
+            seq_len,
+            traj_len,
+            0,
+            n_heads,
+            n_kv,
+            hd,
+            sw,
+            2,
+            &mut packed_ctx,
+        )
+        .unwrap();
+
+        for b in 0..n_trajs {
+            let kb = &k_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+            let vb = &v_batch[b * traj_len * kv_stride..(b + 1) * traj_len * kv_stride];
+            for lt in 0..traj_len {
+                let q_t = &q_batch[(b * traj_len + lt) * q_stride..(b * traj_len + lt + 1) * q_stride];
+                let exp = attn_decode_range(q_t, kb, vb, lt, lt, lt, n_heads, n_kv, hd, sw);
+                let got = &packed_ctx[(b * traj_len + lt) * q_stride..(b * traj_len + lt + 1) * q_stride];
+                for (i, (&g, &e)) in got.iter().zip(exp.iter()).enumerate() {
+                    assert_eq!(g.to_bits(), e.to_bits(), "traj {b} tok {lt} dim {i}: {g} != {e}");
+                }
+            }
+        }
+        assert!(causal_self_attn_independent_trajs(&q_batch, &k_batch, &v_batch, seq_len, 4, 0, n_heads, n_kv, hd, sw, 1, &mut packed_ctx).is_err());
     }
 }
