@@ -461,6 +461,8 @@ def scan_and_extract_model(
     n_aud_heads = int(model.config.audio_config.num_attention_heads)
     aud_hd = int(model.config.audio_config.hidden_size) // n_aud_heads
     n_txt_heads = int(model.config.text_config.num_attention_heads)
+    layer_ff = [int(txt_layers[tl].mlp.down_proj.in_features) for tl in range(n_txt_layers)]
+    max_txt_ff = max(layer_ff)
     txt_ff = int(model.config.text_config.intermediate_size)
     d_txt = int(model.config.text_config.hidden_size)
 
@@ -691,7 +693,7 @@ def scan_and_extract_model(
     # Text Component Taylor Attribution (Heads + GeGLU Neurons + PLE 256-D channels)
     txt_head_r = np.zeros((n_lp, n_txt_layers, n_txt_heads), dtype=np.float32)
     txt_head_c = np.zeros((n_lp, n_txt_layers, n_txt_heads), dtype=np.float32)
-    txt_mlp_delta = np.zeros((n_txt_layers, txt_ff), dtype=np.float32)
+    txt_mlp_delta: List[np.ndarray] = [np.zeros((layer_ff[tl],), dtype=np.float32) for tl in range(n_txt_layers)]
     txt_ple_delta = np.zeros((n_txt_layers, 256), dtype=np.float32)
 
     bs_grad = 8
@@ -816,8 +818,9 @@ def scan_and_extract_model(
         ord_m = np.argsort(txt_mlp_delta[tl])[::-1][:256]
         ord_p = np.argsort(txt_ple_delta[tl])[::-1][:64]
         top256_txt[str(tl)] = {
+            "ff_dim": int(layer_ff[tl]),
             "top256_mlp_neurons": [int(i) for i in ord_m.tolist()],
-            "top256_mlp_scores": [round(float(txt_mlp_delta[tl, i]), 6) for i in ord_m.tolist()],
+            "top256_mlp_scores": [round(float(txt_mlp_delta[tl][i]), 6) for i in ord_m.tolist()],
             "top64_ple_channels": [int(i) for i in ord_p.tolist()],
         }
 
@@ -836,7 +839,8 @@ def scan_and_extract_model(
         "text_cognitive_core": {
             "total_layers": n_txt_layers,
             "heads_per_layer": n_txt_heads,
-            "ff_dim": txt_ff,
+            "base_ff_dim": txt_ff,
+            "layer_ff_dims": layer_ff,
             "selected_cognitive_core_layers": txt_core_layers,
             "null_bypass_candidate_layers": txt_null_layers,
             "domain_selected_layers": domain_selected,
@@ -849,6 +853,9 @@ def scan_and_extract_model(
     atlas_path = OUT_DIR / f"cca_{tag}_audio_and_cognitive_atlas.json"
     npz_path = OUT_DIR / f"cca_{tag}_taylor_tensors.npz"
     atlas_path.write_text(json.dumps(atlas, indent=2) + "\n", encoding="utf-8")
+    txt_mlp_padded = np.zeros((n_txt_layers, max_txt_ff), dtype=np.float32)
+    for tl in range(n_txt_layers):
+        txt_mlp_padded[tl, : layer_ff[tl]] = txt_mlp_delta[tl]
     np.savez_compressed(
         npz_path,
         aud_bypass_struct=aud_bypass_struct, aud_bypass_ctrl=aud_bypass_ctrl,
@@ -856,7 +863,7 @@ def scan_and_extract_model(
         aud_conv_delta=aud_conv_delta, aud_ffn_delta=aud_ffn_delta,
         txt_delta_r=txt_delta_r, txt_delta_c=txt_delta_c,
         txt_head_r=txt_head_r, txt_head_c=txt_head_c,
-        txt_mlp_delta=txt_mlp_delta, txt_ple_delta=txt_ple_delta,
+        txt_mlp_delta=txt_mlp_padded, txt_layer_ff=np.array(layer_ff, dtype=np.int32), txt_ple_delta=txt_ple_delta,
     )
 
     # 1) Surgical Audio Cores BF16 safetensors (+ 31B token 258881 bridge)
@@ -1070,7 +1077,8 @@ def run_selftest() -> int:
             vocab_size=256, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
             num_attention_heads=4, num_key_value_heads=2, num_global_key_value_heads=2,
             head_dim=16, global_head_dim=16, hidden_size_per_layer_input=16, vocab_size_per_layer_input=256,
-            num_kv_shared_layers=2, layer_types=["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
+            num_kv_shared_layers=2, use_double_wide_mlp=True,
+            layer_types=["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
         )
         vcfg = Gemma4VisionConfig(hidden_size=64, intermediate_size=128, num_hidden_layers=1, num_attention_heads=4, head_dim=16, global_head_dim=16)
         toy = Gemma4ForConditionalGeneration(Gemma4Config(audio_config=acfg, text_config=tcfg, vision_config=vcfg)).eval()
@@ -1087,14 +1095,32 @@ def run_selftest() -> int:
         ea = toy.model.embed_audio(inputs_embeds=ao.last_hidden_state)
         (ea.pow(2).sum()).backward()
         ha.remove()
-        # Also test Text KV-shared bypass + PLE hook
+        # Exercise full text scan path including double-wide MLP (128 vs 256) + PLE + SharedKV bypass hooks
+        toy_ff = [int(l.mlp.down_proj.in_features) for l in toy.model.language_model.layers]
+        toy_delta = [np.zeros((w,), dtype=np.float32) for w in toy_ff]
         ht = toy.model.language_model.layers[1].register_forward_hook(
             lambda _m, a, kw, _o: a[0] if a else kw["hidden_states"], with_kwargs=True
         )
         _ = toy(input_ids=torch.randint(1, 100, (2, 8)), attention_mask=torch.ones((2, 8), dtype=torch.long), use_cache=False).logits
         ht.remove()
-        g6_ok = cap_g["a"].grad is not None and float(cap_g["a"].grad.abs().sum().item()) > 0.0
-        g6_detail = f"fe={tuple(fe_out['input_features'].shape)}, ea={tuple(ea.shape)}"
+        cap_t_toy = {}
+        hs_t = [toy.model.language_model.embed_tokens.register_forward_hook(lambda _m, _a, o: (o.detach().clone().requires_grad_(True)))]
+        for li_t, lt in enumerate(toy.model.language_model.layers):
+            hs_t.append(lt.mlp.down_proj.register_forward_pre_hook(lambda _m, a, kw, _k=li_t: ((a[0] if a else next(iter(kw.values()))).retain_grad(), cap_t_toy.setdefault(_k, a[0] if a else next(iter(kw.values())))) and None, with_kwargs=True))
+        lg_t = toy(input_ids=torch.randint(1, 100, (2, 8)), attention_mask=torch.ones((2, 8), dtype=torch.long), use_cache=False).logits
+        lg_t.pow(2).sum().backward()
+        for hh in hs_t:
+            hh.remove()
+        for li_t in range(4):
+            dt_t = cap_t_toy[li_t]
+            toy_delta[li_t] += (dt_t.detach().float() * dt_t.grad.detach().float()).abs().sum(dim=(0, 1)).numpy()
+        g6_ok = (
+            cap_g["a"].grad is not None
+            and float(cap_g["a"].grad.abs().sum().item()) > 0.0
+            and toy_ff == [128, 128, 256, 256]
+            and all(toy_delta[i].shape[0] == toy_ff[i] for i in range(4))
+        )
+        g6_detail = f"fe={tuple(fe_out['input_features'].shape)}, ea={tuple(ea.shape)}, double_wide_ff={toy_ff}"
     except Exception as exc:
         g6_ok = False
         g6_detail = repr(exc)
