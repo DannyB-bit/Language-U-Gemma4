@@ -1159,20 +1159,23 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
                     s2_done_ckpt,
                 )
 
-    # Precompute Teacher Top-128 Softmax Targets
+    # Precompute Teacher Top-128 Softmax Targets (chunked & Turing FP16 / Ampere BF16 safe)
     fn_teach_g = fn_orig[perm_pi].to(device=device, dtype=torch.float32)
-    emb_teach_g = emb_perm_teach.to(device=device, dtype=torch.bfloat16)
+    emb_teach_g = emb_perm_teach.to(device=device, dtype=compute_dtype)
     top_ids_cpu = torch.empty((N_SEQ, v90.V9_SEQ_LEN, 128), dtype=torch.int32)
     top_probs_cpu = torch.empty((N_SEQ, v90.V9_SEQ_LEN, 128), dtype=torch.float16)
+    tb_sz = 8 if gpu_vram_gb < 20.0 else 32
     with torch.no_grad():
-        for b0 in range(0, N_SEQ, 32):
-            b1 = min(b0 + 32, N_SEQ)
-            ht = rmsn_gpu(X_teach_perm[b0:b1].to(device=device, dtype=torch.float32), fn_teach_g).to(torch.bfloat16)
+        for b0 in range(0, N_SEQ, tb_sz):
+            b1 = min(b0 + tb_sz, N_SEQ)
+            ht_f = rmsn_gpu(X_teach_perm[b0:b1].to(device=device, dtype=torch.float32), fn_teach_g)
+            ht = ht_f.clamp(-65000.0, 65000.0).to(compute_dtype) if compute_dtype == torch.float16 else ht_f.to(compute_dtype)
             lgt = SOFTCAP * torch.tanh((ht @ emb_teach_g.T).float() / SOFTCAP)
             pt = F.softmax(lgt, dim=-1)
             tp, ti = torch.topk(pt, 128, dim=-1)
             top_ids_cpu[b0:b1] = ti.to(torch.int32).cpu()
             top_probs_cpu[b0:b1] = tp.to(torch.float16).cpu()
+            del lgt, pt
     del emb_teach_g, emb_perm_teach, fn_teach_g
     gc.collect()
     torch.cuda.empty_cache()
@@ -1432,9 +1435,10 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     ast_sd = permute_assistant_state_dict(ast_sd_raw, perm_pi, D_MOD)
     del ast_sd_raw
 
+    ast_dtype = compute_dtype if compute_dtype == torch.bfloat16 else torch.float32
     ast_mod = v90.Gemma4AssistantTrain(
         ast_sd, d_mod=D_MOD, nh=NH, nkv_s=NKV_S, nkv_f=NKV_F, hd_s=HD_S, hd_f=HD_F,
-        theta_l=THETA_L, part_l=PART_L, theta_g=THETA_G, part_g=PART_G, seq_len=v90.V9_SEQ_LEN, eps=EPS, compute_dtype=compute_dtype,
+        theta_l=THETA_L, part_l=PART_L, theta_g=THETA_G, part_g=PART_G, seq_len=v90.V9_SEQ_LEN, eps=EPS, compute_dtype=ast_dtype,
     ).to(device)
     with torch.no_grad():
         ast_h_final = torch.empty((len(ast_seqs), v90.V9_SEQ_LEN, D_MOD), dtype=torch.float16)
@@ -1463,7 +1467,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
                     cap_kv58["k_rope"][gi].unsqueeze(0).to(device), cap_kv58["v_norm"][gi].unsqueeze(0).to(device),
                     cap_kv59["k_rope"][gi].unsqueeze(0).to(device), cap_kv59["v_norm"][gi].unsqueeze(0).to(device),
                 ).squeeze(0)
-                hpost_n = rmsn_gpu(F.linear(ha.to(compute_dtype), ast_mod.post.to(compute_dtype)).float(), fn_eff_g)
+                hpost_n = rmsn_gpu(F.linear(ha.to(ast_dtype), ast_mod.post.to(ast_dtype)).float(), fn_eff_g)
                 zs = SOFTCAP * torch.tanh((ast_h_final[ai, 1:].to(device).float() @ W_cand_g.T) / SOFTCAP)
                 za = SOFTCAP * torch.tanh((hpost_n @ W_cand_g.T) / SOFTCAP)
                 ps = F.softmax(zs / TAU_AST, dim=-1)
@@ -1500,16 +1504,16 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
 
         # 3-step self-feeding EAGLE-3 rollout directly evaluated via Target-Embed Sharing!
         ha1 = ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s)
-        hp1 = rmsn_gpu(F.linear(ha1.to(compute_dtype), ast_mod.post.to(compute_dtype)).float(), fn_eff_g)
+        hp1 = rmsn_gpu(F.linear(ha1.to(ast_dtype), ast_mod.post.to(ast_dtype)).float(), fn_eff_g)
         za1 = SOFTCAP * torch.tanh((hp1.reshape(-1, D_MOD) @ W_cand_g.T) / SOFTCAP)
 
         bh2 = torch.cat([bh_s[:, :1], hp1[:, :-1]], dim=1)
         ha2 = ast_mod.forward_seq(te_s, bh2, k58_s, v58_s, k59_s, v59_s)
-        hp2 = rmsn_gpu(F.linear(ha2.to(compute_dtype), ast_mod.post.to(compute_dtype)).float(), fn_eff_g)
+        hp2 = rmsn_gpu(F.linear(ha2.to(ast_dtype), ast_mod.post.to(ast_dtype)).float(), fn_eff_g)
 
         bh3 = torch.cat([bh_s[:, :1], hp2[:, :-1]], dim=1)
         ha3 = ast_mod.forward_seq(te_s, bh3, k58_s, v58_s, k59_s, v59_s)
-        hp3 = rmsn_gpu(F.linear(ha3.to(compute_dtype), ast_mod.post.to(compute_dtype)).float(), fn_eff_g)
+        hp3 = rmsn_gpu(F.linear(ha3.to(ast_dtype), ast_mod.post.to(ast_dtype)).float(), fn_eff_g)
 
         loss_a = (
             ((ps * (torch.log(ps.clamp(min=1e-12)) - F.log_softmax(za1 / TAU_AST, dim=-1))).sum(dim=-1) * (TAU_AST * TAU_AST)).mean()
@@ -1567,7 +1571,7 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
             k59_s = torch.stack([cap_kv59["k_rope"][gi].to(device) for gi in gis])
             v59_s = torch.stack([cap_kv59["v_norm"][gi].to(device) for gi in gis])
             h_ast_chunks.append(ast_mod.forward_seq(te_s, bh_s, k58_s, v58_s, k59_s, v59_s).cpu())
-    ast_post_g = ast_mod.post.detach().to(device=device, dtype=compute_dtype)
+    ast_post_g = ast_mod.post.detach().to(device=device, dtype=ast_dtype)
     del ast_mod, cap_kv58, cap_kv59
     torch.cuda.empty_cache()
 
@@ -1578,8 +1582,8 @@ def run_v10_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     with torch.no_grad():
         for i0 in range(0, H_stud_tgt.shape[0], 512):
             i1 = min(i0 + 512, H_stud_tgt.shape[0])
-            hp_b = rmsn_gpu(F.linear(H_ast_all[i0:i1].to(device, dtype=compute_dtype), ast_post_g).float(), fn_eff_g).to(compute_dtype)
-            h_blend = (0.60 * hp_b + 0.40 * H_stud_tgt[i0:i1].to(device, dtype=compute_dtype)).to(compute_dtype)
+            hp_b = rmsn_gpu(F.linear(H_ast_all[i0:i1].to(device, dtype=ast_dtype), ast_post_g).float(), fn_eff_g)
+            h_blend = (0.60 * hp_b + 0.40 * H_stud_tgt[i0:i1].to(device, dtype=torch.float32)).clamp(-65000.0, 65000.0).to(compute_dtype)
             lg_b = SOFTCAP * torch.tanh((h_blend @ emb_g.T).float() / SOFTCAP)
             tv, ti = torch.topk(lg_b, k=64, dim=-1)
             top_probs_t[i0:i1] = F.softmax(tv / 0.5, dim=-1).cpu()

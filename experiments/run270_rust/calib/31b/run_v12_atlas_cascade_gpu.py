@@ -239,10 +239,15 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
     SOFTCAP = float(ctx["SOFTCAP"])
     N_LAYERS = len(e2e_layers)
 
-    dt = torch.bfloat16 if device.type == "cuda" else torch.float32
+    has_bf16 = (device.type == "cuda") and torch.cuda.is_bf16_supported()
+    dt = torch.bfloat16 if has_bf16 else torch.float32
+    emb_dt = torch.bfloat16 if has_bf16 else (torch.float16 if device.type == "cuda" else torch.float32)
     bits_tbl, lv_tbls = v93.make_unpack_tables(device, dtype=dt)
     h_mat_c = H256_GPU.to(device=device, dtype=dt)
-    emb_gpu = emb_eff.to(device=device, dtype=dt)
+    emb_gpu = emb_eff.to(device=device, dtype=emb_dt)
+
+    def _to_emb_dt(t: torch.Tensor) -> torch.Tensor:
+        return t.clamp(-65000.0, 65000.0).to(emb_dt) if emb_dt == torch.float16 else t.to(emb_dt)
 
     pin_on_gpu = (device.type == "cuda") and (gpu_vram_gb >= 32.0)
     if device.type == "cuda":
@@ -356,12 +361,12 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
                 tw = tok_weights_all[sl].to(device=device)
 
                 hs, he = _forward_model(xb, atlas_sparse_tier2=False, use_ckpt=False)
-                hn = rmsn_gpu(hs, fn_param).to(dt)
+                hn = _to_emb_dt(rmsn_gpu(hs, fn_param))
                 lgs = SOFTCAP * torch.tanh((hn @ emb_gpu.T).float() / SOFTCAP)
                 kl_list.append(float(v93.compute_topk_kl_loss(lgs, t_id, t_pr, tw).item()))
                 cos_list.append(float(F.cosine_similarity(hs.reshape(-1, hs.shape[-1]), xt.reshape(-1, xt.shape[-1]), dim=-1).mean().item()))
                 if he is not None:
-                    hne = rmsn_gpu(he, early_fn_param).to(dt)
+                    hne = _to_emb_dt(rmsn_gpu(he, early_fn_param))
                     lg_e = SOFTCAP * torch.tanh((hne @ emb_gpu.T).float() / SOFTCAP)
                     kl_early_list.append(float(v93.compute_topk_kl_loss(lg_e, t_id, t_pr, tw).item()))
 
@@ -373,7 +378,7 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
                     top1_tot += int(m.sum().item())
 
                 hs_sp, _ = _forward_model(xb, atlas_sparse_tier2=True, use_ckpt=False, capture_layer=None)
-                hn_sp = rmsn_gpu(hs_sp, fn_param).to(dt)
+                hn_sp = _to_emb_dt(rmsn_gpu(hs_sp, fn_param))
                 lgs_sp = SOFTCAP * torch.tanh((hn_sp @ emb_gpu.T).float() / SOFTCAP)
                 kl_sp_list.append(float(v93.compute_topk_kl_loss(lgs_sp, t_id, t_pr, tw).item()))
 
@@ -395,7 +400,8 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
 
     cur_mbs = micro_bs
     cur_acc = grad_accum
-    kl_before, kl_sp_before, kl_e_before, cos_before, top1_before = _eval_val(min(8, cur_mbs))
+    eval_bs_cap = 4 if (device.type == "cuda" and gpu_vram_gb < 20.0) else 8
+    kl_before, kl_sp_before, kl_e_before, cos_before, top1_before = _eval_val(min(eval_bs_cap, cur_mbs))
     best_obj = 0.70 * kl_before + 0.30 * kl_sp_before
     best_snap = _snapshot_best()
     print(
@@ -431,7 +437,7 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
                     regime_w = 0.40 if do_sp else 1.0
 
                     hs, he = _forward_model(xb, atlas_sparse_tier2=do_sp, use_ckpt=True, capture_layer=(None if do_sp else V12_EARLY_LAYER))
-                    hn = rmsn_gpu(hs, fn_param).to(dt)
+                    hn = _to_emb_dt(rmsn_gpu(hs, fn_param))
                     lgs = SOFTCAP * torch.tanh((hn @ emb_gpu.T).float() / SOFTCAP)
                     kl = v93.compute_topk_kl_loss(lgs, t_id, t_pr, tw)
                     cos_l = 1.0 - F.cosine_similarity(hs.reshape(-1, hs.shape[-1]), xt.reshape(-1, xt.shape[-1]), dim=-1).mean()
@@ -439,7 +445,7 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
                     mag_s = torch.log(hs.pow(2).sum(dim=-1).clamp(min=1e-8))
                     loss_sub = kl + 0.15 * cos_l + 0.02 * F.mse_loss(mag_s, mag_t)
                     if he is not None:
-                        hne = rmsn_gpu(he, early_fn_param).to(dt)
+                        hne = _to_emb_dt(rmsn_gpu(he, early_fn_param))
                         lg_e = SOFTCAP * torch.tanh((hne @ emb_gpu.T).float() / SOFTCAP)
                         loss_sub = loss_sub + 0.15 * v93.compute_topk_kl_loss(lg_e, t_id, t_pr, tw)
                     loss = (loss_sub * regime_w) / float(cur_acc)
@@ -468,7 +474,7 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
 
         if step == 0 or (step + 1) % 10 == 0 or (step + 1) == n_steps:
             if (step + 1) % 25 == 0 or (step + 1) == n_steps:
-                v_kl, v_sp, v_e, v_cos, v_t1 = _eval_val(min(8, cur_mbs))
+                v_kl, v_sp, v_e, v_cos, v_t1 = _eval_val(min(eval_bs_cap, cur_mbs))
                 obj = 0.70 * v_kl + 0.30 * v_sp
                 improved = ""
                 if obj < best_obj:
@@ -487,7 +493,7 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
                 )
 
     _restore_best(best_snap)
-    kl_after, kl_sp_after, kl_e_after, cos_after, top1_after = _eval_val(min(8, cur_mbs))
+    kl_after, kl_sp_after, kl_e_after, cos_after, top1_after = _eval_val(min(eval_bs_cap, cur_mbs))
     del emb_gpu, opt, best_snap, bits_tbl, lv_tbls
     for lyr in e2e_layers:
         for p in lyr["projs"].values():
@@ -555,6 +561,10 @@ def run_v12_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
             # On A100-80GB / G4-96GB, larger microbatch halves wall-clock step count overhead.
             micro_bs = 16
             grad_accum = 1
+        elif vram_gb < 20.0 and micro_bs == 8:
+            # On Tesla T4 (14.56 GiB VRAM), 4x4 keeps peak VRAM <= 7.8 GiB with identical 16-seq effective batch.
+            micro_bs = 4
+            grad_accum = 4
 
     # Prevent premature auto-unassign inside v10 so we write `SHA256SUMS_V12.txt` + `v12_report.json` cleanly first.
     orig_unassign = os.environ.get("COLAB_AUTO_UNASSIGN", "1")
