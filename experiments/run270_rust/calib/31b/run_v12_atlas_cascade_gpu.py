@@ -67,7 +67,10 @@ V12_HEAD_ROUTED = 8
 V12_EARLY_LAYER = 29
 GLOBAL_ATTN_LAYERS = set(v10.GLOBAL_ATTN_LAYERS)
 
-V12_PIPELINE_REVISION = "v12.0_atlas_core_swap_cca_bypass_bhdr256"
+V12_PIPELINE_REVISION = "v12.1_atlas_core_swap_cca_bypass_bhdr256"
+
+# Snapshot immutable V10 baseline budget BEFORE `_bind_v12_hooks()` overrides `v10.get_v10_proj_spec`
+_ORIG_V10_BUDGET: Dict[str, object] = v10.compute_v10_budget_bytes()
 
 # Empirical 16-layer Cognitive Core union from 1,000-pair A100 BF16 + 60L Pi 4 .t16c Atlas (`84bab1b`)
 V12_COGNITIVE_CORE_LAYERS = {20, 24, 26, 27, 28, 29, 32, 33, 36, 41, 43, 46, 48, 49, 55, 59}
@@ -175,7 +178,7 @@ def compute_v12_budget_bytes(
 
     total_b = embed_b + vision_bytes + attn_b + mlp_b + lr_b
     text_res_b = total_b - vision_bytes
-    v10_b = int(v10.compute_v10_budget_bytes()["total_t16c_bytes"])
+    v10_b = int(_ORIG_V10_BUDGET["total_t16c_bytes"])
     return {
         "embed_bytes": embed_b,
         "vision_bytes": vision_bytes,
@@ -486,18 +489,17 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
     _restore_best(best_snap)
     kl_after, kl_sp_after, kl_e_after, cos_after, top1_after = _eval_val(min(8, cur_mbs))
     del emb_gpu, opt, best_snap, bits_tbl, lv_tbls
-    if pin_on_gpu:
-        for lyr in e2e_layers:
-            for p in lyr["projs"].values():
-                p["planes_u8"] = p["planes_u8"].cpu()
-                p["sc"] = p["sc"].detach().cpu()
-                if p["bi"] is not None:
-                    p["bi"] = p["bi"].detach().cpu()
-                if p["u_lr"] is not None:
-                    p["u_lr"] = p["u_lr"].detach().cpu()
-                    p["v_lr"] = p["v_lr"].detach().cpu()
-                if p["inv_s"] is not None:
-                    p["inv_s"] = p["inv_s"].cpu()
+    for lyr in e2e_layers:
+        for p in lyr["projs"].values():
+            p["planes_u8"] = p["planes_u8"].cpu()
+            p["sc"] = p["sc"].detach().cpu()
+            if p["bi"] is not None:
+                p["bi"] = p["bi"].detach().cpu()
+            if p["u_lr"] is not None:
+                p["u_lr"] = p["u_lr"].detach().cpu()
+                p["v_lr"] = p["v_lr"].detach().cpu()
+            if p["inv_s"] is not None:
+                p["inv_s"] = p["inv_s"].cpu()
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
@@ -523,9 +525,8 @@ def run_stage2_5_v12_atlas_dual_e2e_kl(
     }
 
 
-def run_v12_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int = 2, fresh: bool = False) -> Dict[str, object]:
-    """Execute complete V12 Atlas-Guided Cortical Cascade build by hooking V10's verified Stage 1..3 engine."""
-    # Bind V12 paths, revision, spec, and Stage 2.5 Atlas-Aware trainer into V10's proven scaffold.
+def _bind_v12_hooks() -> None:
+    """Bind V12 paths, revision, spec, and Stage 2.5 Atlas-Aware trainer into V10's proven scaffold."""
     v10.OUT_DIR = OUT_DIR
     v10.CKPT_DIR = CKPT_DIR
     v10.DRIVE_DIR = DRIVE_DIR
@@ -542,6 +543,11 @@ def run_v12_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int
     v10.get_v10_proj_spec = get_v12_proj_spec
     v10.compute_v10_budget_bytes = compute_v12_budget_bytes
     v10.run_stage2_5_v10_dual_e2e_kl = run_stage2_5_v12_atlas_dual_e2e_kl
+
+
+def run_v12_pipeline(*, e2e_steps: int = 200, micro_bs: int = 8, grad_accum: int = 2, fresh: bool = False) -> Dict[str, object]:
+    """Execute complete V12 Atlas-Guided Cortical Cascade build by hooking V10's verified Stage 1..3 engine."""
+    _bind_v12_hooks()
 
     if torch.cuda.is_available():
         vram_gb = float(torch.cuda.get_device_properties(0).total_memory) / (1024**3)
@@ -602,9 +608,12 @@ def run_selftest() -> int:
             failures += 1
         print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""), flush=True)
 
-    # Gate 1: V12 budget <= V10 (`<= 6.28 GiB`), Zero Tern5, Zero 1b Attn, ALL 16 Cognitive Cores >= 2b down_proj
-    bgt = compute_v12_budget_bytes()
-    v10_bgt = v10.compute_v10_budget_bytes()
+    # Gate 1: V12 budget <= V10 (`<= 6.28 GiB`), live `_bind_v12_hooks()` non-recursive parity, & 16/16 Cores Protected
+    _bind_v12_hooks()
+    bgt = v10.compute_v10_budget_bytes()
+    v10_bgt = _ORIG_V10_BUDGET
+    l32_spec = v10.get_v10_proj_spec(32, "mlp.gate_proj")
+    l50_spec = v10.get_v10_proj_spec(50, "mlp.gate_proj")
     g1_ok = (
         int(bgt["total_t16c_bytes"]) <= MAX_V12_T16C_BYTES
         and int(bgt["total_t16c_bytes"]) < int(v10_bgt["total_t16c_bytes"])
@@ -612,6 +621,9 @@ def run_selftest() -> int:
         and int(bgt["attn_1b_cnt"]) == 0
         and len(bgt["unprotected_cores"]) == 0
         and V12_COGNITIVE_CORE_LAYERS.isdisjoint(V12_TIER2_BYPASS_LAYERS)
+        and l32_spec[0] == 5
+        and l50_spec[0] == 0
+        and v10.OUT_T16C == OUT_T16C
     )
     gate(
         "Gate 1: V12 Atlas Budget < V10 & 16/16 Cores Protected",
