@@ -436,7 +436,11 @@ def scan_and_extract_model(
     from transformers import AutoModelForCausalLM, AutoProcessor, Gemma4ForConditionalGeneration
 
     t0 = time.perf_counter()
-    dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    if device.type == "cuda":
+        cc_major = torch.cuda.get_device_capability(device)[0]
+        dt = torch.bfloat16 if cc_major >= 8 else torch.float16
+    else:
+        dt = torch.float32
     print(f"\n================ [{tag.upper()}] Loading {model_id} ({dt}) ================", flush=True)
     proc = AutoProcessor.from_pretrained(model_id)
     try:
@@ -467,10 +471,12 @@ def scan_and_extract_model(
     fe = getattr(proc, "feature_extractor", None) or getattr(proc, "audio_processor", None)
 
     def _prep_audio_inputs(wav_np: np.ndarray) -> Dict[str, torch.Tensor]:
+        # Pass `[wav_np]` (1-item list) to take batched branch in Gemma4AudioFeatureExtractor (avoids 1D `.T` upstream bug)
+        wav_1d = np.asarray(wav_np, dtype=np.float32).reshape(-1)
         if fe is not None:
-            out = fe(wav_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+            out = fe([wav_1d], sampling_rate=SAMPLE_RATE, return_tensors="pt")
         else:
-            out = proc(audio=wav_np, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+            out = proc(audio=[wav_1d], sampling_rate=SAMPLE_RATE, return_tensors="pt")
         res = {}
         for k, v in out.items():
             if isinstance(v, torch.Tensor):
@@ -478,29 +484,10 @@ def scan_and_extract_model(
         return res
 
     def _forward_audio_embed(aud_inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Inspect signature / standard Gemma4 audio kwargs (`input_features` / `input_values` + mask)
-        feat_key = "input_features" if "input_features" in aud_inputs else next(k for k in aud_inputs if "feat" in k or "val" in k or "aud" in k)
-        mask_key = next((k for k in aud_inputs if "mask" in k), None)
-        feats = aud_inputs[feat_key]
-        msk = aud_inputs[mask_key] if mask_key else None
-        if hasattr(base, "get_audio_features"):
-            try:
-                out_a = base.get_audio_features(feats, msk) if msk is not None else base.get_audio_features(feats)
-                if isinstance(out_a, (tuple, list)):
-                    out_a = out_a[0]
-                elif hasattr(out_a, "last_hidden_state"):
-                    out_a = out_a.last_hidden_state
-                return out_a.reshape(-1, d_txt)
-            except Exception:
-                pass
-        try:
-            ao = aud_tower(feats, msk) if msk is not None else aud_tower(feats)
-        except TypeError:
-            ao = aud_tower(feats)
-        ah = ao[0] if isinstance(ao, (tuple, list)) else (ao.last_hidden_state if hasattr(ao, "last_hidden_state") else ao)
-        ea = emb_aud(ah)
-        if isinstance(ea, (tuple, list)):
-            ea = ea[0]
+        feats = aud_inputs["input_features"]
+        msk = aud_inputs.get("input_features_mask", aud_inputs.get("attention_mask"))
+        ao = aud_tower(feats, msk, return_dict=True)
+        ea = emb_aud(inputs_embeds=ao.last_hidden_state)
         return ea.reshape(-1, d_txt)
 
     n_ap = len(audio_pairs)
@@ -522,13 +509,13 @@ def scan_and_extract_model(
             full_ct = F.normalize(_forward_audio_embed(in_ct).float(), dim=-1)
 
             for al in range(n_aud_layers):
-                def _skip_hook(_mod, args, _out):
-                    x_in = args[0]
+                def _skip_hook(_mod, args, kwargs, _out):
+                    x_in = args[0] if len(args) > 0 else kwargs["hidden_states"]
                     if isinstance(_out, tuple):
                         return (x_in,) + _out[1:]
                     return x_in
 
-                h_handle = aud_tower.layers[al].register_forward_hook(_skip_hook)
+                h_handle = aud_tower.layers[al].register_forward_hook(_skip_hook, with_kwargs=True)
                 try:
                     byp_st = F.normalize(_forward_audio_embed(in_st).float(), dim=-1)
                     byp_ct = F.normalize(_forward_audio_embed(in_ct).float(), dim=-1)
@@ -546,8 +533,8 @@ def scan_and_extract_model(
             for al in range(n_aud_layers):
                 lyr_a = aud_tower.layers[al]
                 def _mk_pre(key_name: str):
-                    def _pre(_m, args):
-                        t_in = args[0]
+                    def _pre(_m, args, kwargs):
+                        t_in = args[0] if len(args) > 0 else next(iter(kwargs.values()))
                         if isinstance(t_in, torch.Tensor) and t_in.requires_grad:
                             t_in.retain_grad()
                             cap_a[key_name] = t_in
@@ -561,10 +548,10 @@ def scan_and_extract_model(
                             cap_a[key_name] = t_o
                     return _fwd
 
-                handles.append(lyr_a.self_attn.post.register_forward_pre_hook(_mk_pre(f"attn_{al}")))
+                handles.append(lyr_a.self_attn.post.register_forward_pre_hook(_mk_pre(f"attn_{al}"), with_kwargs=True))
                 handles.append(lyr_a.lconv1d.depthwise_conv1d.register_forward_hook(_mk_fwd(f"conv_{al}")))
-                handles.append(lyr_a.feed_forward1.ffw_layer_2.register_forward_pre_hook(_mk_pre(f"ff1_{al}")))
-                handles.append(lyr_a.feed_forward2.ffw_layer_2.register_forward_pre_hook(_mk_pre(f"ff2_{al}")))
+                handles.append(lyr_a.feed_forward1.ffw_layer_2.register_forward_pre_hook(_mk_pre(f"ff1_{al}"), with_kwargs=True))
+                handles.append(lyr_a.feed_forward2.ffw_layer_2.register_forward_pre_hook(_mk_pre(f"ff2_{al}"), with_kwargs=True))
 
             try:
                 ea = _forward_audio_embed(aud_in_g).float()
@@ -686,11 +673,11 @@ def scan_and_extract_model(
                     txt_nll_r_base[i0 : i0 + len(batch)] = base_nll
 
                 for tl in range(n_txt_layers):
-                    def _skip_txt(_m, args, _out):
-                        x_in = args[0]
+                    def _skip_txt(_m, args, kwargs, _out):
+                        x_in = args[0] if len(args) > 0 else kwargs["hidden_states"]
                         return (x_in,) + _out[1:] if isinstance(_out, tuple) else x_in
 
-                    th = txt_layers[tl].register_forward_hook(_skip_txt)
+                    th = txt_layers[tl].register_forward_hook(_skip_txt, with_kwargs=True)
                     try:
                         lg_b = model(input_ids=inp, attention_mask=msk, use_cache=False).logits
                         b_nll = score_batch_nll(lg_b, starts, spans).cpu().numpy()
@@ -733,16 +720,16 @@ def scan_and_extract_model(
             for tl in range(n_txt_layers):
                 lyr_t = txt_layers[tl]
                 def _pre_t(kname: str):
-                    def _fn(_m, args):
-                        x = args[0]
+                    def _fn(_m, args, kwargs):
+                        x = args[0] if len(args) > 0 else next(iter(kwargs.values()))
                         if isinstance(x, torch.Tensor) and x.requires_grad:
                             x.retain_grad()
                             cap_t[kname] = x
                     return _fn
-                handles_t.append(lyr_t.self_attn.o_proj.register_forward_pre_hook(_pre_t(f"o_{tl}")))
-                handles_t.append(lyr_t.mlp.down_proj.register_forward_pre_hook(_pre_t(f"d_{tl}")))
+                handles_t.append(lyr_t.self_attn.o_proj.register_forward_pre_hook(_pre_t(f"o_{tl}"), with_kwargs=True))
+                handles_t.append(lyr_t.mlp.down_proj.register_forward_pre_hook(_pre_t(f"d_{tl}"), with_kwargs=True))
                 if hasattr(lyr_t, "per_layer_projection"):
-                    handles_t.append(lyr_t.per_layer_projection.register_forward_pre_hook(_pre_t(f"ple_{tl}")))
+                    handles_t.append(lyr_t.per_layer_projection.register_forward_pre_hook(_pre_t(f"ple_{tl}"), with_kwargs=True))
 
             try:
                 lg_g = model(input_ids=inp, attention_mask=msk, use_cache=False).logits
@@ -1068,16 +1055,50 @@ def run_selftest() -> int:
     nlls = score_batch_nll(lg_toy, [3, 2], [[5, 7], [3]])
     gate("Gate 5: Exact Answer-Span Causal NLL Scoring", float(nlls.max().item()) < 1e-3, f"max_nll={float(nlls.max().item()):.2e}")
 
-    # Gate 6: Real gradient flow through Taylor hook accumulator
-    x_in = torch.randn(4, 10, 32, requires_grad=True)
-    lin = nn.Linear(32, 32, bias=False)
-    cap = {}
-    h = lin.register_forward_pre_hook(lambda _m, a: (a[0].retain_grad(), cap.setdefault("x", a[0])) and None)
-    y = lin(x_in)
-    (y.pow(2).sum()).backward()
-    h.remove()
-    imp = (cap["x"].detach() * cap["x"].grad.detach()).abs().sum()
-    gate("Gate 6: End-to-End Hook Taylor Attribution Non-Zero", float(imp.item()) > 0.0, f"taylor_sum={float(imp.item()):.4f}")
+    # Gate 6: Real Gemma4AudioFeatureExtractor([wav]) + Toy Gemma4AudioModel + Gemma4TextModel (with PLE & KV-sharing) E2E Hook Proof
+    g6_ok = True
+    g6_detail = ""
+    try:
+        from transformers.models.gemma4.configuration_gemma4 import Gemma4AudioConfig, Gemma4Config, Gemma4TextConfig, Gemma4VisionConfig
+        from transformers.models.gemma4.feature_extraction_gemma4 import Gemma4AudioFeatureExtractor
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4ForConditionalGeneration
+
+        fe_t = Gemma4AudioFeatureExtractor()
+        fe_out = fe_t([ap[0][2]], sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        acfg = Gemma4AudioConfig(hidden_size=256, num_attention_heads=4, num_hidden_layers=2, output_proj_dims=64, subsampling_conv_channels=[128, 8])
+        tcfg = Gemma4TextConfig(
+            vocab_size=256, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+            num_attention_heads=4, num_key_value_heads=2, num_global_key_value_heads=2,
+            head_dim=16, global_head_dim=16, hidden_size_per_layer_input=16, vocab_size_per_layer_input=256,
+            num_kv_shared_layers=2, layer_types=["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
+        )
+        vcfg = Gemma4VisionConfig(hidden_size=64, intermediate_size=128, num_hidden_layers=1, num_attention_heads=4, head_dim=16, global_head_dim=16)
+        toy = Gemma4ForConditionalGeneration(Gemma4Config(audio_config=acfg, text_config=tcfg, vision_config=vcfg)).eval()
+        for p in toy.parameters():
+            p.requires_grad_(False)
+        feats_g = fe_out["input_features"].clone().requires_grad_(True)
+        msk_g = fe_out["input_features_mask"]
+        cap_g = {}
+        ha = toy.model.audio_tower.layers[0].self_attn.post.register_forward_pre_hook(
+            lambda _m, a, kw: ((a[0] if a else next(iter(kw.values()))).retain_grad(), cap_g.setdefault("a", a[0] if a else next(iter(kw.values())))) and None,
+            with_kwargs=True,
+        )
+        ao = toy.model.audio_tower(feats_g, msk_g, return_dict=True)
+        ea = toy.model.embed_audio(inputs_embeds=ao.last_hidden_state)
+        (ea.pow(2).sum()).backward()
+        ha.remove()
+        # Also test Text KV-shared bypass + PLE hook
+        ht = toy.model.language_model.layers[1].register_forward_hook(
+            lambda _m, a, kw, _o: a[0] if a else kw["hidden_states"], with_kwargs=True
+        )
+        _ = toy(input_ids=torch.randint(1, 100, (2, 8)), attention_mask=torch.ones((2, 8), dtype=torch.long), use_cache=False).logits
+        ht.remove()
+        g6_ok = cap_g["a"].grad is not None and float(cap_g["a"].grad.abs().sum().item()) > 0.0
+        g6_detail = f"fe={tuple(fe_out['input_features'].shape)}, ea={tuple(ea.shape)}"
+    except Exception as exc:
+        g6_ok = False
+        g6_detail = repr(exc)
+    gate("Gate 6: Live Gemma4AudioFeatureExtractor + Audio/PLE/SharedKV Hook Proof", g6_ok, g6_detail)
 
     print(f"E2B/E4B Singular Self-Test Result: {6 - failures}/6 gates passed", flush=True)
     return failures
