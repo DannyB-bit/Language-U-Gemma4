@@ -438,20 +438,28 @@ def scan_and_extract_model(
     t0 = time.perf_counter()
     if device.type == "cuda":
         cc_major = torch.cuda.get_device_capability(device)[0]
+        vram_gb = float(torch.cuda.get_device_properties(device).total_memory) / (1024**3)
         dt = torch.bfloat16 if cc_major >= 8 else torch.float16
     else:
+        vram_gb = 0.0
         dt = torch.float32
-    print(f"\n================ [{tag.upper()}] Loading {model_id} ({dt}) ================", flush=True)
+    print(f"\n================ [{tag.upper()}] Loading {model_id} ({dt}, vram={vram_gb:.2f} GiB) ================", flush=True)
     proc = AutoProcessor.from_pretrained(model_id)
     try:
-        model = Gemma4ForConditionalGeneration.from_pretrained(model_id, torch_dtype=dt, low_cpu_mem_usage=True).to(device)
+        model = Gemma4ForConditionalGeneration.from_pretrained(model_id, torch_dtype=dt, low_cpu_mem_usage=True)
     except Exception:
-        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dt, low_cpu_mem_usage=True).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dt, low_cpu_mem_usage=True)
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
 
     base = model.model if hasattr(model, "model") else model
+    # Drop unused Vision Tower to free RAM/VRAM before Audio+Text Core scan
+    for vis_attr in ("vision_tower", "embed_vision"):
+        if hasattr(base, vis_attr) and getattr(base, vis_attr) is not None:
+            setattr(base, vis_attr, None)
+    gc.collect()
+
     aud_tower = base.audio_tower
     emb_aud = base.embed_audio
     lm = base.language_model
@@ -465,6 +473,11 @@ def scan_and_extract_model(
     max_txt_ff = max(layer_ff)
     txt_ff = int(model.config.text_config.intermediate_size)
     d_txt = int(model.config.text_config.hidden_size)
+
+    # Stage 1 GPU placement: ONLY audio_tower + embed_audio + lm.norm (~0.8 GiB VRAM!)
+    aud_tower.to(device)
+    emb_aud.to(device)
+    norm_w_txt = lm.norm.weight.detach().to(device=device, dtype=torch.float32)
 
     # -----------------------------------------------------------------------
     # Part A: Audio-Core Scan (`12` Conformer Layers + `96` Heads + `lconv1d` + `FFN`)
@@ -499,8 +512,6 @@ def scan_and_extract_model(
     aud_head_ctrl = np.zeros((n_ap, n_aud_layers, n_aud_heads), dtype=np.float32)
     aud_conv_delta = np.zeros((n_aud_layers, 1024), dtype=np.float32)
     aud_ffn_delta = np.zeros((n_aud_layers, 4096), dtype=np.float32)
-
-    norm_w_txt = lm.norm.weight.detach().float()
 
     for ai, (_, _, w_st, w_ct) in enumerate(audio_pairs):
         in_st = _prep_audio_inputs(w_st)
@@ -634,6 +645,44 @@ def scan_and_extract_model(
                 })
 
     print(f"[{tag} Audio Done] Audio Core Layers={aud_core_layers} | Selected Audio Heads={len(aud_selected_heads)}/{n_aud_layers*n_aud_heads}", flush=True)
+
+    # Snapshot Audio weights onto CPU before dropping Audio Tower to make full VRAM headroom for Text Brain!
+    aud_sub_state: Dict[str, torch.Tensor] = {
+        f"model.audio_tower.{k}": v.detach().to(torch.bfloat16).cpu().contiguous()
+        for k, v in aud_tower.state_dict().items()
+    }
+    for k, v in emb_aud.state_dict().items():
+        aud_sub_state[f"model.embed_audio.{k}"] = v.detach().to(torch.bfloat16).cpu().contiguous()
+
+    base.audio_tower = None
+    base.embed_audio = None
+    del aud_tower, emb_aud, norm_w_txt
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    # Selective Stage 2 GPU placement: keep 5.6 GiB `embed_tokens_per_layer` in CPU High-RAM on <20 GiB GPUs!
+    offload_ple = (device.type == "cuda") and (vram_gb < 20.0) and hasattr(lm, "embed_tokens_per_layer")
+    if offload_ple:
+        ple_mod = lm.embed_tokens_per_layer.cpu()
+        ple_scale = float(getattr(ple_mod, "embed_scale", 1.0))
+
+        def _cpu_ple_forward(ids_in: torch.Tensor) -> torch.Tensor:
+            dev_out = ids_in.device
+            y_cpu = F.embedding(ids_in.cpu(), ple_mod.weight, ple_mod.padding_idx)
+            if ple_scale != 1.0:
+                y_cpu = y_cpu * torch.tensor(ple_scale, dtype=y_cpu.dtype)
+            return y_cpu.to(device=dev_out, non_blocking=True)
+
+        ple_mod.forward = _cpu_ple_forward  # type: ignore[method-assign]
+        for sub_name, sub_mod in lm.named_children():
+            if sub_name != "embed_tokens_per_layer":
+                sub_mod.to(device)
+        if hasattr(model, "lm_head"):
+            model.lm_head.to(device)
+        print(f"[{tag} VRAM Guard] Placed 5.6 GiB embed_tokens_per_layer on CPU RAM (text GPU={torch.cuda.memory_allocated(device)/(1024**3):.2f} GiB)", flush=True)
+    else:
+        model.to(device)
 
     # -----------------------------------------------------------------------
     # Part B: Text Cognitive-Core Scan (`35`/`42` Layers x 10 Logic Domains)
@@ -868,21 +917,21 @@ def scan_and_extract_model(
 
     # 1) Surgical Audio Cores BF16 safetensors (+ 31B token 258881 bridge)
     aud_core_sf: Dict[str, torch.Tensor] = {}
-    for k, v in sd_all.items():
+    for k, v in aud_sub_state.items():
         if k.startswith(("model.audio_tower.subsample_conv_projection.", "model.audio_tower.output_proj.", "model.embed_audio.")):
-            aud_core_sf[k] = v.detach().to(torch.bfloat16).cpu().contiguous()
+            aud_core_sf[k] = v
     for al in aud_core_layers:
         pfx = f"model.audio_tower.layers.{al}."
-        for k, v in sd_all.items():
+        for k, v in aud_sub_state.items():
             if k.startswith(pfx):
-                aud_core_sf[k] = v.detach().to(torch.bfloat16).cpu().contiguous()
+                aud_core_sf[k] = v
     for al in range(n_aud_layers):
         top_c = torch.tensor(np.argsort(aud_conv_delta[al])[::-1][:128].tolist(), dtype=torch.long)
         top_f = torch.tensor(np.argsort(aud_ffn_delta[al])[::-1][:256].tolist(), dtype=torch.long)
         aud_core_sf[f"model.audio_tower.layers.{al}.top128_lconv1d_indices"] = top_c.to(torch.int32)
         aud_core_sf[f"model.audio_tower.layers.{al}.top256_ffn_indices"] = top_f.to(torch.int32)
 
-    w_emb_aud = sd_all["model.embed_audio.embedding_projection.weight"].detach().float().cpu()  # [d_txt, 1536]
+    w_emb_aud = aud_sub_state["model.embed_audio.embedding_projection.weight"].float()  # [d_txt, 1536]
     w_fused_aud1536_to_31b = (w_bridge_to_31b.float() @ w_emb_aud).to(torch.bfloat16).contiguous()  # [5376, 1536]
     aud_core_sf[f"bridge_to_31b.{tag}_hidden_to_31b_5376.weight"] = w_bridge_to_31b.to(torch.bfloat16).contiguous()
     aud_core_sf[f"bridge_to_31b.{tag}_audio1536_to_31b_tok258881.weight"] = w_fused_aud1536_to_31b
@@ -892,15 +941,12 @@ def scan_and_extract_model(
     # If E4B: ALSO save the complete 12-layer Full Audio Ear + 31B Token-258881 Bridge so 31B can hear end-to-end immediately!
     full_ear_path = None
     if tag == "e4b":
-        full_ear_sf: Dict[str, torch.Tensor] = {
-            k: v.detach().to(torch.bfloat16).cpu().contiguous()
-            for k, v in sd_all.items()
-            if k.startswith(("model.audio_tower.", "model.embed_audio."))
-        }
+        full_ear_sf: Dict[str, torch.Tensor] = dict(aud_sub_state)
         full_ear_sf["bridge_to_31b.e4b_hidden2560_to_31b_5376.weight"] = w_bridge_to_31b.to(torch.bfloat16).contiguous()
         full_ear_sf["bridge_to_31b.e4b_audio1536_to_31b_tok258881.weight"] = w_fused_aud1536_to_31b
         full_ear_path = OUT_DIR / "gemma4_e4b_full_audio_ear_for_31b_tok258881_bf16.safetensors"
         save_file(full_ear_sf, str(full_ear_path), metadata={"target_model": "google/gemma-4-31B-it", "audio_token_id": "258881"})
+    del aud_sub_state
 
     # 2) Surgical Text Cognitive Cores BF16 safetensors (selected heads + Top-256 GeGLU neurons + PLE gates per core layer)
     txt_core_sf: Dict[str, torch.Tensor] = {
@@ -941,12 +987,26 @@ def scan_and_extract_model(
     txt_sf_path = OUT_DIR / f"gemma4_{tag}_cognitive_cores_bf16.safetensors"
     save_file(txt_core_sf, str(txt_sf_path), metadata={"schema": f"gemma4_{tag}.cognitive_cores.v1"})
 
-    del sd_all, model, aud_tower, lm
+    del sd_all, model, lm
     gc.collect()
     torch.cuda.empty_cache()
 
     produced = [atlas_path, npz_path, aud_sf_path, txt_sf_path] + ([full_ear_path] if full_ear_path else [])
     return {"atlas": atlas, "files": produced}
+
+
+def _try_reuse_completed_tag(tag: str) -> Optional[Dict[str, Any]]:
+    atlas_path = OUT_DIR / f"cca_{tag}_audio_and_cognitive_atlas.json"
+    npz_path = OUT_DIR / f"cca_{tag}_taylor_tensors.npz"
+    aud_sf_path = OUT_DIR / f"gemma4_{tag}_audio_cores_and_31b_bridge_bf16.safetensors"
+    txt_sf_path = OUT_DIR / f"gemma4_{tag}_cognitive_cores_bf16.safetensors"
+    need = [atlas_path, npz_path, aud_sf_path, txt_sf_path]
+    if tag == "e4b":
+        need.append(OUT_DIR / "gemma4_e4b_full_audio_ear_for_31b_tok258881_bf16.safetensors")
+    if all(p.is_file() and p.stat().st_size > 0 for p in need):
+        print(f"[{tag.upper()} Resume] Reusing verified local artifacts in {OUT_DIR}", flush=True)
+        return {"atlas": json.loads(atlas_path.read_text(encoding="utf-8")), "files": need}
+    return None
 
 
 def run_pipeline(audio_pairs_n: int = 32, logic_pairs_per_domain: int = 20) -> Dict[str, Any]:
@@ -957,15 +1017,19 @@ def run_pipeline(audio_pairs_n: int = 32, logic_pairs_per_domain: int = 20) -> D
         DRIVE_DIR.mkdir(parents=True, exist_ok=True)
 
     t0 = time.perf_counter()
-    audio_pairs = build_paired_audio_stimuli(n_pairs=audio_pairs_n)
-    logic_pairs = build_paired_logic_prompts(pairs_per_domain=logic_pairs_per_domain)
-    print(f"[Init] Fetching 31B shared-vocab embedding via HTTP Range for exact 258881 bridge...", flush=True)
-    emb_31b, norm_31b = fetch_31b_vocab_embed_via_range()
-
-    res_e2b = scan_and_extract_model("google/gemma-4-E2B-it", "e2b", audio_pairs, logic_pairs, emb_31b, norm_31b, device)
-    res_e4b = scan_and_extract_model("google/gemma-4-E4B-it", "e4b", audio_pairs, logic_pairs, emb_31b, norm_31b, device)
-    del emb_31b, norm_31b
-    gc.collect()
+    res_e2b = _try_reuse_completed_tag("e2b")
+    res_e4b = _try_reuse_completed_tag("e4b")
+    if res_e2b is None or res_e4b is None:
+        audio_pairs = build_paired_audio_stimuli(n_pairs=audio_pairs_n)
+        logic_pairs = build_paired_logic_prompts(pairs_per_domain=logic_pairs_per_domain)
+        print(f"[Init] Fetching 31B shared-vocab embedding via HTTP Range for exact 258881 bridge...", flush=True)
+        emb_31b, norm_31b = fetch_31b_vocab_embed_via_range()
+        if res_e2b is None:
+            res_e2b = scan_and_extract_model("google/gemma-4-E2B-it", "e2b", audio_pairs, logic_pairs, emb_31b, norm_31b, device)
+        if res_e4b is None:
+            res_e4b = scan_and_extract_model("google/gemma-4-E4B-it", "e4b", audio_pairs, logic_pairs, emb_31b, norm_31b, device)
+        del emb_31b, norm_31b
+        gc.collect()
 
     all_files = res_e2b["files"] + res_e4b["files"]
     artifacts_meta = {}
